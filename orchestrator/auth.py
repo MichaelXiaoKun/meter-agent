@@ -182,6 +182,9 @@ def _render_login_form(cookies=None) -> None:
         header[data-testid="stHeader"],
         footer {{ display: none !important; }}
 
+        /* Hide auto-generated anchor link on headings */
+        h1 a, h2 a, h3 a {{ display: none !important; }}
+
         /* Light full-page background */
         [data-testid="stAppViewContainer"] {{
             background: linear-gradient(160deg, #e8f0fb 0%, #dce7f8 50%, #cfddf6 100%);

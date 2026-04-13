@@ -254,6 +254,7 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 
 st.markdown(
+    "<style>h1 a, h2 a, h3 a { display: none !important; }</style>"
     "<h2 style='text-align: center; margin-bottom: 0.25rem;'>💧 bluebot Assistant</h2>",
     unsafe_allow_html=True,
 )
