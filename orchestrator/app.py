@@ -4,8 +4,11 @@ app.py — Streamlit chat UI for the bluebot orchestrator.
 Run with:
     streamlit run app.py
 
-Bearer token:
-    Enter it in the sidebar Settings expander, or set the BLUEBOT_TOKEN env var.
+Authentication:
+    Users log in with their bluebot (Auth0) account.
+    The resulting access token is used as the bluebot Bearer token.
+    Set AUTH0_DOMAIN_{ENV}, AUTH0_CLIENT_ID_{ENV}, AUTH0_API_AUDIENCE_{ENV},
+    AUTH0_REALM, and optionally BLUEBOT_ENV in Streamlit secrets / env vars.
 """
 
 import json
@@ -15,6 +18,7 @@ import time
 
 import streamlit as st
 
+import auth
 from agent import run_turn
 import store
 from summarizer import update_title
@@ -31,11 +35,20 @@ st.set_page_config(
 
 # Promote Streamlit secrets into environment variables so the Anthropic SDK
 # and sub-agent subprocesses can pick them up via os.environ.
-for _secret_key in ("ANTHROPIC_API_KEY", "BLUEBOT_TOKEN"):
+for _secret_key in ("ANTHROPIC_API_KEY",):
     if _secret_key not in os.environ:
-        _val = st.secrets.get(_secret_key, "")
+        try:
+            _val = st.secrets.get(_secret_key, "")
+        except Exception:
+            _val = ""
         if _val:
             os.environ[_secret_key] = _val
+
+# ---------------------------------------------------------------------------
+# Authentication — blocks rendering until the user is logged in
+# ---------------------------------------------------------------------------
+
+token = auth.login_gate()  # returns bearer token or calls st.stop()
 
 # ---------------------------------------------------------------------------
 # Session state initialisation
@@ -197,15 +210,13 @@ with st.sidebar:
         if st.session_state.compressing:
             st.warning("Compressing older messages to free context...", icon="⚠️")
 
-    # Bearer token tucked away at the bottom — most users set the env var
+    # Account section at the bottom of the sidebar
     st.divider()
-    with st.expander("⚙️ Settings"):
-        token = st.text_input(
-            "Bearer token",
-            value=os.environ.get("BLUEBOT_TOKEN", st.secrets.get("BLUEBOT_TOKEN", "")),
-            type="password",
-            help="Your bluebot API token. You can also set the BLUEBOT_TOKEN env var.",
-        )
+    _user = st.session_state.get("auth_user", "")
+    if _user:
+        st.caption(f"Signed in as **{_user}**")
+    if st.button("Sign out", use_container_width=True):
+        auth.logout()
 
 
 # ---------------------------------------------------------------------------
@@ -280,11 +291,17 @@ else:
 # Chat input
 # ---------------------------------------------------------------------------
 
-user_input = st.chat_input("Ask about a meter or flow data...")
+# Disable the input box while the agent is running.
+_is_processing = bool(st.session_state.get("_agent_queued"))
+
+user_input = st.chat_input(
+    "Ask about a meter or flow data...",
+    disabled=_is_processing,
+)
 
 # Three sources of input, in priority order:
-#   1. _agent_queued  — new conversation just created; sidebar refreshed; run agent now
-#   2. resume_pending — page was refreshed mid-turn; auto-resume
+#   1. _agent_queued  — user message saved + sidebar refreshed; run agent now
+#   2. resume_pending — page refreshed mid-turn; auto-resume
 #   3. user_input     — fresh message from the chat box
 _queued = st.session_state.get("_agent_queued")
 _resume = st.session_state.resume_pending
@@ -292,13 +309,13 @@ _resume = st.session_state.resume_pending
 if _resume and not user_input and not _queued:
     st.info("↩️ Resuming your previous request...")
 
-# ── Determine active_input and how to handle the user-message step ──────────
+# ── Determine active_input ───────────────────────────────────────────────────
 if _queued:
-    # User message is already in st.session_state.messages (index -1) and in DB.
-    # The history loop above already rendered it; just run the agent.
-    active_input = _queued
+    # User message is already in messages (index -1) and in DB.
+    # The history loop above already rendered it; skip setup and run agent.
+    active_input     = _queued
     st.session_state._agent_queued = None
-    checkpoint   = len(st.session_state.messages) - 1   # points at the user msg
+    checkpoint       = len(st.session_state.messages) - 1
     _skip_user_setup = True
 else:
     active_input     = user_input or _resume
@@ -306,30 +323,21 @@ else:
 
 if active_input:
     if not token:
-        st.session_state._agent_queued = None          # don't loop if queued
+        st.session_state._agent_queued = None
         st.error("Please enter your bluebot Bearer token in ⚙️ Settings (sidebar).")
         st.stop()
 
     if not _skip_user_setup:
+        # ── Setup: persist user message, queue agent, rerun so the chat input
+        #    is disabled before the (slow) agent starts. ─────────────────────
         st.session_state.resume_pending = None
         is_resume = bool(_resume and not user_input)
 
         if not is_resume and st.session_state.conversation_id is None:
-            # ── New conversation: create the DB row and save the user message
-            #    immediately, then rerun so the sidebar shows the conversation
-            #    before the (slow) agent starts. ──────────────────────────────
             conv_id = store.create_conversation()
             st.session_state.conversation_id = conv_id
             st.query_params["conv"] = conv_id
-            store.set_title(conv_id, active_input[:60])
-            store.append_messages(conv_id, [{"role": "user", "content": active_input}])
-            st.session_state.messages.append({"role": "user", "content": active_input})
-            st.session_state._agent_queued = active_input
-            st.rerun()
 
-        # Render and persist the user message for existing / resumed convs
-        _render_message("user", active_input)
-        checkpoint = len(st.session_state.messages)
         st.session_state.messages.append({"role": "user", "content": active_input})
 
         if not is_resume:
@@ -338,8 +346,13 @@ if active_input:
                 [{"role": "user", "content": active_input}],
             )
 
-        if checkpoint == 0:
+        if len(st.session_state.messages) == 1:
             store.set_title(st.session_state.conversation_id, active_input[:60])
+
+        # Queue the agent and rerun — on the next render the input is disabled
+        # and the history loop shows the user message before the agent starts.
+        st.session_state._agent_queued = active_input
+        st.rerun()
 
     # ── Agent run ────────────────────────────────────────────────────────────
     status_placeholder    = st.empty()

@@ -40,3 +40,6 @@ env/
 
 # Streamlit — keep the example, exclude the real secrets file
 .streamlit/secrets.toml
+
+# Auth token cache (local login cache)
+.cache.token
