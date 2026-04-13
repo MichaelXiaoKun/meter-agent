@@ -11,6 +11,7 @@ Authentication:
     AUTH0_REALM, and optionally BLUEBOT_ENV in Streamlit secrets / env vars.
 """
 
+import base64
 import json
 import os
 import re
@@ -111,6 +112,23 @@ if "resume_pending" not in st.session_state:
 _IMAGE_RE = re.compile(r'!\[(.*?)\]\((.*?\.png)\)')
 
 
+def _show_image(path: str, caption: str | None = None) -> None:
+    """Render a local PNG as an inline base64 data URI.
+
+    Unlike st.image(), this bypasses Streamlit's media file handler so images
+    survive server restarts, redeploys, and script reruns without 404 errors.
+    """
+    if not os.path.exists(path):
+        return
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    cap_html = f"<p style='text-align:center;font-size:0.85rem;color:grey'>{caption}</p>" if caption else ""
+    st.markdown(
+        f'<img src="data:image/png;base64,{b64}" style="width:100%;border-radius:6px">{cap_html}',
+        unsafe_allow_html=True,
+    )
+
+
 def _relative_date(ts: int) -> str:
     """Return a human-friendly date label (Today / Yesterday / Mon DD)."""
     today     = time.localtime()
@@ -158,8 +176,7 @@ def _render_message(role: str, content) -> None:
                 _alt  = parts[i]
                 _path = parts[i + 1]
                 if os.path.exists(_path):
-                    with open(_path, "rb") as _f:
-                        st.image(_f.read(), caption=_alt or None, use_container_width=True)
+                    _show_image(_path, caption=_alt or None)
                 i += 2
 
 
@@ -255,8 +272,7 @@ if st.session_state.messages:
         # Flush queued plots after each assistant message
         if role == "assistant" and _queued_plots:
             for path in _queued_plots:
-                with open(path, "rb") as _f:
-                    st.image(_f.read(), use_container_width=True)
+                _show_image(path)
             _queued_plots.clear()
 else:
     st.markdown(
@@ -418,8 +434,7 @@ if active_input:
             _render_message("assistant", reply)
 
         for path in pending_plot_paths:
-            with open(path, "rb") as _f:
-                st.image(_f.read(), use_container_width=True)
+            _show_image(path)
 
     except Exception as exc:
         status_placeholder.empty()
