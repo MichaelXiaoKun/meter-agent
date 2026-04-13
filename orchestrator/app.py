@@ -42,7 +42,7 @@ from streamlit_cookies_controller import CookieController
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="bluebot",
+    page_title="bluebot Assistant",
     page_icon="💧",
     layout="wide",
 )
@@ -254,7 +254,7 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 
 st.markdown(
-    "<h2 style='text-align: center; margin-bottom: 0.25rem;'>💧 bluebot assistant</h2>",
+    "<h2 style='text-align: center; margin-bottom: 0.25rem;'>💧 bluebot Assistant</h2>",
     unsafe_allow_html=True,
 )
 
