@@ -170,8 +170,8 @@ def _render_login_form(cookies=None) -> None:
     logo_html = (
         f"<img src='{logo}' style='"
         "width:88px;height:88px;border-radius:20px;"
-        "object-fit:cover;box-shadow:0 4px 18px rgba(0,0,0,0.18);"
-        "margin-bottom:1.25rem;'>"
+        "object-fit:cover;box-shadow:0 4px 14px rgba(58,111,168,0.20);"
+        "margin-bottom:1.1rem;display:block;margin-left:auto;margin-right:auto;'>"
         if logo else ""
     )
 
@@ -182,60 +182,58 @@ def _render_login_form(cookies=None) -> None:
         header[data-testid="stHeader"],
         footer {{ display: none !important; }}
 
-        /* Full-page gradient background */
+        /* Light full-page background */
         [data-testid="stAppViewContainer"] {{
-            background: linear-gradient(135deg, #1a2a4a 0%, #2d4a7a 55%, #3a6fa8 100%);
+            background: linear-gradient(160deg, #e8f0fb 0%, #dce7f8 50%, #cfddf6 100%);
             min-height: 100vh;
         }}
         [data-testid="stMain"] {{
             background: transparent !important;
         }}
 
-        /* Card */
-        .login-card {{
-            background: rgba(255,255,255,0.97);
-            border-radius: 20px;
-            padding: 2.75rem 2.5rem 2.25rem;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.35);
-            max-width: 420px;
-            margin: 0 auto;
+        /* Card header block */
+        .login-header {{
             text-align: center;
+            padding: 2.5rem 1rem 0.25rem;
         }}
-        .login-card h1 {{
-            font-size: 1.65rem;
+        .login-header h1 {{
+            font-size: 1.6rem;
             font-weight: 700;
             color: #1a2a4a;
             margin: 0 0 0.3rem;
             letter-spacing: -0.3px;
         }}
-        .login-card .subtitle {{
-            color: #6b7a99;
-            font-size: 0.95rem;
-            margin-bottom: 2rem;
+        .login-header .subtitle {{
+            color: #5a6a88;
+            font-size: 0.93rem;
+            margin: 0 0 1.75rem;
         }}
 
-        /* Inputs */
+        /* Inputs — center labels */
         div[data-testid="stForm"] label p {{
             font-weight: 500 !important;
             color: #374151 !important;
             font-size: 0.88rem !important;
+            text-align: left !important;
         }}
         div[data-testid="stForm"] input {{
             border-radius: 10px !important;
-            border: 1.5px solid #d1d9e8 !important;
+            border: 1.5px solid #c8d8ee !important;
             padding: 0.55rem 0.85rem !important;
             font-size: 0.95rem !important;
-            transition: border-color 0.2s;
+            background: #f8faff !important;
+            transition: border-color 0.2s, box-shadow 0.2s;
         }}
         div[data-testid="stForm"] input:focus {{
-            border-color: #3a6fa8 !important;
-            box-shadow: 0 0 0 3px rgba(58,111,168,0.15) !important;
+            border-color: #4a80c0 !important;
+            box-shadow: 0 0 0 3px rgba(74,128,192,0.15) !important;
+            background: #ffffff !important;
         }}
 
         /* Sign-in button */
         div[data-testid="stForm"] button[kind="primaryFormSubmit"],
         div[data-testid="stForm"] button[data-testid="baseButton-primaryFormSubmit"] {{
-            background: linear-gradient(135deg, #2d4a7a, #3a6fa8) !important;
+            background: linear-gradient(135deg, #3a5f9a, #4a80c0) !important;
             color: white !important;
             border: none !important;
             border-radius: 10px !important;
@@ -246,12 +244,20 @@ def _render_login_form(cookies=None) -> None:
             transition: opacity 0.2s, transform 0.1s;
         }}
         div[data-testid="stForm"] button[kind="primaryFormSubmit"]:hover {{
-            opacity: 0.9 !important;
+            opacity: 0.88 !important;
             transform: translateY(-1px) !important;
+        }}
+
+        /* White card around the center column */
+        div[data-testid="column"]:nth-child(2) {{
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 8px 36px rgba(58,111,168,0.13);
+            padding-bottom: 2rem !important;
         }}
         </style>
 
-        <div class="login-card">
+        <div class="login-header">
             {logo_html}
             <h1>bluebot Assistant</h1>
             <p class="subtitle">Sign in to your account to continue</p>
@@ -260,8 +266,8 @@ def _render_login_form(cookies=None) -> None:
         unsafe_allow_html=True,
     )
 
-    # Narrow centre column for the form
-    _, col, _ = st.columns([1, 1.25, 1])
+    # Everything lives in the centre column which is styled as the white card
+    _, col, _ = st.columns([1, 1.15, 1])
     with col:
         with st.form("login_form", border=False):
             username  = st.text_input("Email", placeholder="you@example.com")
