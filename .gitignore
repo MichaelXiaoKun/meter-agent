@@ -38,5 +38,5 @@ env/
 *.swp
 *.swo
 
-# Streamlit
+# Streamlit — keep the example, exclude the real secrets file
 .streamlit/secrets.toml

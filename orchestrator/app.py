@@ -29,6 +29,14 @@ st.set_page_config(
     layout="wide",
 )
 
+# Promote Streamlit secrets into environment variables so the Anthropic SDK
+# and sub-agent subprocesses can pick them up via os.environ.
+for _secret_key in ("ANTHROPIC_API_KEY", "BLUEBOT_TOKEN"):
+    if _secret_key not in os.environ:
+        _val = st.secrets.get(_secret_key, "")
+        if _val:
+            os.environ[_secret_key] = _val
+
 # ---------------------------------------------------------------------------
 # Session state initialisation
 # ---------------------------------------------------------------------------
@@ -194,7 +202,7 @@ with st.sidebar:
     with st.expander("⚙️ Settings"):
         token = st.text_input(
             "Bearer token",
-            value=os.environ.get("BLUEBOT_TOKEN", ""),
+            value=os.environ.get("BLUEBOT_TOKEN", st.secrets.get("BLUEBOT_TOKEN", "")),
             type="password",
             help="Your bluebot API token. You can also set the BLUEBOT_TOKEN env var.",
         )
