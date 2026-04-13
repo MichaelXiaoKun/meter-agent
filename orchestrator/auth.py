@@ -38,6 +38,7 @@ def _logo_b64() -> str:
 
 _COOKIE_TOKEN = "bluebot_token"
 _COOKIE_USER  = "bluebot_user"
+_MAX_COOKIE_RETRIES = 8  # ~8 fast reruns ≈ < 1 second; enough for any JS round-trip
 
 
 # ---------------------------------------------------------------------------
@@ -134,30 +135,32 @@ def login_gate(cookies=None) -> str:
 
     # 2. Restore from browser cookie (survives hard refresh).
     #
-    #    TIMING NOTE: CookieController renders a hidden JS component that reads
-    #    cookies and sends them back to Python. On the very first render after a
-    #    hard refresh, that round-trip hasn't completed yet, so cookies.get()
-    #    returns None for everything — even if the cookie exists. The component
-    #    automatically triggers a second rerun once JS finishes.
+    #    CookieController renders a hidden JS component that reads browser
+    #    cookies and sends them to Python via setComponentValue().  On the
+    #    first render after a page load the JS hasn't run yet, so
+    #    cookies.get() returns None even if the cookie exists.
     #
-    #    Strategy: on the first render (_auth_cookies_checked not set), pause and
-    #    let the rerun happen. On all subsequent renders the values are real.
+    #    We actively rerun (_MAX_COOKIE_RETRIES times) rather than using
+    #    st.stop(), because st.stop() relies on CookieController triggering
+    #    the next render — a race condition that can fail.  st.rerun() is
+    #    self-driven: each fast cycle gives the component another chance to
+    #    mount and deliver its value.  Typically done in 1-2 cycles.
     if cookies is not None:
-        if not st.session_state.get("_auth_cookies_checked"):
-            # Mark that we've waited one cycle, then stop — CookieController's
-            # JS will fire a rerun and we'll reach step 2 again with real values.
-            st.session_state._auth_cookies_checked = True
-            st.stop()
-
         try:
             cookie_token = cookies.get(_COOKIE_TOKEN) or ""
             cookie_user  = cookies.get(_COOKIE_USER)  or ""
             if _token_valid(cookie_token):
                 st.session_state.auth_token = cookie_token
                 st.session_state.auth_user  = cookie_user
+                st.session_state.pop("_auth_cookie_retries", None)
                 return cookie_token
         except Exception:
-            pass
+            cookie_token = ""
+
+        retries = st.session_state.get("_auth_cookie_retries", 0)
+        if retries < _MAX_COOKIE_RETRIES:
+            st.session_state._auth_cookie_retries = retries + 1
+            st.rerun()  # active retry — don't wait passively for CookieController
 
     # 3. Show login form — does not return
     _render_login_form(cookies)
@@ -168,10 +171,11 @@ def logout(cookies=None) -> None:
     """Clear the in-session token and browser cookie, then rerun to show the login page."""
     st.session_state.pop("auth_token", None)
     st.session_state.pop("auth_user",  None)
+    st.session_state._auth_cookie_retries = _MAX_COOKIE_RETRIES
     if cookies is not None:
         try:
-            cookies.remove(_COOKIE_TOKEN)
-            cookies.remove(_COOKIE_USER)
+            cookies.set(_COOKIE_TOKEN, "", max_age=0)
+            cookies.set(_COOKIE_USER,  "", max_age=0)
         except Exception:
             pass
     st.rerun()
