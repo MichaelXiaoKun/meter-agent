@@ -3,9 +3,13 @@ auth.py — Auth0 Resource Owner Password Credentials login gate for Streamlit.
 
 Mirrors the JS get_token() flow:
   1. Check session state for a valid (non-expired) JWT.
-  2. Check a local file cache (.cache.token) for a valid JWT.
-  3. If neither exists, show a login form and call Auth0 /oauth/token.
-  4. Cache the token and store it in session state.
+  2. If absent, show a login form and call Auth0 /oauth/token.
+  3. Store the token in session state for the duration of the browser session.
+
+Token persistence is per-browser-session via st.session_state only.
+A server-side file cache is intentionally NOT used because all browser
+sessions on Streamlit Cloud share the same filesystem, which would let any
+user read another user's token.
 
 Auth0 config is read from Streamlit secrets or environment variables using
 the pattern: AUTH0_DOMAIN_{ENV}, AUTH0_API_AUDIENCE_{ENV}, AUTH0_CLIENT_ID_{ENV}
@@ -13,16 +17,12 @@ with AUTH0_REALM shared across environments.
 Set BLUEBOT_ENV to select the environment (default: PROD).
 """
 
-import json
 import os
 import time
-from pathlib import Path
 
 import httpx
 import jwt
 import streamlit as st
-
-_CACHE_PATH = Path(__file__).parent / ".cache.token"
 
 
 # ---------------------------------------------------------------------------
@@ -61,35 +61,6 @@ def _token_valid(token: str) -> bool:
         return False
 
 
-def _load_cached_token() -> tuple[str, str] | tuple[None, None]:
-    """Return (username, token) from the file cache, or (None, None)."""
-    try:
-        data = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
-        token = data.get("token", "")
-        if _token_valid(token):
-            return data.get("username", ""), token
-    except Exception:
-        pass
-    return None, None
-
-
-def _save_cached_token(username: str, token: str) -> None:
-    try:
-        _CACHE_PATH.write_text(
-            json.dumps({"username": username, "token": token}),
-            encoding="utf-8",
-        )
-    except Exception:
-        pass
-
-
-def _clear_cached_token() -> None:
-    try:
-        _CACHE_PATH.unlink(missing_ok=True)
-    except Exception:
-        pass
-
-
 def _authenticate(cfg: dict, username: str, password: str) -> tuple[str | None, str | None]:
     """Call Auth0 ROPC endpoint. Returns (access_token, None) or (None, error_msg)."""
     try:
@@ -125,32 +96,22 @@ def login_gate() -> str:
     """
     Enforce authentication before the main app renders.
 
-    Returns the bearer token if already authenticated.
-    Renders the login form and calls st.stop() if not — so callers can
-    simply do:  token = auth.login_gate()
+    Returns the bearer token if already authenticated (token lives in
+    st.session_state for the lifetime of the browser session).
+    Renders the login form and calls st.stop() if not authenticated.
     """
-    # 1. Valid token already in session state
     token = st.session_state.get("auth_token", "")
     if _token_valid(token):
         return token
 
-    # 2. Valid token in file cache
-    username, cached_token = _load_cached_token()
-    if cached_token:
-        st.session_state.auth_token  = cached_token
-        st.session_state.auth_user   = username
-        return cached_token
-
-    # 3. Show login form — does not return; calls st.stop() after rendering
     _render_login_form()
     st.stop()
 
 
 def logout() -> None:
-    """Clear the in-session and cached token, then rerun to show the login page."""
+    """Clear the in-session token and rerun to show the login page."""
     st.session_state.pop("auth_token", None)
     st.session_state.pop("auth_user",  None)
-    _clear_cached_token()
     st.rerun()
 
 
@@ -203,7 +164,6 @@ def _render_login_form() -> None:
             if token:
                 st.session_state.auth_token = token
                 st.session_state.auth_user  = username
-                _save_cached_token(username, token)
                 st.rerun()
             else:
                 st.error(f"Login failed: {error}")
