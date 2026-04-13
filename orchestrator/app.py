@@ -418,7 +418,7 @@ if active_input:
                     pending_plot_paths.append(p)
 
     try:
-        reply = run_turn(
+        run_turn(
             st.session_state.messages,
             token,
             on_event=_on_event,
@@ -433,15 +433,13 @@ if active_input:
         )
         update_title(st.session_state.conversation_id, st.session_state.messages)
 
-        if _IMAGE_RE.search(reply) or not _streamed_chunks:
-            assistant_placeholder.empty()
-            _render_message("assistant", reply)
-
-        for path in pending_plot_paths:
-            _show_image(path)
+        # Rerun so the chat input is re-enabled (_is_processing becomes False)
+        # and the history loop re-renders the full conversation cleanly.
+        st.rerun()
 
     except Exception as exc:
         status_placeholder.empty()
         assistant_placeholder.empty()
         st.error(f"Error: {exc}")
         del st.session_state.messages[checkpoint + 1:]
+        st.rerun()
