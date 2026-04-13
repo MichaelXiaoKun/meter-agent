@@ -19,6 +19,18 @@ import time
 
 import streamlit as st
 
+# Promote Streamlit secrets into environment variables BEFORE importing any
+# module that reads os.environ at import/call time (store, agent, auth).
+# DATABASE_URL must be set before store._use_postgres() is evaluated.
+for _secret_key in ("ANTHROPIC_API_KEY", "DATABASE_URL"):
+    if _secret_key not in os.environ:
+        try:
+            _val = st.secrets.get(_secret_key, "")
+        except Exception:
+            _val = ""
+        if _val:
+            os.environ[_secret_key] = _val
+
 import auth
 from agent import run_turn
 import store
@@ -34,22 +46,14 @@ st.set_page_config(
     layout="wide",
 )
 
-# Promote Streamlit secrets into environment variables so the Anthropic SDK
-# and sub-agent subprocesses can pick them up via os.environ.
-for _secret_key in ("ANTHROPIC_API_KEY",):
-    if _secret_key not in os.environ:
-        try:
-            _val = st.secrets.get(_secret_key, "")
-        except Exception:
-            _val = ""
-        if _val:
-            os.environ[_secret_key] = _val
-
 # ---------------------------------------------------------------------------
 # Authentication — blocks rendering until the user is logged in
 # ---------------------------------------------------------------------------
 
 token = auth.login_gate()  # returns bearer token or calls st.stop()
+
+# Stable user identifier for conversation scoping.
+_uid: str = st.session_state.get("auth_user", "") or ""
 
 # ---------------------------------------------------------------------------
 # Session state initialisation
@@ -77,11 +81,11 @@ def _new_conversation() -> None:
 if "conversation_id" not in st.session_state:
     # Restore from URL on page refresh, fall back to most-recent or pending.
     url_conv = st.query_params.get("conv")
-    existing_ids = {c["id"] for c in store.list_conversations()}
+    existing_ids = {c["id"] for c in store.list_conversations(_uid)}
     if url_conv and url_conv in existing_ids:
         _load_conversation(url_conv)
     else:
-        convs = store.list_conversations()
+        convs = store.list_conversations(_uid)
         if convs:
             _load_conversation(convs[0]["id"])
         else:
@@ -191,7 +195,7 @@ with st.sidebar:
         _new_conversation()
         st.rerun()
 
-    convs = store.list_conversations()
+    convs = store.list_conversations(_uid)
     for c in convs:
         label    = c["title"] if c["title"] else "New conversation"
         date_str = _relative_date(c["updated_at"])
@@ -204,7 +208,7 @@ with st.sidebar:
                 st.rerun()
         with col_del:
             if st.button("✕", key=f"del_{c['id']}", help="Delete conversation"):
-                store.delete_conversation(c["id"])
+                store.delete_conversation(c["id"], _uid)
                 if is_active:
                     remaining = [r for r in convs if r["id"] != c["id"]]
                     if remaining:
@@ -350,7 +354,7 @@ if active_input:
         is_resume = bool(_resume and not user_input)
 
         if not is_resume and st.session_state.conversation_id is None:
-            conv_id = store.create_conversation()
+            conv_id = store.create_conversation(_uid)
             st.session_state.conversation_id = conv_id
             st.query_params["conv"] = conv_id
 
