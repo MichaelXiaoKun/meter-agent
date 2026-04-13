@@ -25,16 +25,19 @@ import httpx
 import jwt
 import streamlit as st
 
+_LOGO_PATH = Path(__file__).parent.parent / "bluebot.jpg"
+
+
+def _logo_b64() -> str:
+    """Return the logo as a base64 data URI, or empty string if not found."""
+    try:
+        data = _LOGO_PATH.read_bytes()
+        return "data:image/jpeg;base64," + base64.b64encode(data).decode()
+    except Exception:
+        return ""
+
 _COOKIE_TOKEN = "bluebot_token"
 _COOKIE_USER  = "bluebot_user"
-
-# Load the logo once at module level as a base64 data URI.
-_LOGO_PATH = Path(__file__).parent.parent / "bluebot.jpg"
-try:
-    _LOGO_B64 = base64.b64encode(_LOGO_PATH.read_bytes()).decode()
-    _LOGO_URI = f"data:image/jpeg;base64,{_LOGO_B64}"
-except Exception:
-    _LOGO_URI = ""
 
 
 # ---------------------------------------------------------------------------
@@ -163,87 +166,111 @@ def logout(cookies=None) -> None:
 # ---------------------------------------------------------------------------
 
 def _render_login_form(cookies=None) -> None:
+    logo = _logo_b64()
     logo_html = (
-        f"<img src='{_LOGO_URI}' style='width:72px;height:72px;border-radius:16px;"
-        "display:block;margin:0 auto 1rem auto;'>"
-        if _LOGO_URI else ""
+        f"<img src='{logo}' style='"
+        "width:88px;height:88px;border-radius:20px;"
+        "object-fit:cover;box-shadow:0 4px 18px rgba(0,0,0,0.18);"
+        "margin-bottom:1.25rem;'>"
+        if logo else ""
     )
 
     st.markdown(
         f"""
         <style>
-        /* Full-page branded background */
+        /* Hide Streamlit chrome on the login page */
+        header[data-testid="stHeader"],
+        footer {{ display: none !important; }}
+
+        /* Full-page gradient background */
         [data-testid="stAppViewContainer"] {{
-            background: linear-gradient(135deg, #4a7aad 0%, #5b8fc2 50%, #7aadd4 100%);
+            background: linear-gradient(135deg, #1a2a4a 0%, #2d4a7a 55%, #3a6fa8 100%);
             min-height: 100vh;
         }}
         [data-testid="stMain"] {{
             background: transparent !important;
         }}
-        /* Hide default header */
-        header[data-testid="stHeader"] {{ display: none; }}
+
         /* Card */
         .login-card {{
-            background: #ffffff;
-            border-radius: 16px;
-            padding: 2.5rem 2.5rem 2rem 2.5rem;
-            box-shadow: 0 8px 32px rgba(26,42,74,0.18);
-            max-width: 400px;
-            margin: 6vh auto 0 auto;
-        }}
-        .login-brand {{
+            background: rgba(255,255,255,0.97);
+            border-radius: 20px;
+            padding: 2.75rem 2.5rem 2.25rem;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+            max-width: 420px;
+            margin: 0 auto;
             text-align: center;
-            font-size: 1.7rem;
+        }}
+        .login-card h1 {{
+            font-size: 1.65rem;
             font-weight: 700;
             color: #1a2a4a;
-            margin-bottom: 0.2rem;
-            letter-spacing: -0.5px;
+            margin: 0 0 0.3rem;
+            letter-spacing: -0.3px;
         }}
-        .login-sub {{
-            text-align: center;
-            color: #7a8fa6;
-            font-size: 0.92rem;
-            margin-bottom: 1.8rem;
+        .login-card .subtitle {{
+            color: #6b7a99;
+            font-size: 0.95rem;
+            margin-bottom: 2rem;
         }}
-        /* Style Streamlit form inputs inside the card */
-        div[data-testid="stForm"] {{
-            border: none !important;
-            padding: 0 !important;
+
+        /* Inputs */
+        div[data-testid="stForm"] label p {{
+            font-weight: 500 !important;
+            color: #374151 !important;
+            font-size: 0.88rem !important;
         }}
         div[data-testid="stForm"] input {{
-            border-radius: 8px !important;
-            border: 1.5px solid #d0dae6 !important;
+            border-radius: 10px !important;
+            border: 1.5px solid #d1d9e8 !important;
+            padding: 0.55rem 0.85rem !important;
+            font-size: 0.95rem !important;
+            transition: border-color 0.2s;
         }}
-        div[data-testid="stForm"] button[kind="primaryFormSubmit"] {{
-            background: #3a6fa8 !important;
-            border-radius: 8px !important;
+        div[data-testid="stForm"] input:focus {{
+            border-color: #3a6fa8 !important;
+            box-shadow: 0 0 0 3px rgba(58,111,168,0.15) !important;
+        }}
+
+        /* Sign-in button */
+        div[data-testid="stForm"] button[kind="primaryFormSubmit"],
+        div[data-testid="stForm"] button[data-testid="baseButton-primaryFormSubmit"] {{
+            background: linear-gradient(135deg, #2d4a7a, #3a6fa8) !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 10px !important;
+            font-size: 1rem !important;
             font-weight: 600 !important;
-            letter-spacing: 0.3px !important;
+            padding: 0.65rem !important;
+            margin-top: 0.5rem !important;
+            transition: opacity 0.2s, transform 0.1s;
         }}
         div[data-testid="stForm"] button[kind="primaryFormSubmit"]:hover {{
-            background: #2d5a8a !important;
+            opacity: 0.9 !important;
+            transform: translateY(-1px) !important;
         }}
         </style>
+
         <div class="login-card">
             {logo_html}
-            <div class="login-brand">bluebot</div>
-            <div class="login-sub">Sign in to continue</div>
+            <h1>bluebot Assistant</h1>
+            <p class="subtitle">Sign in to your account to continue</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # Overlay the Streamlit form inside the card area using a narrow column.
-    _, col, _ = st.columns([1, 1.6, 1])
+    # Narrow centre column for the form
+    _, col, _ = st.columns([1, 1.25, 1])
     with col:
         with st.form("login_form", border=False):
-            username  = st.text_input("Username", placeholder="you@example.com", label_visibility="collapsed")
-            password  = st.text_input("Password", placeholder="Password", type="password", label_visibility="collapsed")
-            submitted = st.form_submit_button("Sign in", use_container_width=True, type="primary")
+            username  = st.text_input("Email", placeholder="you@example.com")
+            password  = st.text_input("Password", type="password", placeholder="••••••••")
+            submitted = st.form_submit_button("Sign in", use_container_width=True)
 
         if submitted:
             if not username or not password:
-                st.error("Please enter both username and password.")
+                st.error("Please enter both email and password.")
                 return
 
             cfg = _auth0_config()
@@ -261,15 +288,13 @@ def _render_login_form(cookies=None) -> None:
             if token:
                 st.session_state.auth_token = token
                 st.session_state.auth_user  = username
-                # Persist to browser cookie so page refreshes don't log out.
-                # Cookie expires when the JWT itself expires.
                 if cookies is not None:
                     try:
                         max_age = _token_max_age(token)
                         cookies.set(_COOKIE_TOKEN, token,    max_age=max_age)
                         cookies.set(_COOKIE_USER,  username, max_age=max_age)
                     except Exception:
-                        pass  # cookie write failure is non-fatal
+                        pass
                 st.rerun()
             else:
                 st.error(f"Login failed: {error}")
