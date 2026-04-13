@@ -35,6 +35,7 @@ import auth
 from agent import run_turn
 import store
 from summarizer import update_title
+from streamlit_cookies_controller import CookieController
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -47,10 +48,18 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
+# Cookie controller — must be instantiated early so cookies are readable
+# before auth.login_gate() runs.  Each browser has its own isolated cookie
+# store, so this gives every user an independent login that survives refresh.
+# ---------------------------------------------------------------------------
+
+_cookies = CookieController()
+
+# ---------------------------------------------------------------------------
 # Authentication — blocks rendering until the user is logged in
 # ---------------------------------------------------------------------------
 
-token = auth.login_gate()  # returns bearer token or calls st.stop()
+token = auth.login_gate(_cookies)  # returns bearer token or calls st.stop()
 
 # Stable user identifier for conversation scoping.
 _uid: str = st.session_state.get("auth_user", "") or ""
@@ -237,7 +246,7 @@ with st.sidebar:
     if _user:
         st.caption(f"Signed in as **{_user}**")
     if st.button("Sign out", use_container_width=True):
-        auth.logout()
+        auth.logout(_cookies)
 
 
 # ---------------------------------------------------------------------------
