@@ -16,6 +16,7 @@ import json
 import os
 import re
 import time
+from pathlib import Path
 
 import streamlit as st
 
@@ -45,6 +46,63 @@ st.set_page_config(
     page_title="bluebot Assistant",
     page_icon="💧",
     layout="wide",
+)
+
+# ---------------------------------------------------------------------------
+# Global styles
+# ---------------------------------------------------------------------------
+
+def _app_logo_b64() -> str:
+    try:
+        p = Path(__file__).parent.parent / "bluebot.jpg"
+        return "data:image/jpeg;base64," + base64.b64encode(p.read_bytes()).decode()
+    except Exception:
+        return ""
+
+_LOGO_SRC = _app_logo_b64()
+
+st.markdown(
+    f"""
+    <style>
+    /* ── Hide Streamlit chrome ─────────────────────────────────────────── */
+    footer {{ display: none !important; }}
+    h1 a, h2 a, h3 a {{ display: none !important; }}
+
+    /* ── Sidebar ───────────────────────────────────────────────────────── */
+    [data-testid="stSidebar"] {{
+        background: #f0f5ff !important;
+        border-right: 1px solid #dce7f8;
+    }}
+    [data-testid="stSidebar"] .stButton > button {{
+        border-radius: 8px !important;
+        font-size: 0.85rem !important;
+    }}
+    /* "New conversation" button accent */
+    [data-testid="stSidebar"] .stButton:first-of-type > button {{
+        background: linear-gradient(135deg, #3a5f9a, #4a80c0) !important;
+        color: white !important;
+        border: none !important;
+        font-weight: 600 !important;
+    }}
+
+    /* ── Chat messages ─────────────────────────────────────────────────── */
+    [data-testid="stChatMessage"] {{
+        border-radius: 12px !important;
+        margin-bottom: 0.25rem !important;
+    }}
+
+    /* ── Chat input ────────────────────────────────────────────────────── */
+    [data-testid="stChatInput"] textarea {{
+        border-radius: 12px !important;
+        border: 1.5px solid #c8d8ee !important;
+    }}
+    [data-testid="stChatInput"] textarea:focus {{
+        border-color: #4a80c0 !important;
+        box-shadow: 0 0 0 3px rgba(74,128,192,0.12) !important;
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 # ---------------------------------------------------------------------------
@@ -198,7 +256,19 @@ def _render_message(role: str, content) -> None:
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    st.caption("Conversations")
+    # Sidebar header with logo
+    _logo_img = (
+        f"<img src='{_LOGO_SRC}' style='width:32px;height:32px;border-radius:8px;"
+        "object-fit:cover;margin-right:0.6rem;vertical-align:middle;'>"
+        if _LOGO_SRC else ""
+    )
+    st.markdown(
+        f"<div style='display:flex;align-items:center;padding:0.5rem 0 0.75rem;'>"
+        f"{_logo_img}"
+        f"<span style='font-weight:700;font-size:1rem;color:#1a2a4a;'>bluebot</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
 
     if st.button("＋  New conversation", use_container_width=True):
         _new_conversation()
@@ -253,9 +323,18 @@ with st.sidebar:
 # Page header
 # ---------------------------------------------------------------------------
 
+_logo_header = (
+    f"<img src='{_LOGO_SRC}' style='width:38px;height:38px;border-radius:10px;"
+    "object-fit:cover;margin-right:0.6rem;vertical-align:middle;"
+    "box-shadow:0 2px 8px rgba(58,111,168,0.18);'>"
+    if _LOGO_SRC else "💧 "
+)
 st.markdown(
-    "<style>h1 a, h2 a, h3 a { display: none !important; }</style>"
-    "<h2 style='text-align: center; margin-bottom: 0.25rem;'>💧 bluebot Assistant</h2>",
+    f"<div style='text-align:center;padding:0.6rem 0 0.1rem;'>"
+    f"<span style='display:inline-flex;align-items:center;justify-content:center;"
+    f"font-size:1.45rem;font-weight:700;color:#1a2a4a;letter-spacing:-0.3px;'>"
+    f"{_logo_header}bluebot Assistant"
+    f"</span></div>",
     unsafe_allow_html=True,
 )
 
@@ -293,25 +372,34 @@ else:
         """
         <div style="
             max-width: 560px;
-            margin: 3rem auto 2rem auto;
-            padding: 2rem 2.5rem;
-            border-radius: 12px;
-            border: 1px solid rgba(128,128,128,0.2);
-            background: rgba(128,128,128,0.04);
+            margin: 3.5rem auto 2rem auto;
+            padding: 2.25rem 2.5rem 2rem;
+            border-radius: 16px;
+            border: 1px solid #dce7f8;
+            background: linear-gradient(160deg, #f5f8ff 0%, #edf3fc 100%);
+            box-shadow: 0 4px 20px rgba(58,111,168,0.08);
             text-align: center;
         ">
-            <p style="font-size: 1.05rem; font-weight: 600; margin-bottom: 0.5rem;">
+            <p style="font-size: 1.1rem; font-weight: 700; color: #1a2a4a; margin-bottom: 0.4rem;">
                 What would you like to analyse?
             </p>
-            <p style="color: grey; font-size: 0.9rem; margin-bottom: 1.5rem;">
+            <p style="color: #5a6a88; font-size: 0.92rem; margin-bottom: 1.75rem;">
                 Ask about any flow meter — health checks, data analysis, trends.
             </p>
-            <p style="font-size: 0.88rem; color: grey;">Try asking:</p>
-            <ul style="list-style: none; padding: 0; font-size: 0.9rem; line-height: 2;">
-                <li>💬 "Check the status of meter ABC-123"</li>
-                <li>💬 "Analyse flow data for device XYZ over the last 7 days"</li>
-                <li>💬 "Is meter DEF-456 online and healthy?"</li>
-            </ul>
+            <div style="display:flex; flex-direction:column; gap:0.6rem;">
+                <div style="background:white;border:1px solid #dce7f8;border-radius:10px;
+                            padding:0.65rem 1rem;font-size:0.9rem;color:#374151;cursor:default;">
+                    💬 &ldquo;Check the status of meter ABC-123&rdquo;
+                </div>
+                <div style="background:white;border:1px solid #dce7f8;border-radius:10px;
+                            padding:0.65rem 1rem;font-size:0.9rem;color:#374151;cursor:default;">
+                    💬 &ldquo;Analyse flow data for device XYZ over the last 7 days&rdquo;
+                </div>
+                <div style="background:white;border:1px solid #dce7f8;border-radius:10px;
+                            padding:0.65rem 1rem;font-size:0.9rem;color:#374151;cursor:default;">
+                    💬 &ldquo;Is meter DEF-456 online and healthy?&rdquo;
+                </div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
