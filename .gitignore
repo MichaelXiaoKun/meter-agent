@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+*.env
+.config.json
+
+# SQLite database (conversation history — local only)
+*.db
+*.sqlite
+*.sqlite3
+
+# Generated plot images
+**/plots/*.png
+**/plots/*.jpg
+**/plots/*.svg
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Streamlit
+.streamlit/secrets.toml
