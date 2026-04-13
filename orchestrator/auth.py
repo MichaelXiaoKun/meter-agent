@@ -191,24 +191,6 @@ def _render_login_form(cookies=None) -> None:
             background: transparent !important;
         }}
 
-        /* Card header block */
-        .login-header {{
-            text-align: center;
-            padding: 2.5rem 1rem 0.25rem;
-        }}
-        .login-header h1 {{
-            font-size: 1.6rem;
-            font-weight: 700;
-            color: #1a2a4a;
-            margin: 0 0 0.3rem;
-            letter-spacing: -0.3px;
-        }}
-        .login-header .subtitle {{
-            color: #5a6a88;
-            font-size: 0.93rem;
-            margin: 0 0 1.75rem;
-        }}
-
         /* Inputs — center labels */
         div[data-testid="stForm"] label p {{
             font-weight: 500 !important;
@@ -256,19 +238,29 @@ def _render_login_form(cookies=None) -> None:
             padding-bottom: 2rem !important;
         }}
         </style>
-
-        <div class="login-header">
-            {logo_html}
-            <h1>bluebot Assistant</h1>
-            <p class="subtitle">Sign in to your account to continue</p>
-        </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # Everything lives in the centre column which is styled as the white card
+    # Everything lives in the centre column which is styled as the white card.
+    # Logo + title rendered inside the column so they share the same center axis.
     _, col, _ = st.columns([1, 1.15, 1])
     with col:
+        st.markdown(
+            f"""
+            <div style="text-align:center; padding: 2.25rem 0 1.25rem;">
+                {logo_html}
+                <h1 style="font-size:1.6rem;font-weight:700;color:#1a2a4a;
+                           margin:0 0 0.3rem;letter-spacing:-0.3px;">
+                    bluebot Assistant
+                </h1>
+                <p style="color:#5a6a88;font-size:0.93rem;margin:0 0 1.5rem;">
+                    Sign in to your account to continue
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         with st.form("login_form", border=False):
             username  = st.text_input("Email", placeholder="you@example.com")
             password  = st.text_input("Password", type="password", placeholder="••••••••")
