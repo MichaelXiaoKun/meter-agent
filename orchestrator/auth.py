@@ -126,13 +126,29 @@ def login_gate(cookies=None) -> str:
     Returns the bearer token if already authenticated.
     Renders the login form and calls st.stop() if not.
     """
-    # 1. Fast path — valid token already in session state
+    # 1. Fast path — valid token already in session state (same browser session,
+    #    no hard refresh).
     token = st.session_state.get("auth_token", "")
     if _token_valid(token):
         return token
 
-    # 2. Restore from browser cookie (survives hard refresh)
+    # 2. Restore from browser cookie (survives hard refresh).
+    #
+    #    TIMING NOTE: CookieController renders a hidden JS component that reads
+    #    cookies and sends them back to Python. On the very first render after a
+    #    hard refresh, that round-trip hasn't completed yet, so cookies.get()
+    #    returns None for everything — even if the cookie exists. The component
+    #    automatically triggers a second rerun once JS finishes.
+    #
+    #    Strategy: on the first render (_auth_cookies_checked not set), pause and
+    #    let the rerun happen. On all subsequent renders the values are real.
     if cookies is not None:
+        if not st.session_state.get("_auth_cookies_checked"):
+            # Mark that we've waited one cycle, then stop — CookieController's
+            # JS will fire a rerun and we'll reach step 2 again with real values.
+            st.session_state._auth_cookies_checked = True
+            st.stop()
+
         try:
             cookie_token = cookies.get(_COOKIE_TOKEN) or ""
             cookie_user  = cookies.get(_COOKIE_USER)  or ""
@@ -141,7 +157,7 @@ def login_gate(cookies=None) -> str:
                 st.session_state.auth_user  = cookie_user
                 return cookie_token
         except Exception:
-            pass  # cookies not yet available on first render cycle
+            pass
 
     # 3. Show login form — does not return
     _render_login_form(cookies)
