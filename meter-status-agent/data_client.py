@@ -17,6 +17,10 @@ def _status_base_url() -> str:
     return os.environ.get("BLUEBOT_METER_STATUS_BASE", _DEFAULT_STATUS_BASE).rstrip("/")
 
 
+# Required by bluebot management/status API for admin-style queries.
+_STATUS_HEADERS_EXTRA = {"x-admin-query": "true"}
+
+
 def fetch_meter_status(
     device_id: str,
     token: Optional[str] = None,
@@ -39,7 +43,7 @@ def fetch_meter_status(
 
     base = _status_base_url()
     url = f"{base}/{device_id}"
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {**_STATUS_HEADERS_EXTRA, "Authorization": f"Bearer {token}"}
 
     try:
         response = httpx.get(url, headers=headers, timeout=15)

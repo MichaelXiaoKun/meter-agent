@@ -21,6 +21,11 @@ _DEFAULT_FLOW_BASE = "https://prod.bluebot.com/flow/v2/high-res/data"
 
 def _flow_base_url() -> str:
     return os.environ.get("BLUEBOT_FLOW_HIGH_RES_BASE", _DEFAULT_FLOW_BASE).rstrip("/")
+
+
+# Required by bluebot flow API for admin/management-style queries.
+_FLOW_HEADERS_EXTRA = {"x-admin-query": "true"}
+
 CHUNK_SECONDS = 3600
 
 
@@ -84,7 +89,7 @@ def fetch_flow_data(
         "fields": "quality,flow_amount,flow_rate",
         "format": "csv",
     }
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {**_FLOW_HEADERS_EXTRA, "Authorization": f"Bearer {token}"}
 
     try:
         response = httpx.get(url, params=params, headers=headers, timeout=30)
