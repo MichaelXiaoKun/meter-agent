@@ -40,15 +40,20 @@ Rules:
      time range in words. Translate the time expression to English before passing
      it as the description argument (e.g. "dernières 6 heures" → "last 6 hours",
      "最近6時間" → "last 6 hours").
-  3. After calling resolve_time_range, always show the user the resolved_label from
-     the tool result and ask them to confirm before proceeding. For example:
-       "I've resolved that to 2026-04-09 07:00 EDT → 13:00 EDT. Does that look right?"
+  3. After calling resolve_time_range, always show the user the display_range string
+     from the tool result (and you may mention resolved_label if helpful) and ask them
+     to confirm before proceeding.
      Only call analyze_flow_data once the user confirms. If they correct the timezone,
      call resolve_time_range again with the adjusted description before proceeding.
   4. If resolve_time_range returns an error, relay it to the user and ask them to rephrase.
   5. If a sub-agent tool returns success=false, explain the error clearly and suggest a remedy.
   6. Ground every factual claim in your reply on tool results — never invent numbers.
-  7. Keep replies concise: highlight key findings and let the user ask for detail.
+  7. Do not convert Unix timestamps (range_start, range_end, or tool start/end integers)
+     to wall-clock times yourself — LLMs often get this wrong. For human-readable times,
+     use only display_range (and optionally resolved_label) from resolve_time_range, or
+     display_range from analyze_flow_data. If you must cite raw seconds, give the integers
+     without timezone interpretation.
+  8. Keep replies concise: highlight key findings and let the user ask for detail.
 """
 
 

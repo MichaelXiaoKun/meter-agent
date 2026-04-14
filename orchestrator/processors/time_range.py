@@ -15,10 +15,59 @@ Timezone behaviour:
     Output Unix timestamps are always UTC-based (as required by the API).
 """
 
+import os
 import re
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import anthropic
+
+
+def _resolve_display_tz(name: str):
+    """
+    Return a tzinfo for display strings.
+
+    - "" or "UTC" → UTC
+    - "local" (case-insensitive) → the process local zone (same as ``datetime.now().astimezone()``;
+      respects the host ``TZ`` env on Unix and system settings on macOS/Windows)
+    - any other string → IANA name via ZoneInfo, or UTC on failure
+    """
+    raw = name.strip()
+    if not raw or raw.upper() == "UTC":
+        return timezone.utc
+    if raw.lower() == "local":
+        tz = datetime.now().astimezone().tzinfo
+        return tz if tz is not None else timezone.utc
+    try:
+        return ZoneInfo(raw)
+    except Exception:
+        return timezone.utc
+
+
+def format_unix_range_display(
+    start: int,
+    end: int,
+    *,
+    tz_name: str | None = None,
+) -> str:
+    """
+    Format an inclusive [start, end] Unix-seconds range for logs and tool output.
+
+    Wall times are computed in Python (not by the LLM). tz_name defaults to the
+    DISPLAY_TZ environment variable, or UTC if unset or invalid.
+
+    Set DISPLAY_TZ=local to use the machine/container local timezone (often UTC on
+    cloud hosts unless TZ is configured). Otherwise use an IANA name, e.g.
+    America/New_York.
+    """
+    name = tz_name if tz_name is not None else os.environ.get("DISPLAY_TZ") or "UTC"
+    tz = _resolve_display_tz(name)
+
+    def _one(ts: int) -> str:
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(tz)
+        return dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+    return f"{_one(start)} → {_one(end)} (Unix {start}–{end})"
 
 # ---------------------------------------------------------------------------
 # Tool schema — registered in the orchestrator agent's TOOLS list
@@ -32,7 +81,9 @@ TOOL_DEFINITION = {
         "Call this tool whenever the user expresses a time range in words before "
         "calling analyze_flow_data. "
         "Examples: 'last 6 hours', 'yesterday', 'this morning', '3 hours ago', "
-        "'April 8 midnight to April 9 midnight EDT', 'past 30 minutes'."
+        "'April 8 midnight to April 9 midnight EDT', 'past 30 minutes'. "
+        "The result includes display_range (server-formatted wall times) and resolved_label; "
+        "prefer display_range when quoting times to the user."
     ),
     "input_schema": {
         "type": "object",
@@ -90,10 +141,13 @@ def _try_relative_fast_path(description: str, now: datetime) -> dict | None:
         f"{start_dt.strftime('%Y-%m-%d %H:%M %Z')} → "
         f"{end_dt.strftime('%Y-%m-%d %H:%M %Z')}"
     )
+    start_s = int(start_dt.timestamp())
+    end_s = int(end_dt.timestamp())
     return {
-        "start":          int(start_dt.timestamp()),
-        "end":            int(end_dt.timestamp()),
+        "start":          start_s,
+        "end":            end_s,
         "resolved_label": label,
+        "display_range":  format_unix_range_display(start_s, end_s),
         "error":          None,
     }
 
@@ -154,6 +208,7 @@ def resolve_time_range(
             "start":           int,        # Unix timestamp, seconds (inclusive)
             "end":             int,        # Unix timestamp, seconds (inclusive)
             "resolved_label":  str | None, # Human-readable confirmation string
+            "display_range":   str | None, # Server-formatted wall times (DISPLAY_TZ / UTC)
             "error":           str | None, # Set when parsing fails
         }
     """
@@ -207,10 +262,13 @@ def resolve_time_range(
             f"{end_dt.astimezone().strftime('%Y-%m-%d %H:%M %Z')}"
         )
 
+        start_s = int(start_dt.timestamp())
+        end_s = int(end_dt.timestamp())
         return {
-            "start":          int(start_dt.timestamp()),
-            "end":            int(end_dt.timestamp()),
+            "start":          start_s,
+            "end":            end_s,
             "resolved_label": label,
+            "display_range":  format_unix_range_display(start_s, end_s),
             "error":          None,
         }
 
@@ -219,5 +277,6 @@ def resolve_time_range(
             "start":          None,
             "end":            None,
             "resolved_label": None,
+            "display_range":  None,
             "error":          f"Could not parse time description '{description}': {exc}",
         }

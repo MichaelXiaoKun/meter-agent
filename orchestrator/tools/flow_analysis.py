@@ -10,6 +10,8 @@ import re
 import subprocess
 import sys
 
+from processors.time_range import format_unix_range_display
+
 _AGENT_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "data-processing-agent")
 )
@@ -25,7 +27,9 @@ TOOL_DEFINITION = {
         "Computes descriptive statistics, detects gaps, zero-flow periods, peaks, "
         "trend direction, and flags low signal-quality readings. "
         "Always call resolve_time_range first when the user expresses the time range "
-        "in natural language (e.g. 'last 6 hours', 'yesterday morning')."
+        "in natural language (e.g. 'last 6 hours', 'yesterday morning'). "
+        "The tool result includes display_range: server-formatted wall times for the "
+        "start/end Unix seconds — cite that for human-readable times, not your own conversion."
     ),
     "input_schema": {
         "type": "object",
@@ -54,12 +58,14 @@ def analyze_flow_data(device_id: str, start: int, end: int, token: str) -> dict:
 
     Returns:
         {
-            "success":    bool,
-            "report":     str | None,   # full Markdown report text
-            "plot_paths": list[str],    # absolute PNG paths embedded in the report
-            "error":      str | None,
+            "success":       bool,
+            "report":        str | None,   # full Markdown report text
+            "plot_paths":    list[str],    # absolute PNG paths embedded in the report
+            "display_range": str,          # server-formatted wall times for start/end
+            "error":         str | None,
         }
     """
+    display_range = format_unix_range_display(start, end)
     env = {**os.environ, "BLUEBOT_TOKEN": token}
     result = subprocess.run(
         [
@@ -80,10 +86,17 @@ def analyze_flow_data(device_id: str, start: int, end: int, token: str) -> dict:
             p for p in re.findall(r'!\[.*?\]\((.*?\.png)\)', report)
             if os.path.exists(p)
         ]
-        return {"success": True, "report": report, "plot_paths": plot_paths, "error": None}
+        return {
+            "success": True,
+            "report": report,
+            "plot_paths": plot_paths,
+            "display_range": display_range,
+            "error": None,
+        }
     return {
         "success": False,
         "report": None,
         "plot_paths": [],
+        "display_range": display_range,
         "error": result.stderr.strip() or f"Process exited with code {result.returncode}",
     }
