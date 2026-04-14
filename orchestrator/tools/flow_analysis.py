@@ -41,10 +41,14 @@ def _collect_plot_paths(report: str, stderr: str, agent_dir: str) -> list[str]:
                 data = json.loads(line)
                 if isinstance(data, list):
                     for p in data:
+                        # Trust subprocess output; do not require isfile() here (avoids
+                        # dropping paths on FS races or symlink quirks — GET /api/plots
+                        # still validates the file exists).
                         if (
                             isinstance(p, str)
                             and p.endswith(".png")
-                            and os.path.isfile(p)
+                            and ".." not in p
+                            and "\x00" not in p
                             and p not in seen
                         ):
                             seen.add(p)

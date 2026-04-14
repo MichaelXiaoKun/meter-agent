@@ -14,6 +14,7 @@ A user_id query parameter scopes conversations (no server-side auth).
 """
 
 import json
+import logging
 import os
 import queue
 import threading
@@ -56,6 +57,8 @@ def _load_secrets_to_env() -> None:
             os.environ[key] = val
 
 _load_secrets_to_env()
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -207,10 +210,15 @@ def patch_conversation(conv_id: str, body: UpdateTitleRequest):
 # Static assets
 # ---------------------------------------------------------------------------
 
-_PLOTS_DIR = Path(os.environ.get(
-    "PLOTS_DIR",
-    str(Path(__file__).parent.parent / "data-processing-agent" / "plots"),
-))
+def _resolved_plots_dir() -> Path:
+    """Canonical plots directory (must match data-processing-agent/processors/plots.py)."""
+    raw = os.environ.get("PLOTS_DIR")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return (Path(__file__).resolve().parent.parent / "data-processing-agent" / "plots").resolve()
+
+
+_PLOTS_DIR = _resolved_plots_dir()
 _LOGO_PATH = Path(os.environ.get(
     "LOGO_PATH",
     str(Path(__file__).parent.parent / "bluebot.jpg"),
@@ -230,8 +238,17 @@ def get_plot(filename: str):
     """Serve a generated plot PNG by filename."""
     if "/" in filename or "\\" in filename or ".." in filename:
         raise HTTPException(400, "Invalid filename")
-    path = _PLOTS_DIR / filename
-    if not path.exists() or not path.suffix == ".png":
+    path = (_PLOTS_DIR / filename).resolve()
+    try:
+        path.relative_to(_PLOTS_DIR.resolve())
+    except ValueError:
+        raise HTTPException(400, "Invalid filename") from None
+    if not path.is_file() or path.suffix.lower() != ".png":
+        logger.warning(
+            "Plot not found: %s (resolved PLOTS_DIR=%s)",
+            path,
+            _PLOTS_DIR,
+        )
         raise HTTPException(404, "Plot not found")
     return FileResponse(path, media_type="image/png")
 

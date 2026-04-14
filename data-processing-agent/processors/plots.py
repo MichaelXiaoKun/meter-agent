@@ -14,14 +14,18 @@ Public API:
 
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 
-_PKG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-_DEFAULT_PLOTS_DIR = os.path.join(_PKG_ROOT, "plots")
-_PLOTS_DIR = os.path.abspath(os.environ.get("PLOTS_DIR", _DEFAULT_PLOTS_DIR))
+_PKG_ROOT = Path(__file__).resolve().parent.parent
+_env_plots = os.environ.get("PLOTS_DIR")
+if _env_plots:
+    _PLOTS_DIR = str(Path(_env_plots).expanduser().resolve())
+else:
+    _PLOTS_DIR = str((_PKG_ROOT / "plots").resolve())
 
 # Accumulates (figure, path) pairs produced during one analyze() call.
 # Cleared by pop_figures() after the caller has consumed them.
