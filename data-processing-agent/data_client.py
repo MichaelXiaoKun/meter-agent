@@ -15,7 +15,12 @@ from typing import List, Optional, Tuple
 import httpx
 import pandas as pd
 
-BASE_URL = "https://prod.bluebot.com/flow/v2/high-res/data"
+# Override with BLUEBOT_FLOW_HIGH_RES_BASE if your tenant uses a different host/path.
+_DEFAULT_FLOW_BASE = "https://prod.bluebot.com/flow/v2/high-res/data"
+
+
+def _flow_base_url() -> str:
+    return os.environ.get("BLUEBOT_FLOW_HIGH_RES_BASE", _DEFAULT_FLOW_BASE).rstrip("/")
 CHUNK_SECONDS = 3600
 
 
@@ -71,7 +76,8 @@ def fetch_flow_data(
             "Bearer token required. Pass --token or set the BLUEBOT_TOKEN environment variable."
         )
 
-    url = f"{BASE_URL}/{device_id}"
+    base = _flow_base_url()
+    url = f"{base}/{device_id}"
     params = {
         "range_start": range_start,
         "range_end": range_end,
@@ -80,8 +86,26 @@ def fetch_flow_data(
     }
     headers = {"Authorization": f"Bearer {token}"}
 
-    response = httpx.get(url, params=params, headers=headers, timeout=30)
-    response.raise_for_status()
+    try:
+        response = httpx.get(url, params=params, headers=headers, timeout=30)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        code = e.response.status_code
+        body = (e.response.text or "")[:500].strip()
+        hint = {
+            401: "Invalid or expired Bearer token.",
+            403: "Token is not allowed to read this device.",
+            404: (
+                "No resource at this URL — often: wrong device_id, token cannot access this meter, "
+                "or high-res flow data is not available for this device/path. "
+                "Confirm the device ID and that ingestion is enabled."
+            ),
+        }.get(code, "Unexpected HTTP error from Bluebot flow API.")
+        raise RuntimeError(
+            f"Bluebot high-res API HTTP {code} for device {device_id!r}. {hint} "
+            f"Request URL: {url} (range {range_start}–{range_end}). "
+            f"Response: {body or '(empty body)'}"
+        ) from e
 
     df = pd.read_csv(StringIO(response.text))
 
