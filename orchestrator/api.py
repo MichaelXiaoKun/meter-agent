@@ -64,9 +64,13 @@ async def _lifespan(app: FastAPI):
 
 app = FastAPI(title="bluebot Orchestrator API", lifespan=_lifespan)
 
+_CORS_ORIGINS = os.environ.get(
+    "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[o.strip() for o in _CORS_ORIGINS],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -189,8 +193,14 @@ def patch_conversation(conv_id: str, body: UpdateTitleRequest):
 # Static assets
 # ---------------------------------------------------------------------------
 
-_PLOTS_DIR = Path(__file__).parent.parent / "data-processing-agent" / "plots"
-_LOGO_PATH = Path(__file__).parent.parent / "bluebot.jpg"
+_PLOTS_DIR = Path(os.environ.get(
+    "PLOTS_DIR",
+    str(Path(__file__).parent.parent / "data-processing-agent" / "plots"),
+))
+_LOGO_PATH = Path(os.environ.get(
+    "LOGO_PATH",
+    str(Path(__file__).parent.parent / "bluebot.jpg"),
+))
 
 
 @app.get("/api/logo")
