@@ -211,14 +211,23 @@ def patch_conversation(conv_id: str, body: UpdateTitleRequest):
 # ---------------------------------------------------------------------------
 
 def _resolved_plots_dir() -> Path:
-    """Canonical plots directory (must match data-processing-agent/processors/plots.py)."""
+    """
+    Canonical plots directory (must match data-processing-agent/processors/plots.py).
+
+    Relative PLOTS_DIR is resolved from the repo root (parent of orchestrator/), not
+    from process cwd — uvicorn often runs with cwd orchestrator/ while subprocess
+    cwd is data-processing-agent/, which previously split reads vs writes.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
     raw = os.environ.get("PLOTS_DIR")
-    if raw:
-        return Path(raw).expanduser().resolve()
-    return (Path(__file__).resolve().parent.parent / "data-processing-agent" / "plots").resolve()
+    if not raw:
+        return (repo_root / "data-processing-agent" / "plots").resolve()
+    p = Path(raw).expanduser()
+    return p.resolve() if p.is_absolute() else (repo_root / p).resolve()
 
 
 _PLOTS_DIR = _resolved_plots_dir()
+logger.info("PLOTS_DIR=%s (exists=%s)", _PLOTS_DIR, _PLOTS_DIR.is_dir())
 _LOGO_PATH = Path(os.environ.get(
     "LOGO_PATH",
     str(Path(__file__).parent.parent / "bluebot.jpg"),

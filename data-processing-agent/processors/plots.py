@@ -20,10 +20,18 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 
+# data-processing-agent/ (parent of processors/)
 _PKG_ROOT = Path(__file__).resolve().parent.parent
+# Repo root (contains orchestrator/ and data-processing-agent/) — same as orchestrator/api.py parent.parent
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _env_plots = os.environ.get("PLOTS_DIR")
 if _env_plots:
-    _PLOTS_DIR = str(Path(_env_plots).expanduser().resolve())
+    p = Path(_env_plots).expanduser()
+    if p.is_absolute():
+        _PLOTS_DIR = str(p.resolve())
+    else:
+        # Relative to repo root (not cwd), so subprocess matches FastAPI when cwd differs.
+        _PLOTS_DIR = str((_REPO_ROOT / p).resolve())
 else:
     _PLOTS_DIR = str((_PKG_ROOT / "plots").resolve())
 
