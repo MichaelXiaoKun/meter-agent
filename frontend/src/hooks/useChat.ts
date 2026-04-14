@@ -17,14 +17,6 @@ export type AgentStatus =
   | { kind: "compressing" }
   | { kind: "error"; error: string };
 
-interface StreamState {
-  status: AgentStatus;
-  text: string;
-  plots: string[];
-  tokenUsage: { tokens: number; pct: number };
-  messages: Message[];
-}
-
 const IDLE: AgentStatus = { kind: "idle" };
 
 export function useChat(activeConvId: string | null, token: string) {
