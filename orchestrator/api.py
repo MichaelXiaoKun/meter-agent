@@ -25,6 +25,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -300,3 +301,43 @@ async def chat(
             yield {"event": event["type"], "data": json.dumps(_rewrite_plot_paths(event))}
 
     return EventSourceResponse(_stream())
+
+
+# ---------------------------------------------------------------------------
+# Production SPA (built Vite app) — same origin as /api (Railway, Docker)
+# ---------------------------------------------------------------------------
+
+_FRONTEND_DIST = Path(
+    os.environ.get(
+        "FRONTEND_DIST",
+        str(Path(__file__).resolve().parent.parent / "frontend" / "dist"),
+    )
+)
+
+
+def _mount_production_spa() -> None:
+    """Serve React static files when dist/ exists (omit for API-only / local Vite dev)."""
+    index = _FRONTEND_DIST / "index.html"
+    if not index.is_file():
+        return
+
+    assets_dir = _FRONTEND_DIST / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="ui_assets")
+
+    @app.get("/")
+    def _spa_index():
+        return FileResponse(index)
+
+    @app.get("/{full_path:path}")
+    def _spa_fallback(full_path: str):
+        # Registered after all /api routes — unmatched /api/* returns JSON 404
+        if full_path == "api" or full_path.startswith("api/"):
+            raise HTTPException(404, detail="Not Found")
+        candidate = _FRONTEND_DIST / full_path
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(index)
+
+
+_mount_production_spa()

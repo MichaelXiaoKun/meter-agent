@@ -6,16 +6,8 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# ---- Stage 2: Python runtime + Caddy ----
+# ---- Stage 2: Python runtime ----
 FROM python:3.13-slim
-
-# Install Caddy (static binary)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
-    curl -fsSL "https://caddyserver.com/api/download?os=linux&arch=amd64" -o /usr/local/bin/caddy && \
-    chmod +x /usr/local/bin/caddy && \
-    apt-get purge -y curl && apt-get autoremove -y && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -33,14 +25,11 @@ COPY requirements.txt /app/requirements.txt
 # Copy built frontend
 COPY --from=frontend-build /build/dist /app/frontend/dist
 
-# Copy deployment configs
-COPY Caddyfile /app/Caddyfile
-COPY start.sh /app/start.sh
-RUN chmod +x /app/start.sh
-
 # Create plots directory
 RUN mkdir -p /app/data-processing-agent/plots
 
 EXPOSE 8080
 
-CMD ["/app/start.sh"]
+# Single process: FastAPI serves /api and static SPA (see api._mount_production_spa)
+WORKDIR /app/orchestrator
+CMD ["sh", "-c", "exec uvicorn api:app --host 0.0.0.0 --port ${PORT:-8080}"]
