@@ -125,8 +125,21 @@ class UpdateTitleRequest(BaseModel):
 async def login(body: LoginRequest):
     """Proxy Auth0 ROPC login — keeps client_id/audience server-side."""
     cfg = _auth0_config()
-    if not cfg["domain"] or not cfg["client_id"]:
-        raise HTTPException(500, "Auth0 is not configured on the server")
+    env = _env("BLUEBOT_ENV", "PROD").upper()
+    if not cfg["domain"] or not cfg["client_id"] or not cfg["audience"]:
+        missing = []
+        if not cfg["domain"]:
+            missing.append(f"AUTH0_DOMAIN_{env}")
+        if not cfg["client_id"]:
+            missing.append(f"AUTH0_CLIENT_ID_{env}")
+        if not cfg["audience"]:
+            missing.append(f"AUTH0_API_AUDIENCE_{env}")
+        raise HTTPException(
+            500,
+            "Auth0 is not configured on the server. Set these in your host environment "
+            f"(e.g. Railway Variables): {', '.join(missing)}. "
+            f"BLUEBOT_ENV is {env!r} — variable names must use that suffix.",
+        )
 
     try:
         async with httpx.AsyncClient() as client:
