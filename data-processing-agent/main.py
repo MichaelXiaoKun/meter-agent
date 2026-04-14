@@ -16,6 +16,10 @@ import argparse
 import os
 import sys
 
+# Headless servers (Docker / Railway) have no display; force non-GUI backend first.
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from data_client import fetch_flow_data_range
