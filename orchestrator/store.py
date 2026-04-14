@@ -16,6 +16,7 @@ Database path for SQLite (in priority order):
 import contextlib
 import json
 import os
+import threading
 import time
 import uuid
 from typing import Any
@@ -39,13 +40,32 @@ def _q(sql: str) -> str:
     return sql.replace("?", "%s") if _use_postgres() else sql
 
 
+_pg_pool = None
+_pg_pool_lock = threading.Lock()
+
+
+def _get_pg_pool():
+    """Return a lazily-initialised threaded PostgreSQL connection pool."""
+    global _pg_pool
+    if _pg_pool is None:
+        with _pg_pool_lock:
+            if _pg_pool is None:
+                from psycopg2.pool import ThreadedConnectionPool  # type: ignore
+                _pg_pool = ThreadedConnectionPool(
+                    minconn=2,
+                    maxconn=int(os.environ.get("PG_POOL_MAX", "10")),
+                    dsn=os.environ["DATABASE_URL"],
+                )
+    return _pg_pool
+
+
 @contextlib.contextmanager
 def _conn():
     """Yield an open (connection, cursor) pair for the active backend."""
     if _use_postgres():
-        import psycopg2                    # type: ignore
         import psycopg2.extras             # type: ignore
-        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        pool = _get_pg_pool()
+        conn = pool.getconn()
         cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         try:
             yield conn, cur
@@ -55,7 +75,7 @@ def _conn():
             raise
         finally:
             cur.close()
-            conn.close()
+            pool.putconn(conn)
     else:
         import sqlite3
         db_path = os.environ.get(

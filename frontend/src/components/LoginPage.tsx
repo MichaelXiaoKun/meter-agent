@@ -1,0 +1,97 @@
+import { useState } from "react";
+import * as api from "../api";
+
+interface LoginPageProps {
+  onLogin: (token: string, user: string) => void;
+}
+
+export default function LoginPage({ onLogin }: LoginPageProps) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!email || !password) {
+      setError("Please enter both email and password.");
+      return;
+    }
+
+    setError("");
+    setLoading(true);
+    try {
+      const { access_token, user } = await api.login(email, password);
+      onLogin(access_token, user);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-[#e8f0fb] via-[#dce7f8] to-[#cfddf6]">
+      <div className="w-full max-w-sm rounded-2xl bg-white px-8 pt-10 pb-8 shadow-lg shadow-brand-700/10">
+        {/* Logo + title */}
+        <div className="mb-8 text-center">
+          <img
+            src="/api/logo"
+            alt="bluebot"
+            className="mx-auto mb-4 h-20 w-20 rounded-2xl object-cover shadow-md shadow-brand-700/20"
+          />
+          <h1 className="text-2xl font-bold tracking-tight text-brand-900">
+            bluebot Assistant
+          </h1>
+          <p className="mt-1 text-sm text-brand-muted">
+            Sign in to your account to continue
+          </p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">
+              Email
+            </label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              autoComplete="email"
+              className="w-full rounded-xl border-[1.5px] border-brand-border bg-brand-50 px-3.5 py-2.5 text-sm text-brand-900 outline-none transition-all placeholder:text-brand-muted/50 focus:border-brand-500 focus:bg-white focus:ring-3 focus:ring-brand-500/15"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700">
+              Password
+            </label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              autoComplete="current-password"
+              className="w-full rounded-xl border-[1.5px] border-brand-border bg-brand-50 px-3.5 py-2.5 text-sm text-brand-900 outline-none transition-all placeholder:text-brand-muted/50 focus:border-brand-500 focus:bg-white focus:ring-3 focus:ring-brand-500/15"
+            />
+          </div>
+
+          {error && (
+            <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full rounded-xl bg-gradient-to-br from-brand-700 to-brand-500 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:opacity-90 hover:shadow-md disabled:opacity-60"
+          >
+            {loading ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}

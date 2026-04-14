@@ -38,8 +38,12 @@ env/
 *.swp
 *.swo
 
-# Streamlit — keep the example, exclude the real secrets file
+# Streamlit — exclude the real secrets file
 .streamlit/secrets.toml
+**/secrets.toml
+
+# Node / frontend
+node_modules/
 
 # Auth token cache (local login cache)
 .cache.token

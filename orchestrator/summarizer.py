@@ -53,18 +53,19 @@ def summarize(messages: list[dict]) -> str:
         client = anthropic.Anthropic()
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=25,
+            max_tokens=20,
             messages=[{
                 "role": "user",
                 "content": (
-                    "Summarize this conversation in 5-8 words for a chat history sidebar. "
-                    "Focus on the meter ID and the main topic discussed. "
-                    "Reply with ONLY the summary — no quotes, no trailing punctuation.\n\n"
+                    "Write a very short title (max 5 words, under 30 characters) for this chat. "
+                    "Include the meter ID if mentioned. "
+                    "Reply with ONLY the title — no quotes, no punctuation.\n\n"
                     f"{transcript}"
                 ),
             }],
         )
-        return response.content[0].text.strip()
+        title = response.content[0].text.strip().rstrip(".")
+        return title[:40]
     except Exception:
         return ""
 
