@@ -5,6 +5,7 @@ Runs the data-processing-agent as a subprocess using its own virtual environment
 if present, otherwise falls back to the current Python interpreter.
 """
 
+import json
 import os
 import re
 import subprocess
@@ -19,6 +20,57 @@ _AGENT_DIR = os.path.abspath(
 # Use the agent's own venv Python if it exists, else use the current interpreter.
 _VENV_PYTHON = os.path.join(_AGENT_DIR, ".venv", "bin", "python")
 _PYTHON = _VENV_PYTHON if os.path.exists(_VENV_PYTHON) else sys.executable
+
+_PLOT_PATHS_MARKER = "__BLUEBOT_PLOT_PATHS__"
+
+
+def _collect_plot_paths(report: str, stderr: str, agent_dir: str) -> list[str]:
+    """
+    Prefer machine-emitted paths from the subprocess stderr; fall back to markdown
+    in the report with resolution under agent_dir/plots/.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+
+    if stderr:
+        idx = stderr.find(_PLOT_PATHS_MARKER)
+        if idx != -1:
+            tail = stderr[idx + len(_PLOT_PATHS_MARKER) :].strip()
+            line = tail.splitlines()[0] if tail else ""
+            try:
+                data = json.loads(line)
+                if isinstance(data, list):
+                    for p in data:
+                        if (
+                            isinstance(p, str)
+                            and p.endswith(".png")
+                            and os.path.isfile(p)
+                            and p not in seen
+                        ):
+                            seen.add(p)
+                            out.append(p)
+            except json.JSONDecodeError:
+                pass
+    if out:
+        return out
+
+    plots_dir = os.path.join(agent_dir, "plots")
+    for raw in re.findall(r"!\[.*?\]\((.*?\.png)\)", report):
+        raw = raw.strip()
+        if not raw:
+            continue
+        candidates = [raw]
+        if not os.path.isabs(raw):
+            candidates.append(os.path.join(plots_dir, os.path.basename(raw)))
+            candidates.append(os.path.join(agent_dir, raw.lstrip(os.sep)))
+        for c in candidates:
+            ap = os.path.abspath(c)
+            if os.path.isfile(ap) and ap not in seen:
+                seen.add(ap)
+                out.append(ap)
+                break
+    return out
+
 
 TOOL_DEFINITION = {
     "name": "analyze_flow_data",
@@ -81,11 +133,7 @@ def analyze_flow_data(device_id: str, start: int, end: int, token: str) -> dict:
     )
     if result.returncode == 0:
         report = result.stdout.strip()
-        # Extract PNG paths embedded by the agent as Markdown images: ![...](path)
-        plot_paths = [
-            p for p in re.findall(r'!\[.*?\]\((.*?\.png)\)', report)
-            if os.path.exists(p)
-        ]
+        plot_paths = _collect_plot_paths(report, result.stderr or "", _AGENT_DIR)
         return {
             "success": True,
             "report": report,

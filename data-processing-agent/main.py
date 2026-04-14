@@ -13,6 +13,7 @@ Output:
 """
 
 import argparse
+import json
 import os
 import sys
 
@@ -80,7 +81,10 @@ def main() -> None:
 
     pending = pop_figures()
     if pending:
-        for _, path in pending:
+        paths = [path for _, path in pending]
+        # Orchestrator parses this line for authoritative paths (not markdown).
+        print("__BLUEBOT_PLOT_PATHS__" + json.dumps(paths), file=sys.stderr)
+        for path in paths:
             print(f"Plot saved: {path}", file=sys.stderr)
         # Only open interactive windows when running in a real terminal.
         # When invoked as a subprocess (e.g. from the orchestrator), stdout is

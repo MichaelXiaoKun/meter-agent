@@ -1,8 +1,11 @@
 """
 plots.py — Plot generation processor for flow rate time series.
 
-Each function saves a PNG file under ./plots/ and registers the figure so the
-caller can invoke plt.show() for interactive display in standalone mode.
+Each function saves a PNG under the plots directory (see PLOTS_DIR) and registers
+the figure so the caller can invoke plt.show() for interactive display in standalone mode.
+
+PLOTS_DIR matches the orchestrator FastAPI default (and BLUEBOT PLOTS_DIR env) so
+saved files are visible to GET /api/plots/{filename}.
 
 Public API:
     generate_plot(plot_type, timestamps, values, quality, device_id, start) -> dict
@@ -16,7 +19,9 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 
-_PLOTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "plots"))
+_PKG_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_DEFAULT_PLOTS_DIR = os.path.join(_PKG_ROOT, "plots")
+_PLOTS_DIR = os.path.abspath(os.environ.get("PLOTS_DIR", _DEFAULT_PLOTS_DIR))
 
 # Accumulates (figure, path) pairs produced during one analyze() call.
 # Cleared by pop_figures() after the caller has consumed them.
