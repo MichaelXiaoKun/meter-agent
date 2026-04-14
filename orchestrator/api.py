@@ -254,7 +254,10 @@ def get_plot(filename: str):
         raise HTTPException(400, "Invalid filename") from None
     if not path.is_file() or path.suffix.lower() != ".png":
         logger.warning(
-            "Plot not found: %s (resolved PLOTS_DIR=%s)",
+            "Plot not found: %s (PLOTS_DIR=%s). "
+            "Common causes: Railway scaled to >1 replica (plots are local disk per instance), "
+            "redeploy cleared ephemeral files, or the browser requested a filename from markdown "
+            "that does not match saved files.",
             path,
             _PLOTS_DIR,
         )

@@ -26,6 +26,14 @@ function rewritePlotPaths(text: string): string {
   );
 }
 
+/** Remove markdown image lines so we do not double-render or hit wrong URLs from the LLM. */
+function stripMarkdownPngImages(text: string): string {
+  return text
+    .replace(/!\[[^\]]*\]\([^)]*\.png\)/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function extractPlotPaths(content: string | ContentBlock[]): string[] {
   if (typeof content === "string") return [];
   const paths: string[] = [];
@@ -56,7 +64,13 @@ export default function MessageBubble({ message, plotPaths }: MessageBubbleProps
   if (!rawText) return null;
 
   const isUser = message.role === "user";
-  const text = isUser ? rawText : rewritePlotPaths(rawText);
+  // When tool_result provides plot_paths, render images only from those URLs — not from
+  // markdown (the model often echoes a different timestamp than int(timestamps[0]) in filenames).
+  const text = isUser
+    ? rawText
+    : plotPaths && plotPaths.length > 0
+      ? stripMarkdownPngImages(rawText)
+      : rewritePlotPaths(rawText);
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
