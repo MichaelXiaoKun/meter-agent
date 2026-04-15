@@ -1,8 +1,10 @@
+# syntax=docker/dockerfile:1.4
 # ---- Stage 1: Build frontend ----
 FROM node:20-alpine AS frontend-build
 WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
 COPY frontend/ ./
 RUN npm run build
 
@@ -11,9 +13,10 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-# Install Python dependencies
-COPY orchestrator/requirements.txt /app/orchestrator/requirements.txt
-RUN pip install --no-cache-dir -r /app/orchestrator/requirements.txt
+# API + subprocess deps only (no Streamlit — smaller image, faster registry push on Railway)
+COPY orchestrator/requirements-api.txt /app/orchestrator/requirements-api.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir -r /app/orchestrator/requirements-api.txt
 
 # Copy application code
 COPY orchestrator/ /app/orchestrator/
@@ -21,7 +24,6 @@ COPY data-processing-agent/ /app/data-processing-agent/
 COPY meter-status-agent/ /app/meter-status-agent/
 COPY pipe-configuration-agent/ /app/pipe-configuration-agent/
 COPY bluebot.jpg /app/bluebot.jpg
-COPY requirements.txt /app/requirements.txt
 
 # Copy built frontend
 COPY --from=frontend-build /build/dist /app/frontend/dist

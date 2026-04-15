@@ -1,0 +1,13 @@
+# FastAPI + subprocess agents only (Docker / Railway). No Streamlit — smaller image, faster builds.
+anthropic>=0.40.0
+PyJWT>=2.8.0
+psycopg2-binary>=2.9.0
+fastapi>=0.115.0
+uvicorn>=0.34.0
+sse-starlette>=2.1.0
+httpx>=0.27.0
+paho-mqtt>=2.1.0
+pandas>=2.0.0
+numpy>=1.26.0
+scipy>=1.12.0
+matplotlib>=3.8.0
