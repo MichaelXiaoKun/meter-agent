@@ -31,6 +31,8 @@ _TOOL_LABELS = {
     "resolve_time_range": "Resolving time range",
     "check_meter_status": "Checking meter status",
     "analyze_flow_data":  "Analysing flow data",
+    "configure_meter_pipe": "Configuring meter pipe",
+    "set_transducer_angle_only": "Setting transducer angle (SSA only)",
 }
 
 
@@ -58,9 +60,13 @@ def _on_event(event: dict) -> None:
         if tool == "resolve_time_range":
             detail = f"'{inp.get('description', '')}'"
         elif tool in ("check_meter_status", "analyze_flow_data"):
-            detail = inp.get("device_id", "")
+            detail = inp.get("serial_number", "")
             if tool == "analyze_flow_data":
                 detail += f"  {inp.get('start')} → {inp.get('end')}"
+        elif tool == "configure_meter_pipe":
+            detail = inp.get("serial_number", "")
+        elif tool == "set_transducer_angle_only":
+            detail = inp.get("serial_number", "")
         else:
             detail = ""
 

@@ -73,13 +73,13 @@ def _dispatch_tool(name: str, status: Dict[str, Any]) -> Any:
         raise ValueError(f"Unknown tool: {name}")
 
 
-def analyze(status: Dict[str, Any], device_id: str) -> str:
+def analyze(status: Dict[str, Any], serial_number: str) -> str:
     """
     Run the agentic analysis loop on a raw meter status payload.
 
     Args:
-        status:     Raw dict returned by the bluebot status API
-        device_id:  Device identifier for context
+        status:         Raw dict returned by the bluebot status API
+        serial_number:  Meter serial number for context
 
     Returns:
         Markdown-formatted status report string.
@@ -99,7 +99,7 @@ def analyze(status: Dict[str, Any], device_id: str) -> str:
     )
 
     user_message = (
-        f"Generate a status report for meter `{device_id}`.\n\n"
+        f"Generate a status report for meter `{serial_number}`.\n\n"
         f"**Raw status payload:**\n```json\n{json.dumps(status, indent=2)}\n```\n\n"
         "Call all processor tools, then write the report."
     )

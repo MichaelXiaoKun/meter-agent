@@ -4,6 +4,8 @@ const TOOL_LABELS: Record<string, string> = {
   resolve_time_range: "Resolving time range",
   check_meter_status: "Checking meter status",
   analyze_flow_data: "Analysing flow data",
+  configure_meter_pipe: "Configuring meter pipe",
+  set_transducer_angle_only: "Setting transducer angle (SSA only)",
 };
 
 interface StatusIndicatorProps {

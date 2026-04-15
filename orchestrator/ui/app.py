@@ -81,6 +81,8 @@ def _tool_status_line(event: dict) -> str:
         "resolve_time_range": "Resolving time range",
         "check_meter_status": "Checking meter status",
         "analyze_flow_data":  "Analysing flow data",
+        "configure_meter_pipe": "Configuring meter pipe",
+        "set_transducer_angle_only": "Setting transducer angle (SSA only)",
     }
     tool  = event["tool"]
     inp   = event.get("input", {})
@@ -89,9 +91,13 @@ def _tool_status_line(event: dict) -> str:
     if tool == "resolve_time_range":
         detail = f"\"{inp.get('description', '')}\""
     elif tool == "check_meter_status":
-        detail = inp.get("device_id", "")
+        detail = inp.get("serial_number", "")
     elif tool == "analyze_flow_data":
-        detail = inp.get("device_id", "")
+        detail = inp.get("serial_number", "")
+    elif tool == "configure_meter_pipe":
+        detail = inp.get("serial_number", "")
+    elif tool == "set_transducer_angle_only":
+        detail = inp.get("serial_number", "")
     else:
         detail = ""
 
@@ -173,7 +179,9 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 
 st.title("💧 bluebot Assistant")
-st.caption("Ask about meter health, flow data, or anything about your bluebot devices.")
+st.caption(
+    "Health and flow: use the serial number as the user gave it. Pipe / angle tools use the physical serial on the meter."
+)
 
 # ---------------------------------------------------------------------------
 # Render conversation history
@@ -190,7 +198,7 @@ for entry in st.session_state.display:
 # Chat input
 # ---------------------------------------------------------------------------
 
-if prompt := st.chat_input("Ask about your flow meters..."):
+if prompt := st.chat_input("Health, flow, or pipe setup (serial number)..."):
 
     if not token:
         st.error("Enter your bluebot token in the sidebar to continue.")

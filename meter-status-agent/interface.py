@@ -6,7 +6,7 @@ Callable entry point for orchestrator integration.
 Example:
     from meter_status_agent.interface import run
 
-    result = run(device_id="BB8100015261", token="...")
+    result = run(serial_number="BB8100015261", token="...")
     if result["success"]:
         print(result["report"])
     else:
@@ -22,7 +22,7 @@ from report import format_report
 
 
 def run(
-    device_id: str,
+    serial_number: str,
     token: Optional[str] = None,
 ) -> dict:
     """
@@ -31,24 +31,24 @@ def run(
     Never raises — all errors are captured in result["error"].
 
     Args:
-        device_id:  Device identifier (e.g. "BB8100015261")
-        token:      Bearer token. Falls back to BLUEBOT_TOKEN env var.
+        serial_number:  Meter serial number (e.g. "BB8100015261")
+        token:          Bearer token. Falls back to BLUEBOT_TOKEN env var.
 
     Returns:
         {
-            "success":    bool,
-            "device_id":  str,
-            "online":     bool | None,
-            "report":     str | None,
-            "error":      str | None,
+            "success":        bool,
+            "serial_number":  str,
+            "online":         bool | None,
+            "report":         str | None,
+            "error":          str | None,
         }
     """
-    base = {"device_id": device_id}
+    base = {"serial_number": serial_number}
 
     try:
-        status = fetch_meter_status(device_id, token=token)
-        analysis = analyze(status, device_id)
-        report = format_report(analysis, device_id)
+        status = fetch_meter_status(serial_number, token=token)
+        analysis = analyze(status, serial_number)
+        report = format_report(analysis, serial_number)
 
         return {
             **base,

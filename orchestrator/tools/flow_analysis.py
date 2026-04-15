@@ -90,9 +90,12 @@ TOOL_DEFINITION = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "device_id": {
+            "serial_number": {
                 "type": "string",
-                "description": "Device identifier (e.g. BB8100015261)",
+                "description": (
+                    "Serial number for the high-res flow API path — use the exact string "
+                    "the user provided."
+                ),
             },
             "start": {
                 "type": "integer",
@@ -103,14 +106,14 @@ TOOL_DEFINITION = {
                 "description": "Range end as Unix timestamp (seconds, UTC)",
             },
         },
-        "required": ["device_id", "start", "end"],
+        "required": ["serial_number", "start", "end"],
     },
 }
 
 
-def analyze_flow_data(device_id: str, start: int, end: int, token: str) -> dict:
+def analyze_flow_data(serial_number: str, start: int, end: int, token: str) -> dict:
     """
-    Run the data-processing-agent for a device over a time range.
+    Run the data-processing-agent for a meter (by serial number) over a time range.
 
     Returns:
         {
@@ -126,7 +129,7 @@ def analyze_flow_data(device_id: str, start: int, end: int, token: str) -> dict:
     result = subprocess.run(
         [
             _PYTHON, "main.py",
-            "--device", device_id,
+            "--serial", serial_number,
             "--start", str(start),
             "--end", str(end),
         ],

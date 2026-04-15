@@ -8,7 +8,7 @@ Example (from an orchestrator):
     from data_processing_agent.interface import run
 
     result = run(
-        device_id="BB8100015261",
+        serial_number="BB8100015261",
         start=1775588400,
         end=1775590200,
         token="...",
@@ -29,42 +29,42 @@ from processors.plots import pop_figures
 
 
 def run(
-    device_id: str,
+    serial_number: str,
     start: int,
     end: int,
     token: Optional[str] = None,
 ) -> dict:
     """
-    Fetch, process, and analyse flow rate data for a device over a time range.
+    Fetch, process, and analyse flow rate data for a meter over a time range.
 
     This is the single callable contract exposed to orchestrators.
     All errors are caught and returned in the result dict — this function
     never raises, so orchestrators can call it safely without try/except.
 
     Args:
-        device_id:  Device identifier (e.g. "BB8100015261")
-        start:      Range start as Unix timestamp (seconds, inclusive)
-        end:        Range end as Unix timestamp (seconds, inclusive)
-        token:      bluebot Bearer token. Falls back to BLUEBOT_TOKEN env var.
+        serial_number:  Meter serial number (e.g. "BB8100015261")
+        start:          Range start as Unix timestamp (seconds, inclusive)
+        end:            Range end as Unix timestamp (seconds, inclusive)
+        token:          bluebot Bearer token. Falls back to BLUEBOT_TOKEN env var.
 
     Returns:
         {
-            "success":     bool,
-            "device_id":   str,
-            "start":       int,
-            "end":         int,
-            "data_points": int | None,   # number of rows fetched
-            "report":      str | None,   # full Markdown report
-            "error":       str | None,   # populated only on failure
+            "success":        bool,
+            "serial_number":  str,
+            "start":          int,
+            "end":            int,
+            "data_points":    int | None,   # number of rows fetched
+            "report":         str | None,   # full Markdown report
+            "error":          str | None,   # populated only on failure
         }
     """
-    base = {"device_id": device_id, "start": start, "end": end}
+    base = {"serial_number": serial_number, "start": start, "end": end}
 
     try:
-        df = fetch_flow_data_range(device_id, start, end, token=token, verbose=False)
-        analysis = analyze(df, device_id)
+        df = fetch_flow_data_range(serial_number, start, end, token=token, verbose=False)
+        analysis = analyze(df, serial_number)
         plot_paths = [path for _, path in pop_figures()]
-        report = format_report(analysis, device_id, start, end)
+        report = format_report(analysis, serial_number, start, end)
 
         return {
             **base,

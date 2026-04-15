@@ -197,7 +197,7 @@ def _dispatch_tool(
     timestamps: np.ndarray,
     values: np.ndarray,
     quality: np.ndarray,
-    device_id: str,
+    serial_number: str,
 ) -> Any:
     """Route a tool call to the correct processor function."""
     if name == "compute_descriptive_stats":
@@ -236,7 +236,7 @@ def _dispatch_tool(
         return generate_plot(
             inputs["plot_type"],
             timestamps, values, quality,
-            device_id=device_id,
+            serial_number=serial_number,
             start=timestamps[0] if len(timestamps) else 0,
         )
 
@@ -244,7 +244,7 @@ def _dispatch_tool(
         raise ValueError(f"Unknown tool: {name}")
 
 
-def analyze(df: pd.DataFrame, device_id: str) -> str:
+def analyze(df: pd.DataFrame, serial_number: str) -> str:
     """
     Run the agentic analysis loop on a flow rate DataFrame.
 
@@ -252,8 +252,8 @@ def analyze(df: pd.DataFrame, device_id: str) -> str:
     natural-language report grounded entirely in the tool outputs.
 
     Args:
-        df:         DataFrame with columns: timestamp (int64), flow_rate (float64)
-        device_id:  Device identifier for context
+        df:              DataFrame with columns: timestamp (int64), flow_rate (float64)
+        serial_number:   Meter serial number for context
 
     Returns:
         Markdown-formatted analytical report string.
@@ -264,7 +264,7 @@ def analyze(df: pd.DataFrame, device_id: str) -> str:
     flow_amount  = df["flow_amount"].values.astype(float)  if "flow_amount"  in df.columns else np.full(len(df), np.nan)
 
     data_overview = {
-        "device_id": device_id,
+        "serial_number": serial_number,
         "total_points": int(len(df)),
         "start_timestamp": int(timestamps[0]) if len(timestamps) else None,
         "end_timestamp": int(timestamps[-1]) if len(timestamps) else None,
@@ -305,7 +305,7 @@ def analyze(df: pd.DataFrame, device_id: str) -> str:
     )
 
     user_message = (
-        f"Analyse the flow rate time series for device `{device_id}`.\n\n"
+        f"Analyse the flow rate time series for meter `{serial_number}`.\n\n"
         f"**Data overview:**\n```json\n{json.dumps(data_overview, indent=2)}\n```\n\n"
         "Run all processor tools that are relevant to fully characterising this dataset, "
         "then produce a comprehensive analytical report with sections for: "
@@ -336,7 +336,7 @@ def analyze(df: pd.DataFrame, device_id: str) -> str:
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
-                    result = _dispatch_tool(block.name, block.input, timestamps, values, quality, device_id)
+                    result = _dispatch_tool(block.name, block.input, timestamps, values, quality, serial_number)
                     tool_results.append(
                         {
                             "type": "tool_result",

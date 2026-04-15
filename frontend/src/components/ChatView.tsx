@@ -152,9 +152,12 @@ export default function ChatView({
               const el = inputRef.current;
               if (!el) return;
               el.focus();
-              const start = text.indexOf("<serial number>");
-              if (start !== -1) {
-                el.setSelectionRange(start, start + "<serial number>".length);
+              const sn = text.indexOf("<serial number>");
+              const m = text.indexOf("<meter>");
+              if (sn !== -1) {
+                el.setSelectionRange(sn, sn + "<serial number>".length);
+              } else if (m !== -1) {
+                el.setSelectionRange(m, m + "<meter>".length);
               }
             });
           }} />
@@ -181,7 +184,7 @@ export default function ChatView({
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask about a meter or flow data..."
+                placeholder="Ask about health, flow, or pipe setup (serial number)..."
                 disabled={isProcessing}
                 className="flex-1 rounded-xl border-[1.5px] border-brand-border bg-white px-4 py-3 text-sm text-brand-900 outline-none transition-colors placeholder:text-brand-muted/60 focus:border-brand-500 focus:ring-3 focus:ring-brand-500/10 disabled:opacity-50"
               />

@@ -22,15 +22,16 @@ _STATUS_HEADERS_EXTRA = {"x-admin-query": "true"}
 
 
 def fetch_meter_status(
-    device_id: str,
+    serial_number: str,
     token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Fetch the current status of a flow meter device.
 
     Args:
-        device_id:  Device identifier (e.g. BB8100015261)
-        token:      Bearer token. Falls back to BLUEBOT_TOKEN env var.
+        serial_number:  Path segment for the status API — the meter serial number the user provides
+                        (same value as orchestrator check_meter_status ``serial_number``).
+        token:          Bearer token. Falls back to BLUEBOT_TOKEN env var.
 
     Returns:
         Raw status dict as returned by the API.
@@ -42,7 +43,7 @@ def fetch_meter_status(
         )
 
     base = _status_base_url()
-    url = f"{base}/{device_id}"
+    url = f"{base}/{serial_number}"
     headers = {**_STATUS_HEADERS_EXTRA, "Authorization": f"Bearer {token}"}
 
     try:
@@ -53,13 +54,13 @@ def fetch_meter_status(
         body = (e.response.text or "")[:500].strip()
         hint = {
             401: "Invalid or expired Bearer token.",
-            403: "Token is not allowed to read this device.",
+            403: "Token is not allowed to read this meter.",
             404: (
-                "Device not found or not accessible with this token — verify device_id and access."
+                "Meter not found or not accessible with this token — verify the serial number and access."
             ),
         }.get(code, "Unexpected HTTP error from Bluebot status API.")
         raise RuntimeError(
-            f"Bluebot status API HTTP {code} for device {device_id!r}. {hint} "
+            f"Bluebot status API HTTP {code} for serial {serial_number!r}. {hint} "
             f"URL: {url}. Response: {body or '(empty body)'}"
         ) from e
 

@@ -7,15 +7,15 @@ Wraps the agent's analysis in a standardised report header.
 from datetime import datetime, timezone
 
 
-def format_report(analysis: str, device_id: str, start: int, end: int) -> str:
+def format_report(analysis: str, serial_number: str, start: int, end: int) -> str:
     """
     Attach a header block to the agent's analysis text.
 
     Args:
-        analysis:   Markdown analysis string returned by agent.analyze()
-        device_id:  Device identifier
-        start:      Range start as Unix timestamp (seconds)
-        end:        Range end as Unix timestamp (seconds)
+        analysis:       Markdown analysis string returned by agent.analyze()
+        serial_number:  Meter serial number
+        start:          Range start as Unix timestamp (seconds)
+        end:            Range end as Unix timestamp (seconds)
 
     Returns:
         Full report string ready for console output or file write.
@@ -28,7 +28,7 @@ def format_report(analysis: str, device_id: str, start: int, end: int) -> str:
     header = (
         "=" * 80 + "\n"
         "FLOW RATE ANALYSIS REPORT\n"
-        f"Device:     {device_id}\n"
+        f"Serial:     {serial_number}\n"
         f"Period:     {start_str}  →  {end_str}\n"
         f"Generated:  {generated_str}\n"
         + "=" * 80 + "\n\n"

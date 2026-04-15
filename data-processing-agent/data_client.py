@@ -57,7 +57,7 @@ def partition_range(start: int, end: int, chunk_seconds: int = CHUNK_SECONDS) ->
 
 
 def fetch_flow_data(
-    device_id: str,
+    serial_number: str,
     range_start: int,
     range_end: int,
     token: Optional[str] = None,
@@ -66,10 +66,11 @@ def fetch_flow_data(
     Fetch flow rate time series from the bluebot API.
 
     Args:
-        device_id:    Device identifier (e.g. BB8100015261)
-        range_start:  Start of range as Unix timestamp (seconds)
-        range_end:    End of range as Unix timestamp (seconds)
-        token:        Bearer token. Falls back to BLUEBOT_TOKEN env var.
+        serial_number:  Path segment for the high-res flow API — the meter serial number the user
+                        provides (same as orchestrator analyze_flow_data ``serial_number``).
+        range_start:    Start of range as Unix timestamp (seconds)
+        range_end:      End of range as Unix timestamp (seconds)
+        token:          Bearer token. Falls back to BLUEBOT_TOKEN env var.
 
     Returns:
         DataFrame with columns: timestamp (int64), flow_rate (float64)
@@ -82,7 +83,7 @@ def fetch_flow_data(
         )
 
     base = _flow_base_url()
-    url = f"{base}/{device_id}"
+    url = f"{base}/{serial_number}"
     params = {
         "range_start": range_start,
         "range_end": range_end,
@@ -99,15 +100,15 @@ def fetch_flow_data(
         body = (e.response.text or "")[:500].strip()
         hint = {
             401: "Invalid or expired Bearer token.",
-            403: "Token is not allowed to read this device.",
+            403: "Token is not allowed to read this meter.",
             404: (
-                "No resource at this URL — often: wrong device_id, token cannot access this meter, "
-                "or high-res flow data is not available for this device/path. "
-                "Confirm the device ID and that ingestion is enabled."
+                "No resource at this URL — often: wrong serial number, token cannot access this meter, "
+                "or high-res flow data is not available for this path. "
+                "Confirm the serial number and that ingestion is enabled."
             ),
         }.get(code, "Unexpected HTTP error from Bluebot flow API.")
         raise RuntimeError(
-            f"Bluebot high-res API HTTP {code} for device {device_id!r}. {hint} "
+            f"Bluebot high-res API HTTP {code} for serial {serial_number!r}. {hint} "
             f"Request URL: {url} (range {range_start}–{range_end}). "
             f"Response: {body or '(empty body)'}"
         ) from e
@@ -149,7 +150,7 @@ def fetch_flow_data(
 
 
 def fetch_flow_data_range(
-    device_id: str,
+    serial_number: str,
     range_start: int,
     range_end: int,
     token: Optional[str] = None,
@@ -160,11 +161,11 @@ def fetch_flow_data_range(
     hourly chunks (≤ 3600 seconds each) to stay within API limits.
 
     Args:
-        device_id:    Device identifier
-        range_start:  Start of range as Unix timestamp (seconds)
-        range_end:    End of range as Unix timestamp (seconds)
-        token:        Bearer token. Falls back to BLUEBOT_TOKEN env var.
-        verbose:      Print chunk progress to stderr (default True)
+        serial_number:  Path segment for the high-res flow API (meter serial number as given)
+        range_start:    Start of range as Unix timestamp (seconds)
+        range_end:      End of range as Unix timestamp (seconds)
+        token:          Bearer token. Falls back to BLUEBOT_TOKEN env var.
+        verbose:        Print chunk progress to stderr (default True)
 
     Returns:
         Combined DataFrame sorted by timestamp with duplicates removed.
@@ -185,7 +186,7 @@ def fetch_flow_data_range(
                 f"({chunk_end - chunk_start}s)",
                 file=__import__("sys").stderr,
             )
-        df_chunk = fetch_flow_data(device_id, chunk_start, chunk_end, token)
+        df_chunk = fetch_flow_data(serial_number, chunk_start, chunk_end, token)
         frames.append(df_chunk)
 
     combined = (

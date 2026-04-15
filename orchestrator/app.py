@@ -381,23 +381,27 @@ else:
             text-align: center;
         ">
             <p style="font-size: 1.1rem; font-weight: 700; color: #1a2a4a; margin-bottom: 0.4rem;">
-                What would you like to analyse?
+                What would you like to do?
             </p>
             <p style="color: #5a6a88; font-size: 0.92rem; margin-bottom: 1.75rem;">
-                Ask about any flow meter — health checks, data analysis, trends.
+                Status and flow: use your serial number as-is. Pipe setup uses the physical serial on the meter.
             </p>
             <div style="display:flex; flex-direction:column; gap:0.6rem;">
                 <div style="background:white;border:1px solid #dce7f8;border-radius:10px;
                             padding:0.65rem 1rem;font-size:0.9rem;color:#374151;cursor:default;">
-                    💬 &ldquo;Check the status of meter ABC-123&rdquo;
+                    💬 &ldquo;Run a health check on device BB8100015261&rdquo;
                 </div>
                 <div style="background:white;border:1px solid #dce7f8;border-radius:10px;
                             padding:0.65rem 1rem;font-size:0.9rem;color:#374151;cursor:default;">
-                    💬 &ldquo;Analyse flow data for device XYZ over the last 7 days&rdquo;
+                    💬 &ldquo;Analyse the last 7 days of flow for device BB8100015261&rdquo;
                 </div>
                 <div style="background:white;border:1px solid #dce7f8;border-radius:10px;
                             padding:0.65rem 1rem;font-size:0.9rem;color:#374151;cursor:default;">
-                    💬 &ldquo;Is meter DEF-456 online and healthy?&rdquo;
+                    💬 &ldquo;Is device BB8100015261 online and transmitting?&rdquo;
+                </div>
+                <div style="background:white;border:1px solid #dce7f8;border-radius:10px;
+                            padding:0.65rem 1rem;font-size:0.9rem;color:#374151;cursor:default;">
+                    💬 &ldquo;Configure pipe for serial SN123456: PVC, Schedule 40, 2 inch nominal, angle 45º&rdquo;
                 </div>
             </div>
         </div>
@@ -413,7 +417,7 @@ else:
 _is_processing = bool(st.session_state.get("_agent_queued"))
 
 user_input = st.chat_input(
-    "Ask about a meter or flow data...",
+    "Health, flow, or pipe setup (serial number)...",
     disabled=_is_processing,
 )
 
@@ -506,6 +510,8 @@ if active_input:
                 "resolve_time_range": "Resolving time range",
                 "check_meter_status": "Checking meter status",
                 "analyze_flow_data":  "Analysing flow data",
+                "configure_meter_pipe": "Configuring meter pipe",
+                "set_transducer_angle_only": "Setting transducer angle (SSA only)",
             }
             status_placeholder.info(f"{labels.get(event['tool'], event['tool'])}...")
         elif kind == "tool_result":

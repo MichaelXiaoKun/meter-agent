@@ -8,7 +8,7 @@ PLOTS_DIR matches the orchestrator FastAPI default (and BLUEBOT PLOTS_DIR env) s
 saved files are visible to GET /api/plots/{filename}.
 
 Public API:
-    generate_plot(plot_type, timestamps, values, quality, device_id, start) -> dict
+    generate_plot(plot_type, timestamps, values, quality, serial_number, start) -> dict
     pop_figures() -> list[tuple[Figure, str]]   # (figure, absolute_path) pairs
 """
 
@@ -51,9 +51,9 @@ def pop_figures() -> list[tuple]:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _save(fig, device_id: str, start: float, plot_type: str) -> str:
+def _save(fig, serial_number: str, start: float, plot_type: str) -> str:
     os.makedirs(_PLOTS_DIR, exist_ok=True)
-    filename = f"{device_id}_{int(start)}_{plot_type}.png"
+    filename = f"{serial_number}_{int(start)}_{plot_type}.png"
     path = os.path.join(_PLOTS_DIR, filename)
     fig.savefig(path, dpi=150, bbox_inches="tight")
     return os.path.abspath(path)
@@ -83,7 +83,7 @@ def _time_series(
     timestamps: np.ndarray,
     values: np.ndarray,
     quality: np.ndarray,
-    device_id: str,
+    serial_number: str,
     start: float,
 ) -> dict:
     fig, ax = plt.subplots(figsize=(12, 4))
@@ -100,7 +100,7 @@ def _time_series(
             label=f"Low quality (≤60): {low_q_mask.sum()} pts",
         )
 
-    ax.set_title(f"Flow Rate — {device_id}", fontsize=11)
+    ax.set_title(f"Flow Rate — {serial_number}", fontsize=11)
     ax.set_xlabel("Time (UTC)")
     ax.set_ylabel("Flow Rate (gal/min)")
     ax.legend(fontsize=8)
@@ -108,7 +108,7 @@ def _time_series(
     _format_xaxis(ax, timestamps)
     fig.tight_layout()
 
-    path = _save(fig, device_id, start, "time_series")
+    path = _save(fig, serial_number, start, "time_series")
     _pending.append((fig, path))
     return {
         "path": path,
@@ -125,7 +125,7 @@ def _flow_duration_curve(
     timestamps: np.ndarray,
     values: np.ndarray,
     quality: np.ndarray,
-    device_id: str,
+    serial_number: str,
     start: float,
 ) -> dict:
     clean = values[~np.isnan(values)]
@@ -146,13 +146,13 @@ def _flow_duration_curve(
             fontsize=7, color="#64748b", va="top",
         )
 
-    ax.set_title(f"Flow Duration Curve — {device_id}", fontsize=11)
+    ax.set_title(f"Flow Duration Curve — {serial_number}", fontsize=11)
     ax.set_xlabel("Exceedance Probability (%)")
     ax.set_ylabel("Flow Rate (gal/min)")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
 
-    path = _save(fig, device_id, start, "flow_duration_curve")
+    path = _save(fig, serial_number, start, "flow_duration_curve")
     _pending.append((fig, path))
     return {"path": path, "title": "Flow Duration Curve"}
 
@@ -165,7 +165,7 @@ def _peaks_annotated(
     timestamps: np.ndarray,
     values: np.ndarray,
     quality: np.ndarray,
-    device_id: str,
+    serial_number: str,
     start: float,
 ) -> dict:
     from scipy.signal import find_peaks
@@ -205,14 +205,14 @@ def _peaks_annotated(
             fontsize=9, color="#64748b",
         )
 
-    ax.set_title(f"Flow Rate with Peak Annotations — {device_id}", fontsize=11)
+    ax.set_title(f"Flow Rate with Peak Annotations — {serial_number}", fontsize=11)
     ax.set_xlabel("Time (UTC)")
     ax.set_ylabel("Flow Rate (gal/min)")
     ax.grid(True, alpha=0.3)
     _format_xaxis(ax, timestamps)
     fig.tight_layout()
 
-    path = _save(fig, device_id, start, "peaks_annotated")
+    path = _save(fig, serial_number, start, "peaks_annotated")
     _pending.append((fig, path))
     return {"path": path, "title": "Peaks Annotated", "peak_count": len(peak_indices)}
 
@@ -225,7 +225,7 @@ def _signal_quality(
     timestamps: np.ndarray,
     values: np.ndarray,
     quality: np.ndarray,
-    device_id: str,
+    serial_number: str,
     start: float,
 ) -> dict:
     valid_mask = ~np.isnan(quality)
@@ -250,7 +250,7 @@ def _signal_quality(
 
     low_count = int((q_vals <= 60).sum())
     ax.set_title(
-        f"Signal Quality — {device_id}  "
+        f"Signal Quality — {serial_number}  "
         f"({low_count} low-quality pts ≤60 of {len(q_vals)})",
         fontsize=11,
     )
@@ -262,7 +262,7 @@ def _signal_quality(
     _format_xaxis(ax, timestamps[valid_mask])
     fig.tight_layout()
 
-    path = _save(fig, device_id, start, "signal_quality")
+    path = _save(fig, serial_number, start, "signal_quality")
     _pending.append((fig, path))
     return {
         "path": path,
@@ -289,7 +289,7 @@ def generate_plot(
     timestamps: np.ndarray,
     values: np.ndarray,
     quality: np.ndarray,
-    device_id: str,
+    serial_number: str,
     start: float,
 ) -> dict:
     """
@@ -306,4 +306,4 @@ def generate_plot(
                 f"Valid options: {list(_HANDLERS)}"
             )
         }
-    return handler(timestamps, values, quality, device_id, start)
+    return handler(timestamps, values, quality, serial_number, start)

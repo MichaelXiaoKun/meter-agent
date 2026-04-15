@@ -2,7 +2,7 @@
 main.py — CLI entry point for the flow rate analysis agent.
 
 Usage:
-    python main.py --device BB8100015261 --start 1775588400 --end 1775590200
+    python main.py --serial BB8100015261 --start 1775588400 --end 1775590200
 
 Bearer token:
     Set the BLUEBOT_TOKEN environment variable, or pass --token explicitly.
@@ -36,7 +36,7 @@ def main() -> None:
         epilog=__doc__,
     )
     parser.add_argument(
-        "--device", required=True, help="Device ID (e.g. BB8100015261)"
+        "--serial", required=True, dest="serial", help="Meter serial number (e.g. BB8100015261)"
     )
     parser.add_argument(
         "--start", required=True, type=int, help="Range start as Unix timestamp (seconds)"
@@ -63,16 +63,16 @@ def main() -> None:
         )
         sys.exit(1)
 
-    print(f"Fetching data for device {args.device}...", file=sys.stderr)
-    df = fetch_flow_data_range(args.device, args.start, args.end, token, verbose=True)
+    print(f"Fetching data for serial {args.serial}...", file=sys.stderr)
+    df = fetch_flow_data_range(args.serial, args.start, args.end, token, verbose=True)
     print(f"Fetched {len(df)} data points total.", file=sys.stderr)
 
     print("Running analysis...", file=sys.stderr)
-    analysis = analyze(df, args.device)
-    report = format_report(analysis, args.device, args.start, args.end)
+    analysis = analyze(df, args.serial)
+    report = format_report(analysis, args.serial, args.start, args.end)
 
     if args.output == "file":
-        filename = f"report_{args.device}_{args.start}_{args.end}.md"
+        filename = f"report_{args.serial}_{args.start}_{args.end}.md"
         with open(filename, "w") as f:
             f.write(report)
         print(f"Report saved to {filename}", file=sys.stderr)

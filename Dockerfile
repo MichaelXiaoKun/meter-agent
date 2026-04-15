@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir -r /app/orchestrator/requirements.txt
 COPY orchestrator/ /app/orchestrator/
 COPY data-processing-agent/ /app/data-processing-agent/
 COPY meter-status-agent/ /app/meter-status-agent/
+COPY pipe-configuration-agent/ /app/pipe-configuration-agent/
 COPY bluebot.jpg /app/bluebot.jpg
 COPY requirements.txt /app/requirements.txt
 

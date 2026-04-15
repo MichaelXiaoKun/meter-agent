@@ -28,26 +28,29 @@ TOOL_DEFINITION = {
     "input_schema": {
         "type": "object",
         "properties": {
-            "device_id": {
+            "serial_number": {
                 "type": "string",
-                "description": "Device identifier (e.g. BB8100015261)",
+                "description": (
+                    "Serial number for the status API path — use the exact string the user "
+                    "provided (e.g. BB8100015261)."
+                ),
             }
         },
-        "required": ["device_id"],
+        "required": ["serial_number"],
     },
 }
 
 
-def check_meter_status(device_id: str, token: str) -> dict:
+def check_meter_status(serial_number: str, token: str) -> dict:
     """
-    Run the meter-status-agent for a device and return its report.
+    Run the meter-status-agent for a meter (by serial number) and return its report.
 
     Returns:
         {"success": bool, "report": str | None, "error": str | None}
     """
     env = {**os.environ, "BLUEBOT_TOKEN": token}
     result = subprocess.run(
-        [_PYTHON, "main.py", "--device", device_id],
+        [_PYTHON, "main.py", "--serial", serial_number],
         cwd=_AGENT_DIR,
         capture_output=True,
         text=True,

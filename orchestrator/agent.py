@@ -2,7 +2,8 @@
 agent.py — Conversational orchestrator agent.
 
 Maintains full conversation history across turns and delegates to sub-agents
-via three tools: resolve_time_range, check_meter_status, analyze_flow_data.
+via tools: resolve_time_range, check_meter_status, analyze_flow_data, configure_meter_pipe,
+set_transducer_angle_only.
 
 Usage (from an outer chat loop):
     messages = []
@@ -16,8 +17,22 @@ import anthropic
 from processors.time_range import TOOL_DEFINITION as _TIME_RANGE_DEF, resolve_time_range
 from tools.meter_status import TOOL_DEFINITION as _METER_STATUS_DEF, check_meter_status
 from tools.flow_analysis import TOOL_DEFINITION as _FLOW_ANALYSIS_DEF, analyze_flow_data
+from tools.pipe_configuration import (
+    TOOL_DEFINITION as _PIPE_CONFIGURATION_DEF,
+    configure_meter_pipe,
+)
+from tools.set_transducer_angle import (
+    TOOL_DEFINITION as _SET_TRANSDUCER_ANGLE_DEF,
+    set_transducer_angle_only,
+)
 
-TOOLS = [_TIME_RANGE_DEF, _METER_STATUS_DEF, _FLOW_ANALYSIS_DEF]
+TOOLS = [
+    _TIME_RANGE_DEF,
+    _METER_STATUS_DEF,
+    _FLOW_ANALYSIS_DEF,
+    _PIPE_CONFIGURATION_DEF,
+    _SET_TRANSDUCER_ANGLE_DEF,
+]
 
 _MODEL = "claude-sonnet-4-6"
 _MODEL_CONTEXT_WINDOW = 200_000   # tokens
@@ -26,16 +41,23 @@ _COMPRESS_KEEP_RECENT = 6         # number of recent messages to leave untouched
 
 _SYSTEM_PROMPT = """\
 You are a conversational assistant for bluebot ultrasonic flow meter analysis.
-You help field engineers and operators check meter health and analyse flow data
-by delegating to specialist sub-agents through tool calls.
+You help field engineers and operators check meter health, analyse flow data, and configure
+pipe parameters by delegating to specialist sub-agents through tool calls.
 
 Available tools:
-  resolve_time_range  — convert natural language time expressions to Unix timestamps
-  check_meter_status  — fetch current meter health (online state, signal quality, pipe config)
-  analyze_flow_data   — analyse historical flow rate data over a time range
+  resolve_time_range     — convert natural language time expressions to Unix timestamps
+  check_meter_status     — fetch current meter health (online state, signal quality, pipe config)
+  analyze_flow_data      — analyse historical flow rate data over a time range
+  configure_meter_pipe        — full pipe material/standard/size + transducer angle (management + MQTT)
+  set_transducer_angle_only   — transducer angle only: MQTT **ssa** publish (no pipe catalog / spm)
 
 Rules:
-  1. If the user has not provided a device ID, ask for it before calling any tool.
+  1. **Serial number** for tools:
+     - For **check_meter_status** and **analyze_flow_data**, pass the user's **serial_number**
+       (e.g. BB8100015261) and call the tool. Do not ask for extra confirmation
+       or terminology lectures before calling. If the API returns an error, explain it then.
+     - For **configure_meter_pipe** and **set_transducer_angle_only**, use **serial_number** for
+       management/MQTT as required by those tools.
   2. Always call resolve_time_range before analyze_flow_data when the user gives a
      time range in words. Translate the time expression to English before passing
      it as the description argument (e.g. "dernières 6 heures" → "last 6 hours",
@@ -54,6 +76,12 @@ Rules:
      display_range from analyze_flow_data. If you must cite raw seconds, give the integers
      without timezone interpretation.
   8. Keep replies concise: highlight key findings and let the user ask for detail.
+  9. For configure_meter_pipe, collect serial_number, pipe_material, pipe_standard, pipe_size,
+     and transducer_angle before calling. If any are missing, ask concise follow-ups first.
+     Relay tool errors verbatim when helpful; do not guess MQTT or catalog outcomes.
+  10. When the user wants **only** a transducer angle change (no pipe material/standard/size),
+     use **set_transducer_angle_only** with serial_number and transducer_angle.
+     Use **configure_meter_pipe** when they need pipe dimensions or a full pipe + angle push.
 """
 
 
@@ -133,13 +161,30 @@ def _dispatch(name: str, inputs: dict, token: str) -> str:
         result = resolve_time_range(inputs["description"])
 
     elif name == "check_meter_status":
-        result = check_meter_status(inputs["device_id"], token)
+        result = check_meter_status(inputs["serial_number"], token)
 
     elif name == "analyze_flow_data":
         result = analyze_flow_data(
-            inputs["device_id"],
+            inputs["serial_number"],
             inputs["start"],
             inputs["end"],
+            token,
+        )
+
+    elif name == "configure_meter_pipe":
+        result = configure_meter_pipe(
+            inputs["serial_number"],
+            inputs["pipe_material"],
+            inputs["pipe_standard"],
+            inputs["pipe_size"],
+            inputs["transducer_angle"],
+            token,
+        )
+
+    elif name == "set_transducer_angle_only":
+        result = set_transducer_angle_only(
+            inputs["serial_number"],
+            inputs["transducer_angle"],
             token,
         )
 
