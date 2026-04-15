@@ -119,7 +119,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.list:
-        _print_conversations(store.list_conversations())
+        _print_conversations(store.list_conversations(""))
         return
 
     token = args.token or os.environ.get("BLUEBOT_TOKEN")
@@ -140,7 +140,7 @@ def main() -> None:
         print(f"bluebot Assistant  (resuming {conversation_id}, {turns} previous turns)")
     else:
         messages = []
-        conversation_id = store.create_conversation()
+        conversation_id = store.create_conversation("")
         print(f"bluebot Assistant  (new conversation {conversation_id})")
 
     print("Type your question and press Enter. Type 'exit' to quit.\n")

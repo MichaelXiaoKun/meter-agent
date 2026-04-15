@@ -21,6 +21,8 @@ import time
 import uuid
 from typing import Any
 
+from plots_paths import resolved_plots_dir
+
 
 # ---------------------------------------------------------------------------
 # Backend helpers  (evaluated lazily so env vars set after import work)
@@ -299,10 +301,81 @@ def append_messages(conversation_id: str, messages: list[dict]) -> None:
         )
 
 
+def _plot_png_basenames_from_content(content: Any) -> set[str]:
+    """Extract plot PNG basenames from tool_result blocks in a message content value."""
+    out: set[str] = set()
+    if not isinstance(content, list):
+        return out
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_result":
+            continue
+        raw = block.get("content", "")
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        for p in data.get("plot_paths") or []:
+            if isinstance(p, str) and p:
+                base = os.path.basename(p)
+                if base.endswith(".png"):
+                    out.add(base)
+    return out
+
+
+def _plot_filename_referenced_outside_conversation(cur, filename: str, exclude_id: str) -> bool:
+    """True if any message in a *different* conversation references *filename* (content substring)."""
+    cur.execute(
+        _q("SELECT 1 FROM messages WHERE conversation_id != ? AND content LIKE ? LIMIT 1"),
+        (exclude_id, f"%{filename}%"),
+    )
+    return cur.fetchone() is not None
+
+
+def _unlink_orphan_plot_files(filenames: set[str]) -> None:
+    """Remove PNG files under PLOTS_DIR that are no longer referenced by any message."""
+    root = resolved_plots_dir()
+    root_resolved = root.resolve()
+    for name in filenames:
+        if "/" in name or "\\" in name or ".." in name:
+            continue
+        path = (root / name).resolve()
+        try:
+            path.relative_to(root_resolved)
+        except ValueError:
+            continue
+        try:
+            if path.is_file() and path.suffix.lower() == ".png":
+                path.unlink()
+        except OSError:
+            pass
+
+
 def delete_conversation(conversation_id: str, user_id: str) -> None:
-    """Delete a conversation (and its messages) owned by *user_id*."""
+    """Delete a conversation (and its messages) owned by *user_id*.
+
+    Also removes plot PNG files on disk that were only referenced by this conversation
+    (same PLOTS_DIR as GET /api/plots). Files still referenced elsewhere are kept.
+    """
     _ensure_ready()
+    orphan_pngs: set[str] = set()
     with _conn() as (conn, cur):
+        cur.execute(
+            _q("SELECT content FROM messages WHERE conversation_id = ?"),
+            (conversation_id,),
+        )
+        rows = cur.fetchall()
+        seen: set[str] = set()
+        for row in rows:
+            content = json.loads(row["content"])
+            seen.update(_plot_png_basenames_from_content(content))
+        for fn in seen:
+            if not _plot_filename_referenced_outside_conversation(cur, fn, conversation_id):
+                orphan_pngs.add(fn)
+
         cur.execute(
             _q("DELETE FROM messages WHERE conversation_id = ?"),
             (conversation_id,),
@@ -311,3 +384,5 @@ def delete_conversation(conversation_id: str, user_id: str) -> None:
             _q("DELETE FROM conversations WHERE id = ? AND user_id = ?"),
             (conversation_id, user_id),
         )
+
+    _unlink_orphan_plot_files(orphan_pngs)

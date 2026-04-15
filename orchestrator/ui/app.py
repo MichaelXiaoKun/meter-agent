@@ -134,7 +134,7 @@ with st.sidebar:
 
     st.divider()
 
-    convs = store.list_conversations()
+    convs = store.list_conversations("")
     for conv in convs:
         title     = (conv["title"] or "(untitled)")[:38]
         is_active = conv["id"] == st.session_state.conversation_id
@@ -150,7 +150,7 @@ with st.sidebar:
                     st.rerun()
         with col_del:
             if st.button("✕", key=f"del_{conv['id']}"):
-                store.delete_conversation(conv["id"])
+                store.delete_conversation(conv["id"], "")
                 if is_active:
                     st.session_state.conversation_id = None
                     st.session_state.messages = []
@@ -206,7 +206,7 @@ if prompt := st.chat_input("Health, flow, or pipe setup (serial number)..."):
 
     # Create the conversation on the first message of a new session.
     if st.session_state.conversation_id is None:
-        st.session_state.conversation_id = store.create_conversation(title=prompt[:60])
+        st.session_state.conversation_id = store.create_conversation("", title=prompt[:60])
 
     # Show user message immediately.
     with st.chat_message("user"):

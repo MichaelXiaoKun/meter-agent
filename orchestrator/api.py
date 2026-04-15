@@ -32,6 +32,7 @@ from sse_starlette.sse import EventSourceResponse
 
 import store
 from agent import run_turn
+from plots_paths import resolved_plots_dir
 from summarizer import update_title
 
 # ---------------------------------------------------------------------------
@@ -210,23 +211,7 @@ def patch_conversation(conv_id: str, body: UpdateTitleRequest):
 # Static assets
 # ---------------------------------------------------------------------------
 
-def _resolved_plots_dir() -> Path:
-    """
-    Canonical plots directory (must match data-processing-agent/processors/plots.py).
-
-    Relative PLOTS_DIR is resolved from the repo root (parent of orchestrator/), not
-    from process cwd — uvicorn often runs with cwd orchestrator/ while subprocess
-    cwd is data-processing-agent/, which previously split reads vs writes.
-    """
-    repo_root = Path(__file__).resolve().parent.parent
-    raw = os.environ.get("PLOTS_DIR")
-    if not raw:
-        return (repo_root / "data-processing-agent" / "plots").resolve()
-    p = Path(raw).expanduser()
-    return p.resolve() if p.is_absolute() else (repo_root / p).resolve()
-
-
-_PLOTS_DIR = _resolved_plots_dir()
+_PLOTS_DIR = resolved_plots_dir()
 logger.info("PLOTS_DIR=%s (exists=%s)", _PLOTS_DIR, _PLOTS_DIR.is_dir())
 _LOGO_PATH = Path(os.environ.get(
     "LOGO_PATH",
