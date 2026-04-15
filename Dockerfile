@@ -3,7 +3,7 @@
 FROM node:20-alpine AS frontend-build
 WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm \
+RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
     npm ci
 COPY frontend/ ./
 RUN npm run build
@@ -15,7 +15,7 @@ WORKDIR /app
 
 # API + subprocess deps only (no Streamlit — smaller image, faster registry push on Railway)
 COPY orchestrator/requirements-api.txt /app/orchestrator/requirements-api.txt
-RUN --mount=type=cache,target=/root/.cache/pip \
+RUN --mount=type=cache,id=pip-cache,target=/root/.cache/pip \
     pip install --no-cache-dir -r /app/orchestrator/requirements-api.txt
 
 # Copy application code
