@@ -110,10 +110,17 @@ export async function streamChat(
   onEvent: (event: SSEEvent) => void,
   signal?: AbortSignal
 ): Promise<void> {
+  const clientTimezone =
+    typeof Intl !== "undefined"
+      ? Intl.DateTimeFormat().resolvedOptions().timeZone
+      : undefined;
   const res = await fetch(`${BASE}/conversations/${convId}/chat`, {
     method: "POST",
     headers: headers(token),
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({
+      message,
+      ...(clientTimezone ? { client_timezone: clientTimezone } : {}),
+    }),
     signal,
   });
   if (!res.ok) throw new Error(await res.text());

@@ -58,10 +58,13 @@ Rules:
        or terminology lectures before calling. If the API returns an error, explain it then.
      - For **configure_meter_pipe** and **set_transducer_angle_only**, use **serial_number** for
        management/MQTT as required by those tools.
-  2. Always call resolve_time_range before analyze_flow_data when the user gives a
-     time range in words. Translate the time expression to English before passing
-     it as the description argument (e.g. "dernières 6 heures" → "last 6 hours",
-     "最近6時間" → "last 6 hours").
+  2. **Time ranges:** The API sends the user’s local IANA timezone (e.g. America/Denver) when
+     the browser provides it. Ambiguous phrases ("today", "yesterday", "this morning", dates
+     without an offset) are interpreted in that local timezone unless the user explicitly names
+     a different one in their message (e.g. "in UTC", "Eastern time", "Tokyo").
+     Always call resolve_time_range before analyze_flow_data when the user gives a time range
+     in words. Translate the time expression to English before passing it as the description
+     argument (e.g. "dernières 6 heures" → "last 6 hours", "最近6時間" → "last 6 hours").
   3. After calling resolve_time_range, always show the user the display_range string
      from the tool result (and you may mention resolved_label if helpful) and ask them
      to confirm before proceeding.
@@ -155,10 +158,16 @@ def _compress_history(client: anthropic.Anthropic, messages: list) -> list:
     return [summary_message] + recent
 
 
-def _dispatch(name: str, inputs: dict, token: str) -> str:
+def _dispatch(
+    name: str,
+    inputs: dict,
+    token: str,
+    *,
+    client_timezone: str | None = None,
+) -> str:
     """Route a tool call to the correct function and return the result as JSON."""
     if name == "resolve_time_range":
-        result = resolve_time_range(inputs["description"])
+        result = resolve_time_range(inputs["description"], user_timezone=client_timezone)
 
     elif name == "check_meter_status":
         result = check_meter_status(inputs["serial_number"], token)
@@ -169,6 +178,7 @@ def _dispatch(name: str, inputs: dict, token: str) -> str:
             inputs["start"],
             inputs["end"],
             token,
+            display_timezone=client_timezone,
         )
 
     elif name == "configure_meter_pipe":
@@ -194,7 +204,13 @@ def _dispatch(name: str, inputs: dict, token: str) -> str:
     return json.dumps(result, default=str)
 
 
-def run_turn(messages: list, token: str, on_event=None) -> str:
+def run_turn(
+    messages: list,
+    token: str,
+    on_event=None,
+    *,
+    client_timezone: str | None = None,
+) -> str:
     """
     Process one conversational turn.
 
@@ -205,6 +221,8 @@ def run_turn(messages: list, token: str, on_event=None) -> str:
         messages:   Full conversation history (list of role/content dicts).
                     Modified in place — pass the same list on every turn.
         token:      bluebot Bearer token forwarded to sub-agent tool calls.
+        client_timezone: Optional IANA zone from the browser (e.g. America/New_York).
+                    Used for resolve_time_range and analyze_flow_data display_range when set.
         on_event:   Optional callable(event: dict) for progress updates.
                     Fired before and after each tool call with:
                       {"type": "token_usage",  "tokens": int, "pct": float}  — before each API call
@@ -258,7 +276,12 @@ def run_turn(messages: list, token: str, on_event=None) -> str:
             for block in response.content:
                 if block.type == "tool_use":
                     _emit({"type": "tool_call", "tool": block.name, "input": block.input})
-                    result_json = _dispatch(block.name, block.input, token)
+                    result_json = _dispatch(
+                        block.name,
+                        block.input,
+                        token,
+                        client_timezone=client_timezone,
+                    )
                     result_dict = json.loads(result_json)
                     event: dict = {
                         "type": "tool_result",

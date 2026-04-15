@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 
-from processors.time_range import format_unix_range_display
+from processors.time_range import display_tz_name_for_user, format_unix_range_display
 
 _AGENT_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "data-processing-agent")
@@ -111,7 +111,14 @@ TOOL_DEFINITION = {
 }
 
 
-def analyze_flow_data(serial_number: str, start: int, end: int, token: str) -> dict:
+def analyze_flow_data(
+    serial_number: str,
+    start: int,
+    end: int,
+    token: str,
+    *,
+    display_timezone: str | None = None,
+) -> dict:
     """
     Run the data-processing-agent for a meter (by serial number) over a time range.
 
@@ -120,11 +127,12 @@ def analyze_flow_data(serial_number: str, start: int, end: int, token: str) -> d
             "success":       bool,
             "report":        str | None,   # full Markdown report text
             "plot_paths":    list[str],    # absolute PNG paths embedded in the report
-            "display_range": str,          # server-formatted wall times for start/end
+            "display_range": str,          # wall times for start/end (user TZ when set)
             "error":         str | None,
         }
     """
-    display_range = format_unix_range_display(start, end)
+    tz_name = display_tz_name_for_user(display_timezone)
+    display_range = format_unix_range_display(start, end, tz_name=tz_name)
     env = {**os.environ, "BLUEBOT_TOKEN": token}
     result = subprocess.run(
         [

@@ -9,9 +9,12 @@ natural language: relative durations, specific dates, range syntax ("X to Y"),
 inline timezones, and foreign languages — without any regex maintenance.
 
 Timezone behaviour:
-    If the user does not specify a timezone, the system's local timezone is
-    used. The current local time is injected into the system prompt so the
-    LLM can anchor expressions like "today" and "this morning" correctly.
+    Callers may pass ``user_timezone`` (IANA name, e.g. from the browser's
+    ``Intl.DateTimeFormat().resolvedOptions().timeZone``). When set, ambiguous
+    phrases ("today", "last night", calendar dates without offset) are interpreted
+    in that zone. When omitted, the process host's local zone is used (often UTC on
+    cloud servers — prefer passing the client zone from the API). If the user
+    explicitly names a timezone in their words, the parser should honor it instead.
     Output Unix timestamps are always UTC-based (as required by the API).
 """
 
@@ -21,6 +24,24 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import anthropic
+
+
+def _safe_zoneinfo(name: str | None):
+    """Return ZoneInfo for a valid IANA name, else None."""
+    if not name or not isinstance(name, str):
+        return None
+    s = name.strip()
+    if not s:
+        return None
+    try:
+        return ZoneInfo(s)
+    except Exception:
+        return None
+
+
+def display_tz_name_for_user(user_timezone: str | None) -> str | None:
+    """Return stripped IANA name if valid, else None (for format_unix_range_display)."""
+    return user_timezone.strip() if _safe_zoneinfo(user_timezone) else None
 
 
 def _resolve_display_tz(name: str):
@@ -82,7 +103,9 @@ TOOL_DEFINITION = {
         "calling analyze_flow_data. "
         "Examples: 'last 6 hours', 'yesterday', 'this morning', '3 hours ago', "
         "'April 8 midnight to April 9 midnight EDT', 'past 30 minutes'. "
-        "The result includes display_range (server-formatted wall times) and resolved_label; "
+        "The server resolves ambiguous dates in the user's local timezone when available; "
+        "if the user names a specific timezone in their message, honor that instead. "
+        "The result includes display_range (wall times) and resolved_label; "
         "prefer display_range when quoting times to the user."
     ),
     "input_schema": {
@@ -194,50 +217,80 @@ _EXTRACT_TOOL = {
 def resolve_time_range(
     description: str,
     reference_timestamp: int | None = None,
+    *,
+    user_timezone: str | None = None,
 ) -> dict:
     """
     Parse a natural language time description into Unix timestamps.
 
     Args:
-        description:         Natural language time range from the user.
-        reference_timestamp: Optional "now" anchor (Unix seconds).
-                             Defaults to the actual current local time.
+        description: Natural language time range from the user.
+        reference_timestamp: Optional "now" anchor (Unix seconds). Interpreted as an
+            instant; the active zone for display/anchoring follows user_timezone or host.
+        user_timezone: Optional IANA name (e.g. ``America/Chicago`` from the browser).
+            When set, ambiguous phrases use this zone unless the user explicitly names
+            another timezone in *description*.
 
     Returns:
         {
             "start":           int,        # Unix timestamp, seconds (inclusive)
             "end":             int,        # Unix timestamp, seconds (inclusive)
             "resolved_label":  str | None, # Human-readable confirmation string
-            "display_range":   str | None, # Server-formatted wall times (DISPLAY_TZ / UTC)
+            "display_range":   str | None, # Wall times (user zone or DISPLAY_TZ / UTC)
             "error":           str | None, # Set when parsing fails
         }
     """
-    now = (
-        datetime.fromtimestamp(reference_timestamp).astimezone()
-        if reference_timestamp is not None
-        else datetime.now().astimezone()
-    )
+    utz = _safe_zoneinfo(user_timezone)
+    _disp = user_timezone if utz else None
+
+    if reference_timestamp is not None:
+        aware_utc = datetime.fromtimestamp(reference_timestamp, tz=timezone.utc)
+        if utz:
+            now = aware_utc.astimezone(utz)
+        else:
+            now = aware_utc.astimezone()
+    elif utz:
+        now = datetime.now(utz)
+    else:
+        now = datetime.now().astimezone()
 
     fast = _try_relative_fast_path(description, now)
     if fast is not None:
+        fast["display_range"] = format_unix_range_display(
+            fast["start"], fast["end"], tz_name=_disp
+        )
         return fast
 
-    tz_name   = now.strftime("%Z")
+    if utz:
+        tz_rules = (
+            f"If the user does not specify a timezone in their words, interpret calendar dates, "
+            f"'today', 'yesterday', 'this morning', and local clock times in **{user_timezone}** (IANA).\n"
+            f"  - If they explicitly ask for a different zone (e.g. UTC, EST, 'London time', or ISO with a fixed offset), use that instead for their expression.\n"
+        )
+        tz_name_short = now.strftime("%Z")
+    else:
+        tz_rules = (
+            f"If the user does not specify a timezone, use the host's local zone ({now.tzinfo!s}).\n"
+            f"  - If they explicitly ask for a specific timezone, use that instead.\n"
+        )
+        tz_name_short = now.strftime("%Z")
+
     now_local = now.strftime("%Y-%m-%d %H:%M:%S %Z")
-    now_utc   = now.astimezone(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    now_utc = now.astimezone(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     system_prompt = (
-        f"You are a time range parser. Convert the user's time expression into Unix timestamps.\n\n"
-        f"Reference times:\n"
-        f"  Local : {now_local}\n"
-        f"  UTC   : {now_utc}\n\n"
+        f"You are a time range parser. Convert the user's time expression into precise wall times, "
+        f"then emit ISO 8601 with offsets for the extract_time_range tool.\n\n"
+        f"Reference times (anchor for 'now' and relative phrases):\n"
+        f"  Primary local : {now_local}  (zone key: {tz_name_short})\n"
+        f"  UTC            : {now_utc}\n\n"
         f"Rules:\n"
-        f"  - If no timezone is specified, use the local timezone ({tz_name}).\n"
-        f"  - 'today' means from local midnight to now.\n"
-        f"  - 'yesterday' means the full previous calendar day in local time.\n"
-        f"  - For specific dates without a year, assume the current year.\n"
-        f"  - Always return UTC-based Unix timestamps regardless of input timezone.\n"
-        f"  - For open-ended expressions like '6 hours ago', set end = now."
+        f"{tz_rules}"
+        f"  - 'today' means from local midnight to now in the active zone above.\n"
+        f"  - 'yesterday' means the full previous calendar day in that zone.\n"
+        f"  - For specific dates without a year, assume the current year in that zone.\n"
+        f"  - Always return ISO datetimes with explicit UTC offsets so Unix timestamps are exact.\n"
+        f"  - For open-ended expressions like '6 hours ago', set end = the anchor 'now' above."
     )
 
     try:
@@ -255,20 +308,24 @@ def resolve_time_range(
 
         # Convert ISO strings → Unix timestamps in Python (exact arithmetic).
         start_dt = datetime.fromisoformat(result["start_iso"])
-        end_dt   = datetime.fromisoformat(result["end_iso"])
-
-        label = (
-            f"{start_dt.astimezone().strftime('%Y-%m-%d %H:%M %Z')} → "
-            f"{end_dt.astimezone().strftime('%Y-%m-%d %H:%M %Z')}"
-        )
+        end_dt = datetime.fromisoformat(result["end_iso"])
 
         start_s = int(start_dt.timestamp())
         end_s = int(end_dt.timestamp())
+
+        z_disp = utz if utz else (datetime.now().astimezone().tzinfo or timezone.utc)
+        start_wall = datetime.fromtimestamp(start_s, tz=timezone.utc).astimezone(z_disp)
+        end_wall = datetime.fromtimestamp(end_s, tz=timezone.utc).astimezone(z_disp)
+        label = (
+            f"{start_wall.strftime('%Y-%m-%d %H:%M %Z')} → "
+            f"{end_wall.strftime('%Y-%m-%d %H:%M %Z')}"
+        )
+
         return {
             "start":          start_s,
             "end":            end_s,
             "resolved_label": label,
-            "display_range":  format_unix_range_display(start_s, end_s),
+            "display_range":  format_unix_range_display(start_s, end_s, tz_name=_disp),
             "error":          None,
         }
 

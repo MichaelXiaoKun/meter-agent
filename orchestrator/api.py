@@ -116,6 +116,7 @@ class CreateConversationRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    client_timezone: str | None = None  # IANA, e.g. America/New_York (browser local zone)
 
 class UpdateTitleRequest(BaseModel):
     title: str
@@ -289,7 +290,12 @@ async def chat(
     def _run():
         _active_conversations.add(conv_id)
         try:
-            run_turn(messages, token, on_event=_on_event)
+            run_turn(
+                messages,
+                token,
+                on_event=_on_event,
+                client_timezone=body.client_timezone,
+            )
             checkpoint = next(
                 (i for i in range(len(messages) - 1, -1, -1)
                  if messages[i]["role"] == "user" and messages[i]["content"] == body.message),
