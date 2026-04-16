@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { Conversation } from "../types";
 
 interface SidebarProps {
@@ -9,12 +9,34 @@ interface SidebarProps {
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;
   onDeleteConversation: (id: string) => void;
+  onRenameConversation: (id: string, title: string) => void | Promise<void>;
   onLogout: () => void;
   /** Stored only in this browser; sent as X-Anthropic-Key on chat requests. */
   anthropicApiKey: string;
   onAnthropicApiKeyChange: (key: string) => void;
   /** From GET /api/config — null until loaded. */
   anthropicServerConfigured: boolean | null;
+  /** Hide the sidebar (main pane can show a control to reopen). */
+  onCollapse: () => void;
+}
+
+function IconChevronLeft({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      aria-hidden
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M15 19l-7-7 7-7"
+      />
+    </svg>
+  );
 }
 
 function relativeDate(ts: number): string {
@@ -36,10 +58,12 @@ export default function Sidebar({
   onSelectConversation,
   onNewConversation,
   onDeleteConversation,
+  onRenameConversation,
   onLogout,
   anthropicApiKey,
   onAnthropicApiKeyChange,
   anthropicServerConfigured,
+  onCollapse,
 }: SidebarProps) {
   const [keyModalOpen, setKeyModalOpen] = useState(false);
   const [keyDraft, setKeyDraft] = useState(anthropicApiKey);
@@ -49,16 +73,32 @@ export default function Sidebar({
   }, [keyModalOpen, anthropicApiKey]);
 
   return (
-    <aside className="flex h-full w-72 flex-col border-r border-brand-border bg-brand-100">
-      {/* Header */}
-      <div className="flex items-center gap-2 px-4 pt-4 pb-3">
-        <img
-          src="/api/logo"
-          alt="bluebot"
-          className="h-8 w-8 rounded-lg object-cover"
-        />
-        <span className="text-base font-bold text-brand-900">bluebot</span>
-      </div>
+    <aside className="flex h-full w-72 min-w-[18rem] flex-col bg-brand-100">
+      <header className="shrink-0 border-b border-brand-border/80 bg-gradient-to-b from-white/95 to-brand-100/80 px-3 pb-3.5 pt-4 shadow-[0_1px_0_0_rgba(15,23,42,0.04)] backdrop-blur-sm">
+        <div className="flex items-center gap-2">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white shadow-sm ring-1 ring-brand-border/70">
+            <img
+              src="/api/logo"
+              alt=""
+              width={36}
+              height={36}
+              className="h-9 w-9 rounded-lg object-cover"
+            />
+          </div>
+          <p className="min-w-0 flex-1 text-sm font-semibold leading-tight text-brand-900">
+            Conversations
+          </p>
+          <button
+            type="button"
+            onClick={onCollapse}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-brand-muted transition-colors hover:bg-white/80 hover:text-brand-900"
+            title="Hide sidebar"
+            aria-label="Hide conversations sidebar"
+          >
+            <IconChevronLeft className="h-5 w-5" />
+          </button>
+        </div>
+      </header>
 
       {/* New conversation */}
       <div className="px-3 pb-2">
@@ -77,6 +117,7 @@ export default function Sidebar({
         processingId={processingId}
         onSelect={onSelectConversation}
         onDelete={onDeleteConversation}
+        onRename={onRenameConversation}
       />
 
       {/* Account section */}
@@ -139,7 +180,8 @@ export default function Sidebar({
               . It is kept in this browser only and sent to your assistant server over HTTPS as{" "}
               <code className="rounded bg-brand-50 px-1 text-xs">X-Anthropic-Key</code>. If you leave
               it blank, the server uses <code className="rounded bg-brand-50 px-1 text-xs">ANTHROPIC_API_KEY</code>{" "}
-              when set.
+              when set. To remove a saved key, use <strong className="text-brand-800">Clear</strong> below or{" "}
+              <strong className="text-brand-800">Sign out</strong> (both wipe the key from this browser).
             </p>
             {anthropicServerConfigured === false && !anthropicApiKey.trim() && (
               <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
@@ -196,10 +238,19 @@ export default function Sidebar({
 
 /* ------------------------------------------------------------------ */
 
-interface CtxMenu {
-  convId: string;
-  x: number;
-  y: number;
+function IconDotsHorizontal({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      fill="currentColor"
+      viewBox="0 0 24 24"
+      aria-hidden
+    >
+      <circle cx="6" cy="12" r="1.5" />
+      <circle cx="12" cy="12" r="1.5" />
+      <circle cx="18" cy="12" r="1.5" />
+    </svg>
+  );
 }
 
 function ConversationList({
@@ -208,97 +259,133 @@ function ConversationList({
   processingId,
   onSelect,
   onDelete,
+  onRename,
 }: {
   conversations: Conversation[];
   activeId: string | null;
   processingId: string | null;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => void | Promise<void>;
 }) {
-  const [ctx, setCtx] = useState<CtxMenu | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!ctx) return;
-    function handleClick(e: MouseEvent) {
-      if (menuRef.current && menuRef.current.contains(e.target as Node)) return;
-      setCtx(null);
+    if (!openMenuId) return;
+    function handleMousedown(e: MouseEvent) {
+      const t = e.target as HTMLElement;
+      if (t.closest(`[data-conv-menu-root="${openMenuId}"]`)) return;
+      setOpenMenuId(null);
     }
     function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setCtx(null);
+      if (e.key === "Escape") setOpenMenuId(null);
     }
-    window.addEventListener("mousedown", handleClick);
+    window.addEventListener("mousedown", handleMousedown);
     window.addEventListener("keydown", handleKey);
     return () => {
-      window.removeEventListener("mousedown", handleClick);
+      window.removeEventListener("mousedown", handleMousedown);
       window.removeEventListener("keydown", handleKey);
     };
-  }, [ctx]);
+  }, [openMenuId]);
 
   return (
     <div className="relative flex-1 overflow-y-auto px-2">
       {conversations.map((c) => {
         const isActive = c.id === activeId;
         const isBusy = c.id === processingId;
+        const menuOpen = openMenuId === c.id;
+        const rowClass = isActive
+          ? "bg-white font-semibold text-brand-900 shadow-sm"
+          : "text-brand-900/80 hover:bg-white/60";
+
         return (
-          <button
+          <div
             key={c.id}
-            onClick={() => onSelect(c.id)}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              setCtx({ convId: c.id, x: e.clientX, y: e.clientY });
-            }}
-            className={`w-full rounded-lg px-3 py-2 text-left text-sm transition-colors ${isActive
-                ? "bg-white font-semibold text-brand-900 shadow-sm"
-                : "text-brand-900/80 hover:bg-white/60"
-              }`}
+            className={`group relative mb-0.5 flex rounded-lg ${rowClass}`}
           >
-            <div
-              className="flex items-center gap-1.5 truncate"
-              title={c.title || "New conversation"}
+            <button
+              type="button"
+              onClick={() => {
+                setOpenMenuId(null);
+                onSelect(c.id);
+              }}
+              className="min-w-0 flex-1 rounded-lg px-3 py-2 text-left text-sm transition-colors"
             >
-              {isBusy && (
-                <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-brand-500" />
+              <div
+                className="flex items-center gap-1.5 truncate"
+                title={c.title || "New conversation"}
+              >
+                {isBusy && (
+                  <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-brand-500" />
+                )}
+                <span className="truncate">{c.title || "New conversation"}</span>
+              </div>
+              <div className="text-xs text-brand-muted">
+                {relativeDate(c.updated_at)}
+              </div>
+            </button>
+
+            <div
+              className={`relative flex shrink-0 items-start pt-1 pr-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 ${menuOpen ? "sm:opacity-100" : ""}`}
+              data-conv-menu-root={c.id}
+            >
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setOpenMenuId((id) => (id === c.id ? null : c.id));
+                }}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-brand-muted transition-colors hover:bg-white/80 hover:text-brand-900"
+                title="Conversation actions"
+                aria-expanded={menuOpen}
+                aria-haspopup="menu"
+                aria-label="Conversation actions"
+              >
+                <IconDotsHorizontal className="h-5 w-5" />
+              </button>
+
+              {menuOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 top-full z-50 mt-1 min-w-[11rem] rounded-lg border border-brand-border bg-white py-1 shadow-lg"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="flex w-full items-center px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                    onClick={() => {
+                      setOpenMenuId(null);
+                      if (!window.confirm("Delete this conversation?")) return;
+                      onDelete(c.id);
+                    }}
+                  >
+                    Delete chat
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="flex w-full items-center px-3 py-2 text-left text-sm text-brand-900 hover:bg-brand-50"
+                    onClick={() => {
+                      setOpenMenuId(null);
+                      const current = c.title || "New conversation";
+                      const next = window.prompt("Rename conversation", current);
+                      if (next === null) return;
+                      const trimmed = next.trim();
+                      if (!trimmed || trimmed === current) return;
+                      void Promise.resolve(onRename(c.id, trimmed)).catch(() => {
+                        /* errors surfaced by global / fetch handling if any */
+                      });
+                    }}
+                  >
+                    Rename title
+                  </button>
+                </div>
               )}
-              <span className="truncate">{c.title || "New conversation"}</span>
             </div>
-            <div className="text-xs text-brand-muted">
-              {relativeDate(c.updated_at)}
-            </div>
-          </button>
+          </div>
         );
       })}
-
-      {ctx && (
-        <div
-          ref={menuRef}
-          style={{ position: "fixed", left: ctx.x, top: ctx.y }}
-          className="z-50 min-w-[140px] rounded-lg border border-brand-border bg-white py-1 shadow-lg"
-        >
-          <button
-            onClick={() => {
-              onDelete(ctx.convId);
-              setCtx(null);
-            }}
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50"
-          >
-            <svg
-              className="h-4 w-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-              />
-            </svg>
-            Delete
-          </button>
-        </div>
-      )}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import LoginPage from "./components/LoginPage";
 import Sidebar from "./components/Sidebar";
+import SidebarIconRail from "./components/SidebarIconRail";
 import ChatView from "./components/ChatView";
 import { useConversations } from "./hooks/useConversations";
 import { useChat } from "./hooks/useChat";
@@ -49,6 +50,21 @@ export default function App() {
   const [anthropicServerConfigured, setAnthropicServerConfigured] = useState<
     boolean | null
   >(null);
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    try {
+      return localStorage.getItem("bb_sidebar_open") !== "0";
+    } catch {
+      return true;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("bb_sidebar_open", sidebarOpen ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [sidebarOpen]);
   const [activeConvId, _setActiveConvId] = useState<string | null>(
     () => localStorage.getItem("bb_active_conv") ?? null
   );
@@ -90,7 +106,7 @@ export default function App() {
     return () => window.clearInterval(id);
   }, []);
 
-  const { conversations, refresh, create, remove } = useConversations(user);
+  const { conversations, refresh, create, remove, rename } = useConversations(user);
   const {
     messages,
     status,
@@ -125,6 +141,7 @@ export default function App() {
     setUser("");
     setActiveConvId(null);
     localStorage.removeItem("bb_active_conv");
+    setAnthropicApiKey("");
   }
 
   async function handleNewConversation() {
@@ -157,20 +174,35 @@ export default function App() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-brand-50">
-      <Sidebar
-        conversations={conversations}
-        activeId={activeConvId}
-        processingId={processingConvId}
-        user={user}
-        onSelectConversation={setActiveConvId}
-        onNewConversation={handleNewConversation}
-        onDeleteConversation={handleDeleteConversation}
-        onLogout={handleLogout}
-        anthropicApiKey={anthropicApiKey}
-        onAnthropicApiKeyChange={setAnthropicApiKey}
-        anthropicServerConfigured={anthropicServerConfigured}
-      />
-      <main className="flex-1">
+      <div
+        className={`flex shrink-0 overflow-hidden transition-[width] duration-200 ease-out border-r border-brand-border ${
+          sidebarOpen ? "w-72" : "w-14"
+        }`}
+      >
+        {sidebarOpen ? (
+          <Sidebar
+            conversations={conversations}
+            activeId={activeConvId}
+            processingId={processingConvId}
+            user={user}
+            onSelectConversation={setActiveConvId}
+            onNewConversation={handleNewConversation}
+            onDeleteConversation={handleDeleteConversation}
+            onRenameConversation={rename}
+            onLogout={handleLogout}
+            anthropicApiKey={anthropicApiKey}
+            onAnthropicApiKeyChange={setAnthropicApiKey}
+            anthropicServerConfigured={anthropicServerConfigured}
+            onCollapse={() => setSidebarOpen(false)}
+          />
+        ) : (
+          <SidebarIconRail
+            onExpand={() => setSidebarOpen(true)}
+            onNewConversation={handleNewConversation}
+          />
+        )}
+      </div>
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ChatView
           messages={messages}
           status={status}

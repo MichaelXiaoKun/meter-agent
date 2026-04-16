@@ -99,19 +99,28 @@ export default function ChatView({
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="border-b border-brand-border bg-white/80 px-6 py-3 text-center backdrop-blur">
-        <div className="flex items-center justify-center gap-2">
-          <img
-            src="/api/logo"
-            alt="bluebot"
-            className="h-8 w-8 rounded-lg object-cover shadow-sm"
-          />
-          <h1 className="text-lg font-bold tracking-tight text-brand-900">
-            bluebot Assistant
-          </h1>
+      {/* Header — aligned with chat column below */}
+      <header className="shrink-0 border-b border-brand-border/90 bg-gradient-to-b from-white to-brand-50/40 shadow-[0_1px_0_0_rgba(15,23,42,0.04)] backdrop-blur-md">
+        <div className="mx-auto flex max-w-3xl items-center gap-3 px-4 py-3.5 sm:px-6">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white shadow-sm ring-1 ring-brand-border/70">
+            <img
+              src="/api/logo"
+              alt=""
+              className="h-9 w-9 rounded-lg object-cover"
+              width={36}
+              height={36}
+            />
+          </div>
+          <div className="min-w-0 flex-1 text-left">
+            <h1 className="text-base font-bold tracking-tight text-brand-900 sm:text-[1.0625rem]">
+              bluebot Assistant
+            </h1>
+            <p className="mt-0.5 text-xs leading-snug text-brand-muted">
+              Flow analysis, meter health, and pipe configuration — ask with a serial number.
+            </p>
+          </div>
         </div>
-      </div>
+      </header>
 
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto px-6 py-4">

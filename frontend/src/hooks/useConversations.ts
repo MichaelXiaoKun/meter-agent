@@ -54,5 +54,13 @@ export function useConversations(userId: string) {
     [userId, refresh]
   );
 
-  return { conversations, loading, refresh, create, remove };
+  const rename = useCallback(
+    async (convId: string, title: string) => {
+      await api.updateTitle(convId, title);
+      await refresh();
+    },
+    [refresh]
+  );
+
+  return { conversations, loading, refresh, create, remove, rename };
 }
