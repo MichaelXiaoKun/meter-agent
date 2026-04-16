@@ -99,6 +99,17 @@ _TPM_INPUT_GUIDE_TOKENS = _resolve_tpm_input_guide_tokens()
 _MAX_INPUT_TOKENS_TARGET = _resolve_max_input_tokens_target(_TPM_INPUT_GUIDE_TOKENS)
 
 
+def _resolve_anthropic_api_key(override: str | None) -> str:
+    """Prefer per-request key (browser), else server env."""
+    k = (override or "").strip() or os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not k:
+        raise RuntimeError(
+            "Missing Anthropic API key. Add your key under **Claude API key** in the sidebar, "
+            "or set ANTHROPIC_API_KEY on the server."
+        )
+    return k
+
+
 def _estimate_stream_turn_tpm_cost(token_count: int) -> int:
     """
     Billable input for one orchestrator iteration: messages.count_tokens + messages.stream
@@ -117,6 +128,9 @@ def get_rate_limit_config_for_api() -> dict[str, float | int]:
         "tpm_headroom_fraction": _env_float("ORCHESTRATOR_TPM_HEADROOM_FRACTION", 0.5),
         "tpm_sliding_input_tokens_60s": sliding_input_tokens_sum(),
         "tpm_window_seconds": 60,
+        "anthropic_server_configured": bool(
+            (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+        ),
     }
 
 _SYSTEM_PROMPT = """\
@@ -382,6 +396,7 @@ def _run_analyze_flow_with_progress(
     *,
     client_timezone: str | None,
     emit,
+    anthropic_api_key: str | None = None,
 ) -> str:
     """
     Run analyze_flow_data in a worker thread so the main thread can emit SSE heartbeats.
@@ -399,6 +414,7 @@ def _run_analyze_flow_with_progress(
                     inputs["end"],
                     token,
                     display_timezone=client_timezone,
+                    anthropic_api_key=anthropic_api_key,
                 )
             )
         except BaseException as e:
@@ -436,13 +452,22 @@ def _dispatch(
     token: str,
     *,
     client_timezone: str | None = None,
+    anthropic_api_key: str | None = None,
 ) -> str:
     """Route a tool call to the correct function and return the result as JSON."""
     if name == "resolve_time_range":
-        result = resolve_time_range(inputs["description"], user_timezone=client_timezone)
+        result = resolve_time_range(
+            inputs["description"],
+            user_timezone=client_timezone,
+            anthropic_api_key=anthropic_api_key,
+        )
 
     elif name == "check_meter_status":
-        result = check_meter_status(inputs["serial_number"], token)
+        result = check_meter_status(
+            inputs["serial_number"],
+            token,
+            anthropic_api_key=anthropic_api_key,
+        )
 
     elif name == "analyze_flow_data":
         result = analyze_flow_data(
@@ -451,6 +476,7 @@ def _dispatch(
             inputs["end"],
             token,
             display_timezone=client_timezone,
+            anthropic_api_key=anthropic_api_key,
         )
 
     elif name == "configure_meter_pipe":
@@ -461,6 +487,7 @@ def _dispatch(
             inputs["pipe_size"],
             inputs["transducer_angle"],
             token,
+            anthropic_api_key=anthropic_api_key,
         )
 
     elif name == "set_transducer_angle_only":
@@ -468,6 +495,7 @@ def _dispatch(
             inputs["serial_number"],
             inputs["transducer_angle"],
             token,
+            anthropic_api_key=anthropic_api_key,
         )
 
     else:
@@ -482,6 +510,7 @@ def run_turn(
     on_event=None,
     *,
     client_timezone: str | None = None,
+    anthropic_api_key: str | None = None,
 ) -> str:
     """
     Process one conversational turn.
@@ -493,6 +522,7 @@ def run_turn(
         messages:   Full conversation history (list of role/content dicts).
                     Modified in place — pass the same list on every turn.
         token:      bluebot Bearer token forwarded to sub-agent tool calls.
+        anthropic_api_key: Optional. When set (e.g. from web UI), used instead of ANTHROPIC_API_KEY.
         client_timezone: Optional IANA zone from the browser (e.g. America/New_York).
                     Used for resolve_time_range and analyze_flow_data display_range when set.
         on_event:   Optional callable(event: dict) for progress updates.
@@ -512,7 +542,8 @@ def run_turn(
         if on_event:
             on_event(event)
 
-    client = anthropic.Anthropic()
+    _anthropic_key = _resolve_anthropic_api_key(anthropic_api_key)
+    client = anthropic.Anthropic(api_key=_anthropic_key)
     history_replaced = False
 
     while True:
@@ -643,6 +674,7 @@ def run_turn(
                             token,
                             client_timezone=client_timezone,
                             emit=_emit,
+                            anthropic_api_key=_anthropic_key,
                         )
                     else:
                         result_json = _dispatch(
@@ -650,6 +682,7 @@ def run_turn(
                             block.input,
                             token,
                             client_timezone=client_timezone,
+                            anthropic_api_key=_anthropic_key,
                         )
                     result_dict = json.loads(result_json)
                     event: dict = {

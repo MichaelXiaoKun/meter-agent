@@ -221,6 +221,7 @@ def resolve_time_range(
     reference_timestamp: int | None = None,
     *,
     user_timezone: str | None = None,
+    anthropic_api_key: str | None = None,
 ) -> dict:
     """
     Parse a natural language time description into Unix timestamps.
@@ -296,7 +297,10 @@ def resolve_time_range(
     )
 
     try:
-        client = anthropic.Anthropic()
+        ak = (anthropic_api_key or "").strip() or os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        if not ak:
+            raise ValueError("Missing Anthropic API key.")
+        client = anthropic.Anthropic(api_key=ak)
         response = client.messages.create(
             model="claude-haiku-4-5",
             max_tokens=256,

@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 from processors.time_range import display_tz_name_for_user, format_unix_range_display
+from subprocess_env import tool_subprocess_env
 
 _AGENT_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "data-processing-agent")
@@ -141,6 +142,7 @@ def analyze_flow_data(
     token: str,
     *,
     display_timezone: str | None = None,
+    anthropic_api_key: str | None = None,
 ) -> dict:
     """
     Run the data-processing-agent for a meter (by serial number) over a time range.
@@ -157,7 +159,7 @@ def analyze_flow_data(
     """
     tz_name = display_tz_name_for_user(display_timezone)
     display_range = format_unix_range_display(start, end, tz_name=tz_name)
-    env = {**os.environ, "BLUEBOT_TOKEN": token}
+    env = tool_subprocess_env(token, anthropic_api_key)
     result = subprocess.run(
         [
             _PYTHON, "main.py",

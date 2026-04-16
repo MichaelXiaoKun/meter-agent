@@ -2,11 +2,19 @@ import type { Conversation, Message, SSEEvent } from "./types";
 
 const BASE = "/api";
 
-function headers(token: string): HeadersInit {
-  return {
+function headers(
+  token: string,
+  opts?: { anthropicApiKey?: string | null }
+): HeadersInit {
+  const h: Record<string, string> = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${token}`,
   };
+  const ak = opts?.anthropicApiKey?.trim();
+  if (ak) {
+    h["X-Anthropic-Key"] = ak;
+  }
+  return h;
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +117,8 @@ export async function streamChat(
   token: string,
   onEvent: (event: SSEEvent) => void,
   signal?: AbortSignal,
-  clientTurnId?: string
+  clientTurnId?: string,
+  anthropicApiKey?: string | null
 ): Promise<void> {
   const clientTimezone =
     typeof Intl !== "undefined"
@@ -117,7 +126,7 @@ export async function streamChat(
       : undefined;
   const res = await fetch(`${BASE}/conversations/${convId}/chat`, {
     method: "POST",
-    headers: headers(token),
+    headers: headers(token, { anthropicApiKey }),
     body: JSON.stringify({
       message,
       ...(clientTimezone ? { client_timezone: clientTimezone } : {}),
@@ -194,6 +203,8 @@ export interface OrchestratorConfig {
   /** Sum of input tokens recorded from this API process in the last tpm_window_seconds. */
   tpm_sliding_input_tokens_60s: number;
   tpm_window_seconds: number;
+  /** True if ANTHROPIC_API_KEY is set on the server (user may still pass X-Anthropic-Key). */
+  anthropic_server_configured?: boolean;
 }
 
 export async function fetchOrchestratorConfig(

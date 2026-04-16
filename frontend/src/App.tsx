@@ -42,6 +42,13 @@ export default function App() {
   const [maxInputTokensTarget, setMaxInputTokensTarget] = useState(
     DEFAULT_MAX_INPUT_TARGET
   );
+  const [anthropicApiKey, setAnthropicApiKey] = useLocalStorage(
+    "bb_anthropic_key",
+    ""
+  );
+  const [anthropicServerConfigured, setAnthropicServerConfigured] = useState<
+    boolean | null
+  >(null);
   const [activeConvId, _setActiveConvId] = useState<string | null>(
     () => localStorage.getItem("bb_active_conv") ?? null
   );
@@ -72,6 +79,9 @@ export default function App() {
           if (typeof c.tpm_sliding_input_tokens_60s === "number") {
             setTpmServerSliding60s(Math.max(0, c.tpm_sliding_input_tokens_60s));
           }
+          if (typeof c.anthropic_server_configured === "boolean") {
+            setAnthropicServerConfigured(c.anthropic_server_configured);
+          }
         })
         .catch(() => {});
     };
@@ -95,7 +105,7 @@ export default function App() {
     sendMessage,
     cancel,
     clearAssistantError,
-  } = useChat(activeConvId, token);
+  } = useChat(activeConvId, token, anthropicApiKey);
 
   // Auto-select: only when there's no persisted active conversation
   useEffect(() => {
@@ -156,6 +166,9 @@ export default function App() {
         onNewConversation={handleNewConversation}
         onDeleteConversation={handleDeleteConversation}
         onLogout={handleLogout}
+        anthropicApiKey={anthropicApiKey}
+        onAnthropicApiKeyChange={setAnthropicApiKey}
+        anthropicServerConfigured={anthropicServerConfigured}
       />
       <main className="flex-1">
         <ChatView

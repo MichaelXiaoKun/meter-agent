@@ -9,6 +9,8 @@ import os
 import subprocess
 import sys
 
+from subprocess_env import tool_subprocess_env
+
 _AGENT_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "meter-status-agent")
 )
@@ -41,14 +43,19 @@ TOOL_DEFINITION = {
 }
 
 
-def check_meter_status(serial_number: str, token: str) -> dict:
+def check_meter_status(
+    serial_number: str,
+    token: str,
+    *,
+    anthropic_api_key: str | None = None,
+) -> dict:
     """
     Run the meter-status-agent for a meter (by serial number) and return its report.
 
     Returns:
         {"success": bool, "report": str | None, "error": str | None}
     """
-    env = {**os.environ, "BLUEBOT_TOKEN": token}
+    env = tool_subprocess_env(token, anthropic_api_key)
     result = subprocess.run(
         [_PYTHON, "main.py", "--serial", serial_number],
         cwd=_AGENT_DIR,

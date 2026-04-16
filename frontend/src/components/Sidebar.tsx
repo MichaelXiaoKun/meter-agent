@@ -10,6 +10,11 @@ interface SidebarProps {
   onNewConversation: () => void;
   onDeleteConversation: (id: string) => void;
   onLogout: () => void;
+  /** Stored only in this browser; sent as X-Anthropic-Key on chat requests. */
+  anthropicApiKey: string;
+  onAnthropicApiKeyChange: (key: string) => void;
+  /** From GET /api/config — null until loaded. */
+  anthropicServerConfigured: boolean | null;
 }
 
 function relativeDate(ts: number): string {
@@ -32,7 +37,17 @@ export default function Sidebar({
   onNewConversation,
   onDeleteConversation,
   onLogout,
+  anthropicApiKey,
+  onAnthropicApiKeyChange,
+  anthropicServerConfigured,
 }: SidebarProps) {
+  const [keyModalOpen, setKeyModalOpen] = useState(false);
+  const [keyDraft, setKeyDraft] = useState(anthropicApiKey);
+
+  useEffect(() => {
+    if (keyModalOpen) setKeyDraft(anthropicApiKey);
+  }, [keyModalOpen, anthropicApiKey]);
+
   return (
     <aside className="flex h-full w-72 flex-col border-r border-brand-border bg-brand-100">
       {/* Header */}
@@ -70,12 +85,111 @@ export default function Sidebar({
           Signed in as <span className="font-medium text-brand-900">{user}</span>
         </div>
         <button
+          type="button"
+          onClick={() => setKeyModalOpen(true)}
+          className="mb-2 w-full rounded-lg border border-brand-border bg-white px-3 py-1.5 text-left text-sm text-brand-900 transition-colors hover:border-brand-400 hover:bg-brand-50"
+        >
+          <span className="font-medium">Claude API key</span>
+          <span className="mt-0.5 block text-xs font-normal text-brand-muted">
+            {anthropicApiKey.trim()
+              ? "Saved in this browser"
+              : anthropicServerConfigured === false
+                ? "Required — server has no key"
+                : "Optional — uses server key if unset"}
+          </span>
+        </button>
+        <button
           onClick={onLogout}
           className="w-full rounded-lg border border-brand-border bg-white px-3 py-1.5 text-sm text-brand-muted transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600"
         >
           Sign out
         </button>
       </div>
+
+      {keyModalOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal
+          aria-labelledby="anthropic-key-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setKeyModalOpen(false);
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-brand-border bg-white p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2
+              id="anthropic-key-title"
+              className="text-lg font-semibold text-brand-900"
+            >
+              Anthropic API key
+            </h2>
+            <p className="mt-2 text-sm text-brand-muted">
+              Paste a key from{" "}
+              <a
+                href="https://console.anthropic.com/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-brand-700 underline"
+              >
+                console.anthropic.com
+              </a>
+              . It is kept in this browser only and sent to your assistant server over HTTPS as{" "}
+              <code className="rounded bg-brand-50 px-1 text-xs">X-Anthropic-Key</code>. If you leave
+              it blank, the server uses <code className="rounded bg-brand-50 px-1 text-xs">ANTHROPIC_API_KEY</code>{" "}
+              when set.
+            </p>
+            {anthropicServerConfigured === false && !anthropicApiKey.trim() && (
+              <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                This deployment has no server-side Anthropic key — add your key here to chat.
+              </p>
+            )}
+            <label className="mt-4 block">
+              <span className="mb-1 block text-sm font-medium text-brand-900">Secret key</span>
+              <input
+                type="password"
+                autoComplete="off"
+                value={keyDraft}
+                onChange={(e) => setKeyDraft(e.target.value)}
+                placeholder="sk-ant-api03-…"
+                className="w-full rounded-xl border border-brand-border bg-brand-50 px-3 py-2 text-sm text-brand-900 outline-none focus:border-brand-500 focus:bg-white"
+              />
+            </label>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  onAnthropicApiKeyChange(keyDraft.trim());
+                  setKeyModalOpen(false);
+                }}
+                className="rounded-xl bg-brand-700 px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onAnthropicApiKeyChange("");
+                  setKeyDraft("");
+                  setKeyModalOpen(false);
+                }}
+                className="rounded-xl border border-brand-border bg-white px-4 py-2 text-sm text-brand-muted hover:bg-brand-50"
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                onClick={() => setKeyModalOpen(false)}
+                className="rounded-xl px-4 py-2 text-sm text-brand-muted hover:bg-brand-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }

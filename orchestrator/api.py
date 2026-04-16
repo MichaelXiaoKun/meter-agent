@@ -300,8 +300,10 @@ async def chat(
     body: ChatRequest,
     request: Request,
     authorization: str = Header(...),
+    x_anthropic_key: str | None = Header(default=None, alias="X-Anthropic-Key"),
 ):
     token = _bearer_token(authorization)
+    user_anthropic_key = (x_anthropic_key or "").strip() or None
     messages = store.load_messages(conv_id)
 
     user_msg = {"role": "user", "content": body.message}
@@ -353,6 +355,7 @@ async def chat(
                     token,
                     on_event=_emit_event,
                     client_timezone=body.client_timezone,
+                    anthropic_api_key=user_anthropic_key,
                 )
                 if history_replaced:
                     # In-place summarization (e.g. 429) — DB must match compressed thread.
@@ -365,7 +368,7 @@ async def chat(
                             conv_id,
                         )
                     store.append_messages(conv_id, new_tail)
-                update_title(conv_id, messages)
+                update_title(conv_id, messages, anthropic_api_key=user_anthropic_key)
                 _emit_event({"type": "done"})
             except Exception as exc:
                 logger.exception("run_turn failed for conv %s", conv_id)

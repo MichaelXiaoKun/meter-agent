@@ -41,7 +41,7 @@ def _extract_transcript(messages: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def summarize(messages: list[dict]) -> str:
+def summarize(messages: list[dict], anthropic_api_key: str | None = None) -> str:
     """
     Generate a 5-8 word conversation title using Claude Haiku.
 
@@ -52,7 +52,10 @@ def summarize(messages: list[dict]) -> str:
         return ""
 
     try:
-        client = anthropic.Anthropic()
+        ak = (anthropic_api_key or "").strip() or os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        if not ak:
+            return ""
+        client = anthropic.Anthropic(api_key=ak)
         response = client.messages.create(
             model="claude-haiku-4-5",
             max_tokens=20,
@@ -73,8 +76,12 @@ def summarize(messages: list[dict]) -> str:
         return ""
 
 
-def update_title(conversation_id: str, messages: list[dict]) -> None:
+def update_title(
+    conversation_id: str,
+    messages: list[dict],
+    anthropic_api_key: str | None = None,
+) -> None:
     """Generate a summary title and persist it. Silently no-ops on failure."""
-    title = summarize(messages)
+    title = summarize(messages, anthropic_api_key=anthropic_api_key)
     if title:
         store.set_title(conversation_id, title)

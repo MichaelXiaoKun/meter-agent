@@ -71,7 +71,11 @@ function shouldApplySseEvent(
   return true;
 }
 
-export function useChat(activeConvId: string | null, token: string) {
+export function useChat(
+  activeConvId: string | null,
+  token: string,
+  anthropicApiKey?: string | null
+) {
   const [viewedMessages, setViewedMessages] = useState<Message[]>([]);
   const [processingConvId, setProcessingConvId] = useState<string | null>(null);
   const [serverProcessing, setServerProcessing] = useState(false);
@@ -334,7 +338,8 @@ export function useChat(activeConvId: string | null, token: string) {
             }
           },
           controller.signal,
-          turnUuid
+          turnUuid,
+          anthropicApiKey
         );
 
         // Stream finished — load final persisted messages
@@ -367,7 +372,7 @@ export function useChat(activeConvId: string | null, token: string) {
         abortRef.current = null;
       }
     },
-    [activeConvId, token, processingConvId]
+    [activeConvId, token, processingConvId, anthropicApiKey]
   );
 
   const clearAssistantError = useCallback(() => {

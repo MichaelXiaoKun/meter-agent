@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 
+from subprocess_env import tool_subprocess_env
 from tools.pipe_subprocess import run_pipe_configuration_agent, subprocess_error_message
 
 _AGENT_DIR = os.path.abspath(
@@ -60,6 +61,8 @@ def configure_meter_pipe(
     pipe_size: str,
     transducer_angle: str,
     token: str,
+    *,
+    anthropic_api_key: str | None = None,
 ) -> dict:
     """
     Run the pipe-configuration-agent and return its report.
@@ -67,7 +70,7 @@ def configure_meter_pipe(
     Returns:
         {"success": bool, "report": str | None, "error": str | None}
     """
-    env = {**os.environ, "BLUEBOT_TOKEN": token}
+    env = tool_subprocess_env(token, anthropic_api_key)
     result = run_pipe_configuration_agent(
         [
             _PYTHON,
