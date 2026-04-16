@@ -3,9 +3,18 @@ import type { AgentStatus } from "../hooks/useChat";
 const TOOL_LABELS: Record<string, string> = {
   resolve_time_range: "Resolving time range",
   check_meter_status: "Checking meter status",
-  analyze_flow_data: "Analysing flow data",
+  analyze_flow_data: "Analyzing flow data",
   configure_meter_pipe: "Configuring meter pipe",
   set_transducer_angle_only: "Setting transducer angle (SSA only)",
+};
+
+/** Short label after a tool finishes (before the next model turn streams). */
+const TOOL_RESULT_DONE: Record<string, string> = {
+  resolve_time_range: "Time range ready",
+  check_meter_status: "Meter status received",
+  analyze_flow_data: "Flow analysis complete",
+  configure_meter_pipe: "Pipe configuration updated",
+  set_transducer_angle_only: "Angle update sent",
 };
 
 interface StatusIndicatorProps {
@@ -14,29 +23,40 @@ interface StatusIndicatorProps {
 
 export default function StatusIndicator({ status }: StatusIndicatorProps) {
   if (status.kind === "idle") return null;
+  // Errors use the dismissible banner in ChatView (clearer than a line at the bottom).
+  if (status.kind === "error") return null;
 
   let label: string;
   let variant: "info" | "error" = "info";
 
   switch (status.kind) {
+    case "queued":
+      label = status.message;
+      break;
     case "thinking":
-      label = "Thinking...";
+      label = "Preparing reply...";
       break;
     case "streaming":
-      return null;
+      label = "Generating reply...";
+      break;
     case "tool_call":
       label = `${TOOL_LABELS[status.tool] ?? status.tool}...`;
       break;
+    case "tool_progress":
+      label = status.message;
+      break;
     case "tool_result":
-      label = `${status.tool} ${status.success ? "done" : "failed"}`;
-      if (!status.success) variant = "error";
+      if (status.success) {
+        label =
+          TOOL_RESULT_DONE[status.tool] ??
+          `${status.tool.replace(/_/g, " ")} complete`;
+      } else {
+        label = `${TOOL_LABELS[status.tool] ?? status.tool} failed`;
+        variant = "error";
+      }
       break;
     case "compressing":
       label = "Compressing conversation history...";
-      break;
-    case "error":
-      label = status.error;
-      variant = "error";
       break;
     default:
       return null;

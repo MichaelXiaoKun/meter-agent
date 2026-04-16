@@ -9,7 +9,13 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:8000',
+      // Long-lived SSE (/chat); avoid proxy/client timeouts during flow analysis
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        timeout: 0,
+        proxyTimeout: 0,
+      },
     },
   },
 })

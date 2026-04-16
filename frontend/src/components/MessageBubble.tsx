@@ -61,16 +61,24 @@ export default function MessageBubble({ message, plotPaths }: MessageBubbleProps
   if (isToolResultRow(message.content)) return null;
 
   const rawText = extractText(message.content);
-  if (!rawText) return null;
-
+  const trimmed = rawText.trim();
   const isUser = message.role === "user";
+  const hasPlots = !!(plotPaths && plotPaths.length > 0);
+
+  // User bubbles need text. Assistant bubbles need text and/or plots (tool-only turns can be
+  // empty here; final reply may have plots attached while markdown is briefly empty).
+  if (isUser && !trimmed) return null;
+  if (!isUser && !trimmed && !hasPlots) return null;
+
   // When tool_result provides plot_paths, render images only from those URLs — not from
   // markdown (the model often echoes a different timestamp than int(timestamps[0]) in filenames).
   const text = isUser
     ? rawText
-    : plotPaths && plotPaths.length > 0
-      ? stripMarkdownPngImages(rawText)
-      : rewritePlotPaths(rawText);
+    : !hasPlots
+      ? rewritePlotPaths(rawText)
+      : trimmed
+        ? stripMarkdownPngImages(rawText)
+        : "";
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -85,28 +93,30 @@ export default function MessageBubble({ message, plotPaths }: MessageBubbleProps
           <p className="whitespace-pre-wrap text-sm">{text}</p>
         ) : (
           <>
-            <div className="prose prose-sm max-w-none prose-p:my-1 prose-headings:text-brand-900 prose-a:text-brand-500 prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  img: ({ src, alt }) => (
-                    <PlotImage
-                      src={src ?? ""}
-                      alt={alt ?? undefined}
-                      className="w-full rounded-lg shadow-sm"
-                    />
-                  ),
-                }}
-              >
-                {text}
-              </ReactMarkdown>
-            </div>
+            {text ? (
+              <div className="prose prose-sm max-w-none prose-p:my-1 prose-headings:text-brand-900 prose-a:text-brand-500 prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    img: ({ src, alt }) => (
+                      <PlotImage
+                        src={src ?? ""}
+                        alt={alt ?? undefined}
+                        className="w-full rounded-lg shadow-sm"
+                      />
+                    ),
+                  }}
+                >
+                  {text}
+                </ReactMarkdown>
+              </div>
+            ) : null}
             {plotPaths?.map((src) => (
               <PlotImage
                 key={src}
                 src={src}
                 alt="Flow analysis plot"
-                className="mt-3 w-full rounded-lg shadow-sm"
+                className={`w-full rounded-lg shadow-sm ${text ? "mt-3" : ""}`}
               />
             ))}
           </>

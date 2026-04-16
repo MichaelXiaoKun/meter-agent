@@ -12,6 +12,7 @@ Contract:
 """
 
 import json
+import os
 from typing import Any, Dict
 
 import anthropic
@@ -109,7 +110,7 @@ def analyze(status: Dict[str, Any], serial_number: str) -> str:
 
     while True:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=os.environ.get("BLUEBOT_METER_STATUS_MODEL", "claude-haiku-4-5"),
             max_tokens=2048,
             system=system_prompt,
             tools=TOOLS,

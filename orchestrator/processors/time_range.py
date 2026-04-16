@@ -25,6 +25,8 @@ from zoneinfo import ZoneInfo
 
 import anthropic
 
+from tpm_window import record_input_tokens_from_usage
+
 
 def _safe_zoneinfo(name: str | None):
     """Return ZoneInfo for a valid IANA name, else None."""
@@ -296,13 +298,15 @@ def resolve_time_range(
     try:
         client = anthropic.Anthropic()
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-haiku-4-5",
             max_tokens=256,
             system=system_prompt,
             tools=[_EXTRACT_TOOL],
             tool_choice={"type": "tool", "name": "extract_time_range"},
             messages=[{"role": "user", "content": description}],
         )
+
+        record_input_tokens_from_usage(getattr(response, "usage", None))
 
         result = response.content[0].input
 

@@ -5,7 +5,6 @@ interface SidebarProps {
   conversations: Conversation[];
   activeId: string | null;
   processingId: string | null;
-  tokenUsage: { tokens: number; pct: number };
   user: string;
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;
@@ -28,7 +27,6 @@ export default function Sidebar({
   conversations,
   activeId,
   processingId,
-  tokenUsage,
   user,
   onSelectConversation,
   onNewConversation,
@@ -65,23 +63,6 @@ export default function Sidebar({
         onSelect={onSelectConversation}
         onDelete={onDeleteConversation}
       />
-
-      {/* Token usage */}
-      {tokenUsage.tokens > 0 && (
-        <div className="border-t border-brand-border px-4 py-3">
-          <div className="mb-1 text-xs text-brand-muted">Context usage</div>
-          <div className="h-1.5 w-full overflow-hidden rounded-full bg-brand-border">
-            <div
-              className="h-full rounded-full bg-brand-500 transition-all"
-              style={{ width: `${Math.min(tokenUsage.pct * 100, 100)}%` }}
-            />
-          </div>
-          <div className="mt-1 text-xs text-brand-muted">
-            {(tokenUsage.pct * 100).toFixed(0)}% of 200k (
-            {tokenUsage.tokens.toLocaleString()})
-          </div>
-        </div>
-      )}
 
       {/* Account section */}
       <div className="border-t border-brand-border px-4 py-3">

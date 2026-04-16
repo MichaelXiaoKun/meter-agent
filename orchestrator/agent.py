@@ -7,12 +7,23 @@ set_transducer_angle_only.
 
 Usage (from an outer chat loop):
     messages = []
-    reply = run_turn(messages, token="...")   # modifies messages in place
-    reply = run_turn(messages, token="...")   # subsequent turns retain context
+    reply, replaced = run_turn(messages, token="...")   # modifies messages in place
+    # If replaced is True, persist messages with replace (not append) — see store.replace_conversation_messages.
 """
 
 import json
+import os
+import threading
+import time
+
 import anthropic
+
+from tpm_window import (
+    record_input_tokens,
+    record_input_tokens_from_usage,
+    sliding_input_tokens_sum,
+    wait_for_sliding_tpm_headroom,
+)
 
 from processors.time_range import TOOL_DEFINITION as _TIME_RANGE_DEF, resolve_time_range
 from tools.meter_status import TOOL_DEFINITION as _METER_STATUS_DEF, check_meter_status
@@ -34,10 +45,79 @@ TOOLS = [
     _SET_TRANSDUCER_ANGLE_DEF,
 ]
 
-_MODEL = "claude-sonnet-4-6"
+# Cheapest tier (Haiku). Override main chat with ORCHESTRATOR_MODEL (e.g. claude-sonnet-4-6).
+_CHEAP_MODEL = "claude-haiku-4-5"
+_DEFAULT_ORCHESTRATOR_MODEL = _CHEAP_MODEL
+_MODEL = (os.environ.get("ORCHESTRATOR_MODEL") or _DEFAULT_ORCHESTRATOR_MODEL).strip() or _DEFAULT_ORCHESTRATOR_MODEL
 _MODEL_CONTEXT_WINDOW = 200_000   # tokens
-_COMPRESS_THRESHOLD   = 0.75      # compress when input hits 75% of context window
-_COMPRESS_KEEP_RECENT = 6         # number of recent messages to leave untouched
+# Compress earlier so long threads (big tool payloads) stay smaller — helps TPM rate limits too.
+_COMPRESS_THRESHOLD   = 0.40      # compress when input hits this fraction of context window
+_COMPRESS_KEEP_RECENT = 5         # number of recent messages to leave untouched
+
+
+def _env_int(name: str) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return None
+    return int(raw)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return float(raw)
+
+
+def _default_tpm_input_guide_for_active_model() -> int:
+    """
+    Tier-1 ITPM from Anthropic docs: Haiku 4.5 = 50k, Sonnet 4 / Opus 4 = 30k.
+    Override with ORCHESTRATOR_TPM_GUIDE_TOKENS when your org tier differs.
+    """
+    m = (os.environ.get("ORCHESTRATOR_MODEL") or _DEFAULT_ORCHESTRATOR_MODEL).strip().lower()
+    if "haiku" in m:
+        return 50_000
+    return 30_000
+
+
+def _resolve_tpm_input_guide_tokens() -> int:
+    explicit = _env_int("ORCHESTRATOR_TPM_GUIDE_TOKENS")
+    if explicit is not None:
+        return explicit
+    return _default_tpm_input_guide_for_active_model()
+
+
+def _resolve_max_input_tokens_target(tpm_guide: int) -> int:
+    explicit = _env_int("ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET")
+    if explicit is not None:
+        return explicit
+    frac = _env_float("ORCHESTRATOR_TPM_HEADROOM_FRACTION", 0.5)
+    return int(tpm_guide * frac)
+
+
+_TPM_INPUT_GUIDE_TOKENS = _resolve_tpm_input_guide_tokens()
+_MAX_INPUT_TOKENS_TARGET = _resolve_max_input_tokens_target(_TPM_INPUT_GUIDE_TOKENS)
+
+
+def _estimate_stream_turn_tpm_cost(token_count: int) -> int:
+    """
+    Billable input for one orchestrator iteration: messages.count_tokens + messages.stream
+    both charge ~the same input size; only stream is recorded in the sliding window.
+    """
+    f = _env_float("ORCHESTRATOR_TPM_NEXT_CALL_FACTOR", 2.05)
+    return max(1, int(token_count * f))
+
+
+def get_rate_limit_config_for_api() -> dict[str, float | int]:
+    """Public knobs for /api/config and logging (matches run_turn budgeting)."""
+    return {
+        "tpm_input_guide_tokens": _TPM_INPUT_GUIDE_TOKENS,
+        "max_input_tokens_target": _MAX_INPUT_TOKENS_TARGET,
+        "model_context_window": _MODEL_CONTEXT_WINDOW,
+        "tpm_headroom_fraction": _env_float("ORCHESTRATOR_TPM_HEADROOM_FRACTION", 0.5),
+        "tpm_sliding_input_tokens_60s": sliding_input_tokens_sum(),
+        "tpm_window_seconds": 60,
+    }
 
 _SYSTEM_PROMPT = """\
 You are a conversational assistant for bluebot ultrasonic flow meter analysis.
@@ -99,19 +179,25 @@ def _count_tokens(client: anthropic.Anthropic, messages: list) -> int:
     return response.input_tokens
 
 
-def _compress_history(client: anthropic.Anthropic, messages: list) -> list:
+def _compress_history(
+    client: anthropic.Anthropic,
+    messages: list,
+    *,
+    keep_recent: int | None = None,
+) -> list:
     """
     Summarize older messages to reduce token usage.
 
-    Keeps the last _COMPRESS_KEEP_RECENT messages verbatim and replaces
+    Keeps the last *keep_recent* messages verbatim (default _COMPRESS_KEEP_RECENT) and replaces
     everything before them with a single compressed summary message.
     Returns the messages list unchanged if summarization fails.
     """
-    if len(messages) <= _COMPRESS_KEEP_RECENT:
+    k = keep_recent if keep_recent is not None else _COMPRESS_KEEP_RECENT
+    if len(messages) <= k:
         return messages
 
-    older  = messages[:-_COMPRESS_KEEP_RECENT]
-    recent = messages[-_COMPRESS_KEEP_RECENT:]
+    older = messages[:-k]
+    recent = messages[-k:]
 
     lines = []
     for msg in older:
@@ -133,8 +219,14 @@ def _compress_history(client: anthropic.Anthropic, messages: list) -> list:
     transcript = "\n".join(lines)
 
     try:
+        # Haiku summarization call — rough input size from transcript + prompt overhead.
+        summarize_est = min(
+            _TPM_INPUT_GUIDE_TOKENS // 2,
+            max(800, len(transcript) // 4 + 1500),
+        )
+        wait_for_sliding_tpm_headroom(summarize_est, _TPM_INPUT_GUIDE_TOKENS)
         summary_resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=_CHEAP_MODEL,
             max_tokens=512,
             messages=[{
                 "role": "user",
@@ -147,6 +239,7 @@ def _compress_history(client: anthropic.Anthropic, messages: list) -> list:
                 ),
             }],
         )
+        record_input_tokens_from_usage(getattr(summary_resp, "usage", None))
         summary_text = summary_resp.content[0].text.strip()
     except Exception:
         return messages
@@ -156,6 +249,185 @@ def _compress_history(client: anthropic.Anthropic, messages: list) -> list:
         "content": f"[Context summary — older messages compressed]\n{summary_text}",
     }
     return [summary_message] + recent
+
+
+def _try_compress_history_inplace(
+    client: anthropic.Anthropic,
+    messages: list,
+    *,
+    keep_recent: int | None = None,
+) -> bool:
+    """
+    Replace *messages* with a shorter summary + tail if compression succeeds and saves rows.
+    Returns True if *messages* was mutated.
+    """
+    before = len(messages)
+    compressed = _compress_history(client, messages, keep_recent=keep_recent)
+    if compressed is messages or len(compressed) >= before:
+        return False
+    messages.clear()
+    messages.extend(compressed)
+    return True
+
+
+def _collapse_entire_thread_to_summary(
+    client: anthropic.Anthropic,
+    messages: list,
+) -> bool:
+    """
+    Last resort: replace the whole thread with one short user message (Haiku summary).
+    Used when layered compression still leaves input above the TPM budget.
+    """
+    if not messages:
+        return False
+    preview = json.dumps(messages, default=str)
+    if len(preview) > 120_000:
+        preview = preview[:120_000] + "\n…[truncated for summarization]"
+    try:
+        collapse_est = min(
+            int(_TPM_INPUT_GUIDE_TOKENS * 0.65),
+            max(900, len(preview) // 4 + 2048),
+        )
+        wait_for_sliding_tpm_headroom(collapse_est, _TPM_INPUT_GUIDE_TOKENS)
+        summary_resp = client.messages.create(
+            model=_CHEAP_MODEL,
+            max_tokens=1024,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "Summarize this entire conversation JSON for context compression. "
+                        "Output under 600 words. Cover devices, serial numbers, time ranges, "
+                        "tool outcomes, and open questions. Start with 'Thread summary:'.\n\n"
+                        f"{preview}"
+                    ),
+                }
+            ],
+        )
+        record_input_tokens_from_usage(getattr(summary_resp, "usage", None))
+        summary_text = summary_resp.content[0].text.strip()
+    except Exception:
+        return False
+    messages.clear()
+    messages.append(
+        {
+            "role": "user",
+            "content": f"[Full thread compressed — TPM budget]\n{summary_text}",
+        }
+    )
+    return True
+
+
+def _sleep_after_rate_limit(exc: anthropic.RateLimitError, attempt_index: int) -> float:
+    """
+    TPM is a rolling *per-minute* budget. After 429, wait before retrying so usage can drop.
+
+    Uses Retry-After when present; otherwise scales with attempt (capped).
+    """
+    seconds: float
+    try:
+        raw = exc.response.headers.get("retry-after") if exc.response else None
+        if raw is not None and str(raw).strip() != "":
+            seconds = float(raw)
+            if seconds > 0:
+                time.sleep(seconds)
+                return seconds
+    except (TypeError, ValueError):
+        pass
+    seconds = min(10.0 * float(attempt_index), 65.0)
+    time.sleep(seconds)
+    return seconds
+
+
+def _compress_until_under_input_budget(
+    client: anthropic.Anthropic,
+    messages: list,
+    max_input_tokens: int,
+) -> bool:
+    """
+    Repeatedly summarize older turns until _count_tokens <= max_input_tokens or no progress.
+    Returns True if *messages* was modified.
+    """
+    changed = False
+    for _ in range(24):
+        ntok = _count_tokens(client, messages)
+        record_input_tokens(ntok)
+        if ntok <= max_input_tokens:
+            return changed
+        round_progress = False
+        for kr in (5, 4, 3, 2, 1):
+            if len(messages) <= kr:
+                continue
+            if _try_compress_history_inplace(client, messages, keep_recent=kr):
+                changed = True
+                round_progress = True
+                after = _count_tokens(client, messages)
+                record_input_tokens(after)
+                if after <= max_input_tokens:
+                    return changed
+        if not round_progress:
+            break
+
+    final_ntok = _count_tokens(client, messages)
+    record_input_tokens(final_ntok)
+    if final_ntok > max_input_tokens:
+        if _collapse_entire_thread_to_summary(client, messages):
+            changed = True
+    return changed
+
+
+def _run_analyze_flow_with_progress(
+    inputs: dict,
+    token: str,
+    *,
+    client_timezone: str | None,
+    emit,
+) -> str:
+    """
+    Run analyze_flow_data in a worker thread so the main thread can emit SSE heartbeats.
+    The subprocess can run for a long time with no other events otherwise.
+    """
+    result_holder: list = []
+    exc_holder: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            result_holder.append(
+                analyze_flow_data(
+                    inputs["serial_number"],
+                    inputs["start"],
+                    inputs["end"],
+                    token,
+                    display_timezone=client_timezone,
+                )
+            )
+        except BaseException as e:
+            exc_holder.append(e)
+
+    thread = threading.Thread(target=worker, daemon=True, name="analyze_flow_data")
+    thread.start()
+
+    elapsed_chunks = 0
+    while True:
+        thread.join(timeout=4.0)
+        if not thread.is_alive():
+            break
+        elapsed_chunks += 1
+        emit(
+            {
+                "type": "tool_progress",
+                "tool": "analyze_flow_data",
+                "message": (
+                    f"Still analyzing flow data… (~{elapsed_chunks * 4}s elapsed)"
+                ),
+            }
+        )
+
+    if exc_holder:
+        return json.dumps({"error": str(exc_holder[0])}, default=str)
+    if not result_holder:
+        return json.dumps({"error": "analyze_flow_data produced no result"}, default=str)
+    return json.dumps(result_holder[0], default=str)
 
 
 def _dispatch(
@@ -229,45 +501,134 @@ def run_turn(
                       {"type": "compressing",  "tokens": int, "pct": float}  — when compression fires
                       {"type": "tool_call",    "tool": str, "input": dict}
                       {"type": "tool_result",  "tool": str, "success": bool}
+                      {"type": "tool_progress", "tool": str, "message": str}  — long tools (flow analysis)
                       {"type": "thinking"}  — while waiting for the LLM
 
     Returns:
-        The assistant's final text reply for this turn.
+        (assistant_reply_text, history_replaced): *history_replaced* is True if messages were
+        replaced with a summary (e.g. after a rate limit) — callers must persist with replace, not append.
     """
     def _emit(event: dict):
         if on_event:
             on_event(event)
 
     client = anthropic.Anthropic()
+    history_replaced = False
 
     while True:
         token_count = _count_tokens(client, messages)
         pct = token_count / _MODEL_CONTEXT_WINDOW
         _emit({"type": "token_usage", "tokens": token_count, "pct": pct})
+
+        # Stay under ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET (default: headroom fraction × TPM guide).
+        if token_count > _MAX_INPUT_TOKENS_TARGET:
+            _emit(
+                {
+                    "type": "compressing",
+                    "tokens": token_count,
+                    "pct": pct,
+                    "target_max_input": _MAX_INPUT_TOKENS_TARGET,
+                    "tpm_guide": _TPM_INPUT_GUIDE_TOKENS,
+                    "reason": "input_budget",
+                }
+            )
+            if _compress_until_under_input_budget(
+                client, messages, _MAX_INPUT_TOKENS_TARGET
+            ):
+                history_replaced = True
+            token_count = _count_tokens(client, messages)
+            pct = token_count / _MODEL_CONTEXT_WINDOW
+            _emit({"type": "token_usage", "tokens": token_count, "pct": pct})
+            if token_count > _MAX_INPUT_TOKENS_TARGET:
+                raise RuntimeError(
+                    f"Could not compress context below {_MAX_INPUT_TOKENS_TARGET} input tokens "
+                    f"(still at {token_count}). Shorten the thread or wait and retry."
+                )
+
         if pct >= _COMPRESS_THRESHOLD:
             _emit({"type": "compressing", "tokens": token_count, "pct": pct})
             api_messages = _compress_history(client, messages)
         else:
             api_messages = messages
 
+        wait_for_sliding_tpm_headroom(
+            _estimate_stream_turn_tpm_cost(token_count),
+            _TPM_INPUT_GUIDE_TOKENS,
+        )
         _emit({"type": "thinking"})
-        with client.messages.stream(
-            model=_MODEL,
-            max_tokens=4096,
-            system=_SYSTEM_PROMPT,
-            tools=TOOLS,
-            messages=api_messages,
-        ) as stream:
-            for text_delta in stream.text_stream:
-                _emit({"type": "text_delta", "text": text_delta})
-            response = stream.get_final_message()
+        response = None
+        stream_attempt = 0
+        while stream_attempt < 8:
+            stream_attempt += 1
+            try:
+                with client.messages.stream(
+                    model=_MODEL,
+                    max_tokens=4096,
+                    system=_SYSTEM_PROMPT,
+                    tools=TOOLS,
+                    messages=api_messages,
+                ) as stream:
+                    for text_delta in stream.text_stream:
+                        _emit({"type": "text_delta", "text": text_delta})
+                    response = stream.get_final_message()
+                if getattr(response, "usage", None):
+                    record_input_tokens_from_usage(response.usage)
+                else:
+                    record_input_tokens(token_count)
+                break
+            except anthropic.RateLimitError as exc:
+                _emit(
+                    {
+                        "type": "compressing",
+                        "tokens": token_count,
+                        "pct": pct,
+                        "target_max_input": _MAX_INPUT_TOKENS_TARGET,
+                        "reason": "rate_limit",
+                    }
+                )
+                if _compress_until_under_input_budget(
+                    client, messages, _MAX_INPUT_TOKENS_TARGET
+                ):
+                    history_replaced = True
+                token_count = _count_tokens(client, messages)
+                pct = token_count / _MODEL_CONTEXT_WINDOW
+                _emit({"type": "token_usage", "tokens": token_count, "pct": pct})
+                if token_count > _MAX_INPUT_TOKENS_TARGET:
+                    raise RuntimeError(
+                        f"Context still above {_MAX_INPUT_TOKENS_TARGET} tokens after compression "
+                        f"({token_count} tokens). Wait one minute for rate limits to reset or start a new chat."
+                    )
+                if pct >= _COMPRESS_THRESHOLD:
+                    _emit({"type": "compressing", "tokens": token_count, "pct": pct})
+                    api_messages = _compress_history(client, messages)
+                else:
+                    api_messages = messages
+                waited = _sleep_after_rate_limit(exc, stream_attempt)
+                _emit(
+                    {
+                        "type": "thinking",
+                        "rate_limit_wait_seconds": waited,
+                        "attempt": stream_attempt,
+                    }
+                )
+                wait_for_sliding_tpm_headroom(
+                    _estimate_stream_turn_tpm_cost(token_count),
+                    _TPM_INPUT_GUIDE_TOKENS,
+                )
+
+        if response is None:
+            raise RuntimeError(
+                "Claude API rate limit (tokens per minute) persisted after compressing context, "
+                f"waiting, and {stream_attempt} stream attempts. Wait ~1 minute and send again, "
+                "or start a new chat."
+            )
 
         if response.stop_reason == "end_turn":
             messages.append({"role": "assistant", "content": response.content})
             for block in response.content:
                 if hasattr(block, "text"):
-                    return block.text
-            return "(No response)"
+                    return block.text, history_replaced
+            return "(No response)", history_replaced
 
         if response.stop_reason == "tool_use":
             messages.append({"role": "assistant", "content": response.content})
@@ -276,12 +637,20 @@ def run_turn(
             for block in response.content:
                 if block.type == "tool_use":
                     _emit({"type": "tool_call", "tool": block.name, "input": block.input})
-                    result_json = _dispatch(
-                        block.name,
-                        block.input,
-                        token,
-                        client_timezone=client_timezone,
-                    )
+                    if block.name == "analyze_flow_data":
+                        result_json = _run_analyze_flow_with_progress(
+                            block.input,
+                            token,
+                            client_timezone=client_timezone,
+                            emit=_emit,
+                        )
+                    else:
+                        result_json = _dispatch(
+                            block.name,
+                            block.input,
+                            token,
+                            client_timezone=client_timezone,
+                        )
                     result_dict = json.loads(result_json)
                     event: dict = {
                         "type": "tool_result",
@@ -302,4 +671,4 @@ def run_turn(
         else:
             break
 
-    return "(Unexpected stop reason)"
+    return "(Unexpected stop reason)", history_replaced

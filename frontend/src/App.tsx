@@ -4,6 +4,7 @@ import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
 import { useConversations } from "./hooks/useConversations";
 import { useChat } from "./hooks/useChat";
+import { fetchOrchestratorConfig } from "./api";
 
 function useLocalStorage(key: string, fallback: string) {
   const [value, setValue] = useState(
@@ -23,9 +24,24 @@ function useLocalStorage(key: string, fallback: string) {
   return [value, set] as const;
 }
 
+/** Fallback if /api/config fails — matches Haiku Tier-1 ITPM default on the server. */
+const DEFAULT_TPM_INPUT_GUIDE = 50_000;
+const DEFAULT_MODEL_CONTEXT_WINDOW = 200_000;
+/** Default 0.5 × TPM guide when config omits max_input_tokens_target. */
+const DEFAULT_MAX_INPUT_TARGET = 25_000;
+
 export default function App() {
   const [token, setToken] = useLocalStorage("bb_token", "");
   const [user, setUser] = useLocalStorage("bb_user", "");
+  const [tpmInputGuideTokens, setTpmInputGuideTokens] =
+    useState(DEFAULT_TPM_INPUT_GUIDE);
+  const [tpmServerSliding60s, setTpmServerSliding60s] = useState(0);
+  const [modelContextWindowTokens, setModelContextWindowTokens] = useState(
+    DEFAULT_MODEL_CONTEXT_WINDOW
+  );
+  const [maxInputTokensTarget, setMaxInputTokensTarget] = useState(
+    DEFAULT_MAX_INPUT_TARGET
+  );
   const [activeConvId, _setActiveConvId] = useState<string | null>(
     () => localStorage.getItem("bb_active_conv") ?? null
   );
@@ -40,17 +56,45 @@ export default function App() {
 
   const isLoggedIn = !!token && !!user;
 
+  useEffect(() => {
+    const load = () => {
+      fetchOrchestratorConfig()
+        .then((c) => {
+          if (typeof c.tpm_input_guide_tokens === "number" && c.tpm_input_guide_tokens > 0) {
+            setTpmInputGuideTokens(c.tpm_input_guide_tokens);
+          }
+          if (typeof c.model_context_window === "number" && c.model_context_window > 0) {
+            setModelContextWindowTokens(c.model_context_window);
+          }
+          if (typeof c.max_input_tokens_target === "number" && c.max_input_tokens_target > 0) {
+            setMaxInputTokensTarget(c.max_input_tokens_target);
+          }
+          if (typeof c.tpm_sliding_input_tokens_60s === "number") {
+            setTpmServerSliding60s(Math.max(0, c.tpm_sliding_input_tokens_60s));
+          }
+        })
+        .catch(() => {});
+    };
+    load();
+    const id = window.setInterval(load, 2000);
+    return () => window.clearInterval(id);
+  }, []);
+
   const { conversations, refresh, create, remove } = useConversations(user);
   const {
     messages,
     status,
     streamingText,
     tokenUsage,
+    historyLoading,
     pendingPlots,
+    turnActivity,
+    turnActivityActive,
     processingConvId,
     serverProcessing,
     sendMessage,
     cancel,
+    clearAssistantError,
   } = useChat(activeConvId, token);
 
   // Auto-select: only when there's no persisted active conversation
@@ -107,7 +151,6 @@ export default function App() {
         conversations={conversations}
         activeId={activeConvId}
         processingId={processingConvId}
-        tokenUsage={tokenUsage}
         user={user}
         onSelectConversation={setActiveConvId}
         onNewConversation={handleNewConversation}
@@ -120,8 +163,17 @@ export default function App() {
           status={status}
           streamingText={streamingText}
           pendingPlots={pendingPlots}
+          tokenUsage={tokenUsage}
+          historyLoading={historyLoading}
+          tpmInputGuideTokens={tpmInputGuideTokens}
+          tpmServerSliding60s={tpmServerSliding60s}
+          modelContextWindowTokens={modelContextWindowTokens}
+          maxInputTokensTarget={maxInputTokensTarget}
+          turnActivity={turnActivity}
+          turnActivityActive={turnActivityActive}
           serverProcessing={serverProcessing}
           onSend={handleSend}
+          onDismissAssistantError={clearAssistantError}
           disabled={false}
         />
       </main>

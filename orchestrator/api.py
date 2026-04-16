@@ -18,6 +18,7 @@ import logging
 import os
 import queue
 import threading
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
@@ -31,8 +32,9 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 import store
-from agent import run_turn
+from agent import get_rate_limit_config_for_api, run_turn
 from plots_paths import resolved_plots_dir
+from turn_gate import acquire_run_turn_slot, configured_max_slots, release_run_turn_slot
 from summarizer import update_title
 
 # ---------------------------------------------------------------------------
@@ -60,14 +62,39 @@ def _load_secrets_to_env() -> None:
 _load_secrets_to_env()
 
 logger = logging.getLogger(__name__)
+logger.info(
+    "ORCHESTRATOR_MAX_CONCURRENT_TURNS=%s (max parallel chat turns per process)",
+    configured_max_slots(),
+)
+
+
+def _sse_error_message(exc: BaseException) -> str:
+    """Short, user-facing text for SSE `error` events (full traceback still logged)."""
+    raw = str(exc)
+    if "rate_limit" in raw.lower() or "429" in raw or type(exc).__name__ == "RateLimitError":
+        return (
+            "Claude API rate limit reached (input tokens per minute for your organization). "
+            "Wait a minute and retry, start a **new chat** for very long threads, or ask a shorter "
+            "follow-up so the model sees less history."
+        )
+    return raw
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     store._ensure_ready()
+    logger.info("Rate limit budgeting: %s", get_rate_limit_config_for_api())
     yield
 
 app = FastAPI(title="bluebot Orchestrator API", lifespan=_lifespan)
+
+
+@app.get("/api/config")
+def orchestrator_config():
+    """
+    Public tuning values for the UI (e.g. TPM bar) — no secrets.
+    """
+    return get_rate_limit_config_for_api()
 
 _CORS_ORIGINS = os.environ.get(
     "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
@@ -117,6 +144,8 @@ class CreateConversationRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     client_timezone: str | None = None  # IANA, e.g. America/New_York (browser local zone)
+    # Optional UUID from the client so SSE events can be correlated and stale streams ignored.
+    client_turn_id: str | None = None
 
 class UpdateTitleRequest(BaseModel):
     title: str
@@ -277,37 +306,74 @@ async def chat(
 
     user_msg = {"role": "user", "content": body.message}
     messages.append(user_msg)
+    # Messages only appended after this point belong to this turn (append vs replace on compress).
+    n_messages_after_user = len(messages)
     store.append_messages(conv_id, [user_msg])
 
     if len(messages) == 1:
         store.set_title(conv_id, body.message[:60])
 
     eq: queue.Queue = queue.Queue()
+    # One logical turn per POST: every SSE event gets the same turn_id and a monotonic seq so
+    # the client can ignore stale/out-of-order events (abort, double fire, reconnect edge cases).
+    def _turn_id_for_request() -> str:
+        raw = (body.client_turn_id or "").strip()
+        if not raw:
+            return str(uuid.uuid4())
+        try:
+            return str(uuid.UUID(raw))
+        except ValueError:
+            return str(uuid.uuid4())
 
-    def _on_event(event: dict):
-        eq.put(event)
+    turn_id = _turn_id_for_request()
+    _seq = 0
+
+    def _emit_event(event: dict) -> None:
+        nonlocal _seq
+        _seq += 1
+        eq.put({**event, "turn_id": turn_id, "seq": _seq})
 
     def _run():
-        _active_conversations.add(conv_id)
         try:
-            run_turn(
-                messages,
-                token,
-                on_event=_on_event,
-                client_timezone=body.client_timezone,
+            acquire_run_turn_slot(
+                on_wait=lambda: _emit_event(
+                    {
+                        "type": "queued",
+                        "message": (
+                            "Waiting for a free slot — another chat turn is using the model. "
+                            f"(limit {configured_max_slots()} concurrent turn(s) per server.)"
+                        ),
+                    }
+                )
             )
-            checkpoint = next(
-                (i for i in range(len(messages) - 1, -1, -1)
-                 if messages[i]["role"] == "user" and messages[i]["content"] == body.message),
-                0,
-            )
-            store.append_messages(conv_id, messages[checkpoint + 1:])
-            update_title(conv_id, messages)
-            eq.put({"type": "done"})
-        except Exception as exc:
-            eq.put({"type": "error", "error": str(exc)})
+            _active_conversations.add(conv_id)
+            try:
+                _, history_replaced = run_turn(
+                    messages,
+                    token,
+                    on_event=_emit_event,
+                    client_timezone=body.client_timezone,
+                )
+                if history_replaced:
+                    # In-place summarization (e.g. 429) — DB must match compressed thread.
+                    store.replace_conversation_messages(conv_id, messages)
+                else:
+                    new_tail = messages[n_messages_after_user:]
+                    if not new_tail:
+                        logger.warning(
+                            "chat turn produced no new messages after user (conv=%s)",
+                            conv_id,
+                        )
+                    store.append_messages(conv_id, new_tail)
+                update_title(conv_id, messages)
+                _emit_event({"type": "done"})
+            except Exception as exc:
+                logger.exception("run_turn failed for conv %s", conv_id)
+                _emit_event({"type": "error", "error": _sse_error_message(exc)})
+            finally:
+                _active_conversations.discard(conv_id)
         finally:
-            _active_conversations.discard(conv_id)
+            release_run_turn_slot()
             eq.put(_SENTINEL)
 
     thread = threading.Thread(target=_run, daemon=True)

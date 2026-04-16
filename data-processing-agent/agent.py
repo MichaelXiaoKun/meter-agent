@@ -12,6 +12,7 @@ Contract:
 """
 
 import json
+import os
 from typing import Any, Dict
 
 import numpy as np
@@ -23,6 +24,7 @@ from processors.continuity import detect_gaps, detect_zero_flow_periods
 from processors.flow_metrics import compute_total_volume, detect_peaks, compute_flow_duration_curve
 from processors.trend import compute_linear_trend, compute_rolling_statistics
 from processors.quality import detect_low_quality_readings
+from processors.quiet_baseline import summarize_quiet_flow_baseline
 from processors.plots import generate_plot, pop_figures
 
 TOOLS = [
@@ -141,8 +143,8 @@ TOOLS = [
             "Flag readings where the ultrasonic signal quality score is at or below a threshold (default 60). "
             "Quality reflects how cleanly the ultrasonic sensor received its measurement signal — "
             "a low score means the sensor struggled, making the flow rate reading less reliable. "
-            "Returns every flagged reading with its timestamp, flow rate, and quality score, "
-            "plus overall quality statistics and flagged percentage."
+            "Returns aggregate stats, first/last low-quality times, longest stretch summary, "
+            "and merged low-quality intervals (contiguous runs), not per-sample rows — use these for the report."
         ),
         "input_schema": {
             "type": "object",
@@ -151,6 +153,33 @@ TOOLS = [
                     "type": "number",
                     "description": "Quality score at or below which a reading is flagged. Default: 60.",
                 }
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "summarize_quiet_flow_baseline",
+        "description": (
+            "Quiet-flow baseline: among readings with good ultrasonic quality (default: quality > 60), "
+            "take the bottom flow-rate percentile (default: 10th percentile) as a 'quiet' cutoff, "
+            "then summarise flow_rate statistics for that quiet subset (median, mean, IQR, counts). "
+            "Useful for screening offset or residual flow when the process is most still — not proof of a leak. "
+            "Call when has_quality_scores is true in the data overview."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "quality_threshold": {
+                    "type": "number",
+                    "description": "Include only readings with quality strictly above this. Default: 60.",
+                },
+                "quiet_percentile": {
+                    "type": "number",
+                    "description": (
+                        "Percentile of flow_rate (among good-quality points) defining the quiet band. "
+                        "Default: 10 (bottom decile)."
+                    ),
+                },
             },
             "required": [],
         },
@@ -232,6 +261,15 @@ def _dispatch_tool(
             timestamps, values, quality, inputs.get("threshold", 60.0)
         )
 
+    elif name == "summarize_quiet_flow_baseline":
+        return summarize_quiet_flow_baseline(
+            timestamps,
+            values,
+            quality,
+            quality_threshold=float(inputs.get("quality_threshold", 60.0)),
+            quiet_percentile=float(inputs.get("quiet_percentile", 10.0)),
+        )
+
     elif name == "generate_plot":
         return generate_plot(
             inputs["plot_type"],
@@ -293,6 +331,8 @@ def analyze(df: pd.DataFrame, serial_number: str) -> str:
         "You have access to a set of mathematical processor tools. "
         "You MUST use only these tools to obtain every number in your report — "
         "never compute or estimate statistics yourself. "
+        "When quality scores are present (has_quality_scores=true), call summarize_quiet_flow_baseline "
+        "once to characterise the quietest flow band (screening for residual flow / offset; not diagnostic proof). "
         "After calling all relevant tools, always call generate_plot with "
         "plot_type='time_series'. Always also call it with plot_type='signal_quality' "
         "when quality scores are present (has_quality_scores=true). "
@@ -301,24 +341,29 @@ def analyze(df: pd.DataFrame, serial_number: str) -> str:
         "Embed each returned path in the report as a Markdown image using the "
         "exact path from the tool result: ![Title](path). "
         "Then write a structured Markdown report that presents the findings "
-        "clearly, referencing the tool outputs."
+        "clearly, referencing the tool outputs. "
+        "Keep the final report concise: short sections, bullets where possible, "
+        "no filler or repeated restatements; expand detail only when anomalies or "
+        "low-quality periods require explanation."
     )
 
     user_message = (
         f"Analyse the flow rate time series for meter `{serial_number}`.\n\n"
         f"**Data overview:**\n```json\n{json.dumps(data_overview, indent=2)}\n```\n\n"
-        "Run all processor tools that are relevant to fully characterising this dataset, "
-        "then produce a comprehensive analytical report with sections for: "
-        "descriptive statistics, data quality, flow behaviour, trend analysis, and a summary."
+        "Run the processor tools needed to characterise this dataset (not every tool if irrelevant), "
+        "then produce a concise analytical report covering: headline stats, data quality, "
+        "quiet-flow baseline if quality data exists, flow behaviour and trends, and a brief summary."
     )
+
+    max_output_tokens = int(os.environ.get("BLUEBOT_ANALYSIS_MAX_OUTPUT_TOKENS", "3072"))
 
     client = anthropic.Anthropic()
     messages = [{"role": "user", "content": user_message}]
 
     while True:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=4096,
+            model=os.environ.get("BLUEBOT_ANALYSIS_MODEL", "claude-haiku-4-5"),
+            max_tokens=max_output_tokens,
             system=system_prompt,
             tools=TOOLS,
             messages=messages,

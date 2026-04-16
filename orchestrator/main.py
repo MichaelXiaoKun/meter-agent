@@ -72,6 +72,9 @@ def _on_event(event: dict) -> None:
 
         print(f"  [{label}{': ' + detail if detail else ''}...]", file=sys.stderr)
 
+    elif kind == "tool_progress":
+        print(f"  [{event.get('message', event.get('tool', 'progress'))}]", file=sys.stderr)
+
     elif kind == "tool_result":
         status = "done" if event["success"] else "failed"
         print(f"  [{event['tool']} {status}]", file=sys.stderr)
@@ -166,8 +169,11 @@ def main() -> None:
             store.set_title(conversation_id, user_input[:60])
 
         try:
-            reply = run_turn(messages, token, on_event=_on_event)
-            store.append_messages(conversation_id, messages[checkpoint:])
+            reply, history_replaced = run_turn(messages, token, on_event=_on_event)
+            if history_replaced:
+                store.replace_conversation_messages(conversation_id, messages)
+            else:
+                store.append_messages(conversation_id, messages[checkpoint:])
             update_title(conversation_id, messages)
             print(f"\nAssistant: {reply}\n")
         except Exception as exc:

@@ -272,6 +272,49 @@ def load_messages(conversation_id: str) -> list[dict]:
     return [{"role": r["role"], "content": json.loads(r["content"])} for r in rows]
 
 
+def replace_conversation_messages(conversation_id: str, messages: list[dict]) -> None:
+    """
+    Replace all messages for a conversation (used after in-place context compression).
+
+    Preserves the conversation row; only message rows are deleted and re-inserted.
+    """
+    _ensure_ready()
+    if not messages:
+        with _conn() as (conn, cur):
+            cur.execute(
+                _q("DELETE FROM messages WHERE conversation_id = ?"),
+                (conversation_id,),
+            )
+            cur.execute(
+                _q("UPDATE conversations SET updated_at = ? WHERE id = ?"),
+                (int(time.time()), conversation_id),
+            )
+        return
+    now = int(time.time())
+    rows = [
+        (
+            conversation_id,
+            msg["role"],
+            json.dumps(_normalize_content(msg["content"]), default=str),
+            now,
+        )
+        for msg in messages
+    ]
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q("DELETE FROM messages WHERE conversation_id = ?"),
+            (conversation_id,),
+        )
+        cur.executemany(
+            _q("INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)"),
+            rows,
+        )
+        cur.execute(
+            _q("UPDATE conversations SET updated_at = ? WHERE id = ?"),
+            (now, conversation_id),
+        )
+
+
 def append_messages(conversation_id: str, messages: list[dict]) -> None:
     """
     Persist new messages, normalising any SDK objects before writing.

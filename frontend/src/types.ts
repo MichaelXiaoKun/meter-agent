@@ -26,9 +26,11 @@ export interface SSEEvent {
     | "text_delta"
     | "tool_call"
     | "tool_result"
+    | "tool_progress"
     | "thinking"
     | "token_usage"
     | "compressing"
+    | "queued"
     | "done"
     | "error";
   text?: string;
@@ -36,7 +38,12 @@ export interface SSEEvent {
   input?: Record<string, unknown>;
   success?: boolean;
   plot_paths?: string[];
+  message?: string;
   tokens?: number;
   pct?: number;
   error?: string;
+  /** Present on events from orchestrator — same id for one user message / chat POST. */
+  turn_id?: string;
+  /** Monotonic per turn — drop duplicates or stale ordering bugs. */
+  seq?: number;
 }

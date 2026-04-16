@@ -108,7 +108,8 @@ export async function streamChat(
   message: string,
   token: string,
   onEvent: (event: SSEEvent) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  clientTurnId?: string
 ): Promise<void> {
   const clientTimezone =
     typeof Intl !== "undefined"
@@ -120,6 +121,7 @@ export async function streamChat(
     body: JSON.stringify({
       message,
       ...(clientTimezone ? { client_timezone: clientTimezone } : {}),
+      ...(clientTurnId ? { client_turn_id: clientTurnId } : {}),
     }),
     signal,
   });
@@ -131,34 +133,73 @@ export async function streamChat(
   const decoder = new TextDecoder();
   let buffer = "";
 
+  let currentEventType = "";
+  const dispatchLine = (line: string) => {
+    const trimmed = line.replace(/\r$/, "");
+    if (trimmed.startsWith("event:")) {
+      currentEventType = trimmed.slice(6).trim();
+    } else if (trimmed.startsWith("data:")) {
+      const data = trimmed.slice(5).trim();
+      if (data) {
+        try {
+          const parsed: SSEEvent = JSON.parse(data);
+          if (!parsed.type && currentEventType) {
+            parsed.type = currentEventType as SSEEvent["type"];
+          }
+          onEvent(parsed);
+        } catch {
+          // skip malformed events
+        }
+      }
+      currentEventType = "";
+    }
+  };
+
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
+    if (value) {
+      buffer += decoder.decode(value, { stream: true });
+    }
+    if (done) {
+      buffer += decoder.decode();
+    }
 
     const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-
-    let currentEventType = "";
-    for (const line of lines) {
-      if (line.startsWith("event:")) {
-        currentEventType = line.slice(6).trim();
-      } else if (line.startsWith("data:")) {
-        const data = line.slice(5).trim();
-        if (data) {
-          try {
-            const parsed: SSEEvent = JSON.parse(data);
-            if (!parsed.type && currentEventType) {
-              parsed.type = currentEventType as SSEEvent["type"];
-            }
-            onEvent(parsed);
-          } catch {
-            // skip malformed events
-          }
-        }
-        currentEventType = "";
+    if (done) {
+      buffer = "";
+      for (const line of lines) {
+        if (line.length > 0) dispatchLine(line);
       }
+      break;
+    }
+
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      dispatchLine(line);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Server tuning (public)
+// ---------------------------------------------------------------------------
+
+export interface OrchestratorConfig {
+  tpm_input_guide_tokens: number;
+  /** Input token count before run_turn compresses (TPM headroom; shown as main context bar). */
+  max_input_tokens_target: number;
+  /** Full Claude Messages API context window (informational). */
+  model_context_window: number;
+  tpm_headroom_fraction: number;
+  /** Sum of input tokens recorded from this API process in the last tpm_window_seconds. */
+  tpm_sliding_input_tokens_60s: number;
+  tpm_window_seconds: number;
+}
+
+export async function fetchOrchestratorConfig(
+  signal?: AbortSignal
+): Promise<OrchestratorConfig> {
+  const res = await fetch(`${BASE}/config`, { signal });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
 }

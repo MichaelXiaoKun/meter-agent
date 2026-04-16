@@ -12,6 +12,7 @@ The LLM must ground its final status report on tool outputs only.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict
 
 import anthropic
@@ -159,7 +160,7 @@ def analyze(
 
     while True:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=os.environ.get("BLUEBOT_PIPE_CONFIG_MODEL", "claude-haiku-4-5"),
             max_tokens=4096,
             system=system_prompt,
             tools=TOOLS,

@@ -23,6 +23,29 @@ _PYTHON = _VENV_PYTHON if os.path.exists(_VENV_PYTHON) else sys.executable
 
 _PLOT_PATHS_MARKER = "__BLUEBOT_PLOT_PATHS__"
 
+_TRUNCATION_NOTE = "\n\n…*(Report truncated for length; increase `BLUEBOT_FLOW_REPORT_MAX_CHARS` if needed.)*"
+
+
+def _flow_report_max_chars() -> int:
+    raw = os.environ.get("BLUEBOT_FLOW_REPORT_MAX_CHARS", "10000")
+    try:
+        n = int(raw)
+    except ValueError:
+        return 10000
+    return n if n > 0 else 0
+
+
+def _maybe_truncate_report(text: str) -> tuple[str, bool]:
+    limit = _flow_report_max_chars()
+    if limit <= 0 or len(text) <= limit:
+        return text, False
+    budget = max(0, limit - len(_TRUNCATION_NOTE))
+    cut = text[:budget]
+    nl = cut.rfind("\n\n")
+    if nl > budget * 0.6:
+        cut = cut[:nl]
+    return cut.rstrip() + _TRUNCATION_NOTE, True
+
 
 def _collect_plot_paths(report: str, stderr: str, agent_dir: str) -> list[str]:
     """
@@ -124,9 +147,10 @@ def analyze_flow_data(
 
     Returns:
         {
-            "success":       bool,
-            "report":        str | None,   # full Markdown report text
-            "plot_paths":    list[str],    # absolute PNG paths embedded in the report
+            "success":           bool,
+            "report":            str | None,   # Markdown (may be truncated — see report_truncated)
+            "report_truncated":  bool,         # True if report was shortened for token/length limits
+            "plot_paths":        list[str],     # absolute PNG paths embedded in the report
             "display_range": str,          # wall times for start/end (user TZ when set)
             "error":         str | None,
         }
@@ -147,11 +171,15 @@ def analyze_flow_data(
         env=env,
     )
     if result.returncode == 0:
-        report = result.stdout.strip()
-        plot_paths = _collect_plot_paths(report, result.stderr or "", _AGENT_DIR)
+        raw_report = result.stdout.strip()
+        plot_paths = _collect_plot_paths(raw_report, result.stderr or "", _AGENT_DIR)
+        report, truncated = _maybe_truncate_report(raw_report)
+        if truncated:
+            plot_paths = _collect_plot_paths(report, result.stderr or "", _AGENT_DIR)
         return {
             "success": True,
             "report": report,
+            "report_truncated": truncated,
             "plot_paths": plot_paths,
             "display_range": display_range,
             "error": None,
@@ -159,6 +187,7 @@ def analyze_flow_data(
     return {
         "success": False,
         "report": None,
+        "report_truncated": False,
         "plot_paths": [],
         "display_range": display_range,
         "error": result.stderr.strip() or f"Process exited with code {result.returncode}",

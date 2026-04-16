@@ -509,11 +509,13 @@ if active_input:
             labels = {
                 "resolve_time_range": "Resolving time range",
                 "check_meter_status": "Checking meter status",
-                "analyze_flow_data":  "Analysing flow data",
+                "analyze_flow_data":  "Analyzing flow data",
                 "configure_meter_pipe": "Configuring meter pipe",
                 "set_transducer_angle_only": "Setting transducer angle (SSA only)",
             }
             status_placeholder.info(f"{labels.get(event['tool'], event['tool'])}...")
+        elif kind == "tool_progress":
+            status_placeholder.info(event.get("message") or event.get("tool", "…"))
         elif kind == "tool_result":
             status = "done" if event["success"] else "failed"
             status_placeholder.info(f"{event['tool']} {status}")
@@ -522,7 +524,7 @@ if active_input:
                     pending_plot_paths.append(p)
 
     try:
-        run_turn(
+        _, history_replaced = run_turn(
             st.session_state.messages,
             token,
             on_event=_on_event,
@@ -530,11 +532,17 @@ if active_input:
         status_placeholder.empty()
         st.session_state.compressing = False
 
-        # Save only agent messages — user message was already persisted earlier.
-        store.append_messages(
-            st.session_state.conversation_id,
-            st.session_state.messages[checkpoint + 1:],
-        )
+        # Save agent messages — or full thread if history was summarized (rate limit).
+        if history_replaced:
+            store.replace_conversation_messages(
+                st.session_state.conversation_id,
+                st.session_state.messages,
+            )
+        else:
+            store.append_messages(
+                st.session_state.conversation_id,
+                st.session_state.messages[checkpoint + 1:],
+            )
         update_title(st.session_state.conversation_id, st.session_state.messages)
 
         # Rerun so the chat input is re-enabled (_is_processing becomes False)

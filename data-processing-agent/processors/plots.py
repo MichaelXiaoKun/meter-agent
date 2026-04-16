@@ -256,7 +256,7 @@ def _signal_quality(
     )
     ax.set_xlabel("Time (UTC)")
     ax.set_ylabel("Quality score")
-    ax.set_ylim(bottom=0)
+    ax.set_ylim(0, 100)
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
     _format_xaxis(ax, timestamps[valid_mask])

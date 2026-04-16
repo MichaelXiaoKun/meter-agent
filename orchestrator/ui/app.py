@@ -230,17 +230,30 @@ if prompt := st.chat_input("Health, flow, or pipe setup (serial number)..."):
                     status.update(label=line, state="running")
                     status.write(f"⟳  {line}")
 
+                elif event["type"] == "tool_progress":
+                    msg = event.get("message") or event.get("tool", "…")
+                    status.update(label=msg, state="running")
+                    status.write(f"⟳  {msg}")
+
                 elif event["type"] == "tool_result":
                     icon = "✓" if event["success"] else "✗"
                     status.write(f"{icon}  {event['tool']} {'complete' if event['success'] else 'failed'}")
                     status.update(label="Thinking...", state="running")
 
             try:
-                reply = run_turn(st.session_state.messages, token, on_event=on_event)
-                store.append_messages(
-                    st.session_state.conversation_id,
-                    st.session_state.messages[checkpoint:],
+                reply, history_replaced = run_turn(
+                    st.session_state.messages, token, on_event=on_event
                 )
+                if history_replaced:
+                    store.replace_conversation_messages(
+                        st.session_state.conversation_id,
+                        st.session_state.messages,
+                    )
+                else:
+                    store.append_messages(
+                        st.session_state.conversation_id,
+                        st.session_state.messages[checkpoint:],
+                    )
                 update_title(st.session_state.conversation_id, st.session_state.messages)
                 status.update(label="Done", state="complete", expanded=False)
 

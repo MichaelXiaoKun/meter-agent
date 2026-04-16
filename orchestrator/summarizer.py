@@ -9,6 +9,8 @@ Called after every successful run_turn() in both CLI and Streamlit UI.
 import anthropic
 import store
 
+from tpm_window import record_input_tokens_from_usage
+
 
 def _extract_transcript(messages: list[dict]) -> str:
     """
@@ -52,7 +54,7 @@ def summarize(messages: list[dict]) -> str:
     try:
         client = anthropic.Anthropic()
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-haiku-4-5",
             max_tokens=20,
             messages=[{
                 "role": "user",
@@ -64,6 +66,7 @@ def summarize(messages: list[dict]) -> str:
                 ),
             }],
         )
+        record_input_tokens_from_usage(getattr(response, "usage", None))
         title = response.content[0].text.strip().rstrip(".")
         return title[:40]
     except Exception:
