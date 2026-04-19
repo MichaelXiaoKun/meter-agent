@@ -626,11 +626,7 @@ export default function ChatView({
                 }`}
               >
                 <div
-                  className={
-                    welcomeComposerAtBottom
-                      ? "flex w-full max-w-2xl flex-col items-center py-6 sm:py-8 md:py-10"
-                      : "flex w-full max-w-2xl flex-1 flex-col items-center justify-center py-6 sm:py-10 md:py-14"
-                  }
+                  className="flex w-full max-w-2xl flex-1 flex-col items-center justify-center py-6 sm:py-10 md:py-14"
                 >
                   <h2 className="px-1 text-center text-2xl font-semibold leading-snug tracking-tight text-brand-900 sm:px-2 sm:text-3xl">
                     What can I help with?
@@ -644,25 +640,29 @@ export default function ChatView({
                     </div>
                   )}
                 </div>
-                <div
-                  className={
-                    welcomeComposerAtBottom
-                      ? "w-full max-w-3xl shrink-0 pb-6 pt-2 sm:pb-8"
-                      : "w-full max-w-3xl shrink-0 pb-[max(2rem,env(safe-area-inset-bottom,0px))] pt-2 sm:pb-10 sm:pt-2"
-                  }
-                >
-                  <WelcomeCard
-                    onCompose={(text) => {
-                      setInput(text);
-                      requestAnimationFrame(() => {
-                        const el = inputRef.current;
-                        if (!el) return;
-                        el.focus();
-                        el.select();
-                      });
-                    }}
-                  />
-                </div>
+                {/*
+                  Mobile/tablet: skip the WelcomeCard entirely. It contains
+                  its own "Meter serial for shortcuts" text input which,
+                  combined with the sticky-bottom chat composer, made the
+                  small-screen welcome look like a duplicated text field.
+                  Desktop keeps the full suggestions UI because the inputs
+                  are visually well-separated and clearly labeled there.
+                */}
+                {!welcomeComposerAtBottom && (
+                  <div className="w-full max-w-3xl shrink-0 pb-[max(2rem,env(safe-area-inset-bottom,0px))] pt-2 sm:pb-10 sm:pt-2">
+                    <WelcomeCard
+                      onCompose={(text) => {
+                        setInput(text);
+                        requestAnimationFrame(() => {
+                          const el = inputRef.current;
+                          if (!el) return;
+                          el.focus();
+                          el.select();
+                        });
+                      }}
+                    />
+                  </div>
+                )}
               </div>
               {welcomeComposerAtBottom && (
                 <div className="sticky bottom-0 z-10 w-full pointer-events-none">
