@@ -56,9 +56,19 @@ const PIPE_ACTIONS: QuickAction[] = [
 interface WelcomeCardProps {
   /** Full message ready to send (serial already interpolated). */
   onCompose: (message: string) => void;
+  /**
+   * Mobile/tablet variant: hide the dedicated "Meter serial for shortcuts"
+   * input so the screen has a single text field (the chat composer at the
+   * bottom). Suggestion buttons still work — they prefill the composer with
+   * either the previously-stored serial or a ``<METER SERIAL>`` placeholder
+   * so the user can finish typing it inline.
+   */
+  compact?: boolean;
 }
 
-export default function WelcomeCard({ onCompose }: WelcomeCardProps) {
+const SERIAL_PLACEHOLDER = "<METER SERIAL>";
+
+export default function WelcomeCard({ onCompose, compact = false }: WelcomeCardProps) {
   const serialId = useId();
   const serialInputRef = useRef<HTMLInputElement>(null);
   const [serial, setSerial] = useState(readStoredSerial);
@@ -76,6 +86,13 @@ export default function WelcomeCard({ onCompose }: WelcomeCardProps) {
   function runAction(build: (s: string) => string) {
     const t = serial.trim();
     if (!t) {
+      // Compact mode (mobile): no inline serial input, so we can't focus or
+      // error on it. Fall through with a placeholder the user can fill in
+      // directly inside the chat composer.
+      if (compact) {
+        onCompose(build(SERIAL_PLACEHOLDER));
+        return;
+      }
       setSerialError(true);
       serialInputRef.current?.focus();
       return;
@@ -111,45 +128,64 @@ export default function WelcomeCard({ onCompose }: WelcomeCardProps) {
         Suggestions
       </p>
 
-      <div
-        className={[
-          "mx-auto mt-4 max-w-md rounded-2xl border bg-white px-4 py-4 shadow-sm transition-colors sm:py-3",
-          serialError
-            ? "border-amber-300 ring-2 ring-amber-100"
-            : "border-slate-200/90",
-        ].join(" ")}
-      >
-        <label
-          htmlFor={serialId}
-          className="text-[0.8125rem] font-medium text-brand-muted sm:text-xs"
-        >
-          Meter serial for shortcuts
-        </label>
-        <input
-          id={serialId}
-          ref={serialInputRef}
-          type="text"
-          autoComplete="off"
-          spellCheck={false}
-          placeholder="e.g. BB8100015261"
-          value={serial}
-          onChange={(e) => {
-            setSerial(e.target.value);
-            setSerialError(false);
-          }}
-          className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2.5 text-base text-brand-900 outline-none transition placeholder:text-brand-muted/45 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-500/15 sm:min-h-0 sm:text-sm"
-          inputMode="text"
-        />
-        {serialError ? (
-          <p className="mt-2 text-xs font-medium text-amber-800" role="status">
-            Add a serial to use a suggestion.
+      {compact ? (
+        // Mobile/tablet: skip the dedicated serial-number text field so the
+        // welcome screen has a single input (the chat composer). Suggestion
+        // buttons fall back to the chat composer with a placeholder for the
+        // user to fill in.
+        serial.trim() ? (
+          <p className="mx-auto mt-3 max-w-md text-center text-xs text-brand-muted">
+            Suggestions will use saved serial{" "}
+            <span className="font-mono text-brand-800">{serial.trim()}</span>.
           </p>
         ) : (
-          <p className="mt-2 text-xs text-brand-muted">
-            We fill this into the message when you tap a card below.
+          <p className="mx-auto mt-3 max-w-md text-center text-xs text-brand-muted">
+            Tap a suggestion — the meter serial will appear as{" "}
+            <span className="font-mono text-brand-800">{SERIAL_PLACEHOLDER}</span>{" "}
+            for you to fill in.
           </p>
-        )}
-      </div>
+        )
+      ) : (
+        <div
+          className={[
+            "mx-auto mt-4 max-w-md rounded-2xl border bg-white px-4 py-4 shadow-sm transition-colors sm:py-3",
+            serialError
+              ? "border-amber-300 ring-2 ring-amber-100"
+              : "border-slate-200/90",
+          ].join(" ")}
+        >
+          <label
+            htmlFor={serialId}
+            className="text-[0.8125rem] font-medium text-brand-muted sm:text-xs"
+          >
+            Meter serial for shortcuts
+          </label>
+          <input
+            id={serialId}
+            ref={serialInputRef}
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="e.g. BB8100015261"
+            value={serial}
+            onChange={(e) => {
+              setSerial(e.target.value);
+              setSerialError(false);
+            }}
+            className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2.5 text-base text-brand-900 outline-none transition placeholder:text-brand-muted/45 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-500/15 sm:min-h-0 sm:text-sm"
+            inputMode="text"
+          />
+          {serialError ? (
+            <p className="mt-2 text-xs font-medium text-amber-800" role="status">
+              Add a serial to use a suggestion.
+            </p>
+          ) : (
+            <p className="mt-2 text-xs text-brand-muted">
+              We fill this into the message when you tap a card below.
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="mt-6 space-y-7 sm:mt-8 sm:space-y-8">
         <section aria-labelledby="welcome-status-flow">
