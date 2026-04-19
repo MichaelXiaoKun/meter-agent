@@ -1,0 +1,10 @@
+# Test / development dependencies for the meter_agent repo.
+#
+# Install on top of the per-agent requirements files, e.g.:
+#   python -m venv .venv && source .venv/bin/activate
+#   pip install -r data-processing-agent/requirements.txt -r orchestrator/requirements.txt
+#   pip install -r requirements-dev.txt
+#   pytest tests/
+pytest>=8.0
+pytest-cov>=5.0
+respx>=0.21

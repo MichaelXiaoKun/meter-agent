@@ -7,13 +7,13 @@ structured analytical report.
 
 Contract:
   - The LLM may ONLY call tools defined in TOOLS below.
-  - Every number in the final report must originate from a processor return value.
-  - The LLM never computes statistics itself.
+  - Every number in the final report must come from a tool result or from ``verified_facts_precomputed``
+    (same processor outputs). The LLM interprets those facts; it never computes statistics itself.
 """
 
 import json
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -26,6 +26,7 @@ from processors.trend import compute_linear_trend, compute_rolling_statistics
 from processors.quality import detect_low_quality_readings
 from processors.quiet_baseline import summarize_quiet_flow_baseline
 from processors.plots import generate_plot, pop_figures
+from processors.verified_facts import build_verified_facts, slim_verified_facts_for_prompt
 
 TOOLS = [
     {
@@ -40,8 +41,10 @@ TOOLS = [
     {
         "name": "detect_gaps",
         "description": (
-            "Detect time gaps where consecutive readings exceed the expected sampling interval. "
-            "Returns a list of gaps with start/end timestamps, duration, and estimated missing point count."
+            "Detect unusually long pauses between consecutive readings (true missing telemetry). "
+            "Uses an adaptive threshold from the data (median and high percentiles of inter-arrival gaps) "
+            "so variable cadences (e.g. LoRaWAN 12–60 s) are not misreported as gaps. "
+            "Returns start/end timestamps, duration, and estimated missing point count."
         ),
         "input_schema": {
             "type": "object",
@@ -49,8 +52,8 @@ TOOLS = [
                 "expected_interval_seconds": {
                     "type": "number",
                     "description": (
-                        "Nominal sampling period in seconds. "
-                        "If omitted, it is auto-detected from the median time delta."
+                        "Optional nominal step (seconds) for estimating missing points. "
+                        "If omitted, the median positive inter-arrival gap is used."
                     ),
                 }
             },
@@ -214,10 +217,14 @@ TOOLS = [
 
 
 def _auto_detect_interval(timestamps: np.ndarray) -> float:
-    """Estimate the nominal sampling interval from the median consecutive delta."""
+    """Median positive inter-arrival gap (ignores duplicate timestamps)."""
     if len(timestamps) < 2:
         return 1.0
-    return float(np.median(np.diff(timestamps.astype(float))))
+    d = np.diff(np.sort(timestamps.astype(float)))
+    pos = d[d > 1e-9]
+    if len(pos) == 0:
+        return 1.0
+    return float(np.median(pos))
 
 
 def _dispatch_tool(
@@ -233,8 +240,10 @@ def _dispatch_tool(
         return compute_descriptive_stats(values)
 
     elif name == "detect_gaps":
-        interval = inputs.get("expected_interval_seconds") or _auto_detect_interval(timestamps)
-        return detect_gaps(timestamps, interval)
+        raw = inputs.get("expected_interval_seconds")
+        if raw is not None:
+            return detect_gaps(timestamps, float(raw))
+        return detect_gaps(timestamps, None)
 
     elif name == "detect_zero_flow_periods":
         return detect_zero_flow_periods(
@@ -282,7 +291,7 @@ def _dispatch_tool(
         raise ValueError(f"Unknown tool: {name}")
 
 
-def analyze(df: pd.DataFrame, serial_number: str) -> str:
+def analyze(df: pd.DataFrame, serial_number: str, verified_facts: Optional[Dict[str, Any]] = None) -> str:
     """
     Run the agentic analysis loop on a flow rate DataFrame.
 
@@ -315,6 +324,10 @@ def analyze(df: pd.DataFrame, serial_number: str) -> str:
         ],
     }
 
+    if verified_facts is None:
+        verified_facts = build_verified_facts(df)
+    verified_facts_prompt = slim_verified_facts_for_prompt(verified_facts)
+
     system_prompt = (
         "You are a precise time series analyst specialising in ultrasonic flow meter data. "
         "The devices use ultrasonic measurement: a quality score accompanies each reading and "
@@ -329,8 +342,25 @@ def analyze(df: pd.DataFrame, serial_number: str) -> str:
         "When reporting low-quality events, consider the context: sustained low quality over a period "
         "suggests a drainage or installation issue, while intermittent spikes suggest passing air bubbles. "
         "You have access to a set of mathematical processor tools. "
-        "You MUST use only these tools to obtain every number in your report — "
-        "never compute or estimate statistics yourself. "
+        "All numeric facts in your report MUST come from tool outputs or from the JSON block "
+        "`verified_facts_precomputed` (same processors as the tools — that block is ground truth for headline metrics). "
+        "Never invent, guess, or mentally compute statistics. "
+        "Your role is to analyze and interpret: explain what the numbers imply for meter behaviour, data quality, "
+        "gaps, and signal quality; weigh likely causes; and give concise conclusions and recommendations — "
+        "always anchored to those tool-backed values, not generic boilerplate. "
+        "When you cite a headline figure (median/mean/min/max flow, gap counts, zero-flow periods, "
+        "low-quality share, quiet-flow median), use the value from `verified_facts_precomputed` or the matching tool result. "
+        "`verified_facts_precomputed` may include `flatline` (constant or near-constant flow) and `coverage_6h` "
+        "(per-window sample density); use them when discussing variability and time coverage. "
+        "If `verified_facts_precomputed` contains `baseline_quality` with `reliable=false` (any state other than "
+        "`reliable`), DO NOT make today-vs-typical or projection claims; relay the `state`, `reasons_refused`, "
+        "and `recommendations` verbatim and stop there for that topic. Only when `baseline_quality.reliable=true` "
+        "may you narrate baseline comparisons, and even then only using the fields provided — never invent a baseline. "
+        "Similarly, if `filter_applied` is present and its `state` is not `applied` (e.g. `empty_mask`, "
+        "`invalid_spec`), DO NOT pretend the analysis was scoped to the requested window — relay the "
+        "`state`, `reasons_refused`, and any `validation_errors` verbatim and scope every narrative claim to the "
+        "full unfiltered range. When `filter_applied.state=applied`, always mention what was kept "
+        "(e.g. fraction_kept and predicate_used) so the reader knows the stats are restricted. "
         "When quality scores are present (has_quality_scores=true), call summarize_quiet_flow_baseline "
         "once to characterise the quietest flow band (screening for residual flow / offset; not diagnostic proof). "
         "After calling all relevant tools, always call generate_plot with "
@@ -349,10 +379,14 @@ def analyze(df: pd.DataFrame, serial_number: str) -> str:
 
     user_message = (
         f"Analyse the flow rate time series for meter `{serial_number}`.\n\n"
+        f"**verified_facts_precomputed (ground truth from processors — cite these for headline metrics; then interpret):**\n"
+        f"```json\n{json.dumps(verified_facts_prompt, indent=2, default=str)}\n```\n\n"
         f"**Data overview:**\n```json\n{json.dumps(data_overview, indent=2)}\n```\n\n"
-        "Run the processor tools needed to characterise this dataset (not every tool if irrelevant), "
-        "then produce a concise analytical report covering: headline stats, data quality, "
-        "quiet-flow baseline if quality data exists, flow behaviour and trends, and a brief summary."
+        "Call the processor tools you need (plots require generate_plot). "
+        "Write an analytical report: interpret the ground-truth metrics and tool outputs — "
+        "what they suggest about flow regime, anomalies, and meter health — not a bare list of numbers. "
+        "Cover headline stats, data quality, quiet-flow baseline when quality exists, flow behaviour and trends, "
+        "and a brief summary."
     )
 
     max_output_tokens = int(os.environ.get("BLUEBOT_ANALYSIS_MAX_OUTPUT_TOKENS", "3072"))

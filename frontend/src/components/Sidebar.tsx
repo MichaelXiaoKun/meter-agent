@@ -73,8 +73,8 @@ export default function Sidebar({
   }, [keyModalOpen, anthropicApiKey]);
 
   return (
-    <aside className="flex h-full w-72 min-w-[18rem] flex-col bg-brand-100">
-      <header className="shrink-0 border-b border-brand-border/80 bg-gradient-to-b from-white/95 to-brand-100/80 px-3 pb-3.5 pt-4 shadow-[0_1px_0_0_rgba(15,23,42,0.04)] backdrop-blur-sm">
+    <aside className="flex h-full min-h-0 w-full min-w-0 max-w-full flex-col bg-brand-100">
+      <header className="shrink-0 border-b border-brand-border/80 bg-gradient-to-b from-white/95 to-brand-100/80 px-3 pb-3.5 pt-[max(1rem,env(safe-area-inset-top,0px))] shadow-[0_1px_0_0_rgba(15,23,42,0.04)] backdrop-blur-sm">
         <div className="flex items-center gap-2">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white shadow-sm ring-1 ring-brand-border/70">
             <img
@@ -121,7 +121,7 @@ export default function Sidebar({
       />
 
       {/* Account section */}
-      <div className="border-t border-brand-border px-4 py-3">
+      <div className="shrink-0 border-t border-brand-border px-4 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] pt-3">
         <div className="mb-2 truncate text-xs text-brand-muted">
           Signed in as <span className="font-medium text-brand-900">{user}</span>
         </div>

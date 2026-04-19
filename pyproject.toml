@@ -1,0 +1,17 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [
+    ".",
+    "data-processing-agent",
+    "orchestrator",
+    "meter-status-agent",
+    "pipe-configuration-agent",
+]
+markers = [
+    "integration: tests that spawn a subprocess or touch a real external service",
+]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--disable-warnings",
+]

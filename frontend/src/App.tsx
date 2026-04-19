@@ -5,6 +5,7 @@ import SidebarIconRail from "./components/SidebarIconRail";
 import ChatView from "./components/ChatView";
 import { useConversations } from "./hooks/useConversations";
 import { useChat } from "./hooks/useChat";
+import { useMediaQuery } from "./hooks/useMediaQuery";
 import { fetchOrchestratorConfig } from "./api";
 
 function useLocalStorage(key: string, fallback: string) {
@@ -52,10 +53,16 @@ export default function App() {
   >(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     try {
-      return localStorage.getItem("bb_sidebar_open") !== "0";
+      const v = localStorage.getItem("bb_sidebar_open");
+      if (v === "0") return false;
+      if (v === "1") return true;
     } catch {
-      return true;
+      /* ignore */
     }
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 1023px)").matches) {
+      return false;
+    }
+    return true;
   });
 
   useEffect(() => {
@@ -78,6 +85,15 @@ export default function App() {
   }, []);
 
   const isLoggedIn = !!token && !!user;
+  const isNarrow = useMediaQuery("(max-width: 1023px)");
+
+  const handleSelectConversation = useCallback(
+    (id: string) => {
+      setActiveConvId(id);
+      if (isNarrow) setSidebarOpen(false);
+    },
+    [isNarrow, setActiveConvId]
+  );
 
   useEffect(() => {
     const load = () => {
@@ -172,38 +188,62 @@ export default function App() {
     return <LoginPage onLogin={handleLogin} />;
   }
 
+  const sidebarProps = {
+    conversations,
+    activeId: activeConvId,
+    processingId: processingConvId,
+    user,
+    onSelectConversation: handleSelectConversation,
+    onNewConversation: handleNewConversation,
+    onDeleteConversation: handleDeleteConversation,
+    onRenameConversation: rename,
+    onLogout: handleLogout,
+    anthropicApiKey,
+    onAnthropicApiKeyChange: setAnthropicApiKey,
+    anthropicServerConfigured,
+    onCollapse: () => setSidebarOpen(false),
+  } as const;
+
   return (
-    <div className="flex h-screen overflow-hidden bg-brand-50">
+    <div className="relative flex h-[100dvh] max-h-[100dvh] min-h-0 overflow-hidden overflow-x-hidden bg-brand-50">
+      {isNarrow && sidebarOpen && (
+        <>
+          <button
+            type="button"
+            className="fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-[1px] lg:hidden"
+            aria-label="Close sidebar"
+            onClick={() => setSidebarOpen(false)}
+          />
+          <div
+            className="fixed inset-y-0 left-0 z-50 flex h-[100dvh] max-h-[100dvh] min-w-0 overflow-hidden border-r border-brand-border bg-brand-100 shadow-2xl lg:hidden [width:min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))] max-w-[min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))]"
+          >
+            <div className="h-full min-h-0 min-w-0 flex-1 overflow-hidden [&>aside]:max-w-full [&>aside]:min-w-0 [&>aside]:w-full">
+              <Sidebar {...sidebarProps} />
+            </div>
+          </div>
+        </>
+      )}
       <div
-        className={`flex shrink-0 overflow-hidden transition-[width] duration-200 ease-out border-r border-brand-border ${
-          sidebarOpen ? "w-72" : "w-14"
+        className={`relative z-[45] flex shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${
+          isNarrow
+            ? "w-0 min-w-0 border-r-0"
+            : sidebarOpen
+              ? "w-72 border-r border-brand-border bg-brand-100"
+              : "w-14 border-r border-brand-border/35 bg-brand-50"
         }`}
       >
-        {sidebarOpen ? (
-          <Sidebar
-            conversations={conversations}
-            activeId={activeConvId}
-            processingId={processingConvId}
-            user={user}
-            onSelectConversation={setActiveConvId}
-            onNewConversation={handleNewConversation}
-            onDeleteConversation={handleDeleteConversation}
-            onRenameConversation={rename}
-            onLogout={handleLogout}
-            anthropicApiKey={anthropicApiKey}
-            onAnthropicApiKeyChange={setAnthropicApiKey}
-            anthropicServerConfigured={anthropicServerConfigured}
-            onCollapse={() => setSidebarOpen(false)}
-          />
-        ) : (
+        {!isNarrow && sidebarOpen ? (
+          <Sidebar {...sidebarProps} />
+        ) : !isNarrow && !sidebarOpen ? (
           <SidebarIconRail
             onExpand={() => setSidebarOpen(true)}
             onNewConversation={handleNewConversation}
           />
-        )}
+        ) : null}
       </div>
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ChatView
+          conversationId={activeConvId}
           messages={messages}
           status={status}
           streamingText={streamingText}
@@ -220,6 +260,13 @@ export default function App() {
           onSend={handleSend}
           onDismissAssistantError={clearAssistantError}
           disabled={false}
+          narrowNav={
+            isNarrow
+              ? {
+                  onOpenSidebar: () => setSidebarOpen(true),
+                }
+              : undefined
+          }
         />
       </main>
     </div>

@@ -31,8 +31,8 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-[#e8f0fb] via-[#dce7f8] to-[#cfddf6]">
-      <div className="w-full max-w-sm rounded-2xl bg-white px-8 pt-10 pb-8 shadow-lg shadow-brand-700/10">
+    <div className="flex min-h-[100dvh] items-center justify-center bg-gradient-to-br from-[#e8f0fb] via-[#dce7f8] to-[#cfddf6] px-4 pb-[max(1.5rem,env(safe-area-inset-bottom,0px))] pt-[max(1.5rem,env(safe-area-inset-top,0px))]">
+      <div className="w-full max-w-sm rounded-2xl bg-white px-6 pt-10 pb-8 shadow-lg shadow-brand-700/10 sm:px-8">
         {/* Logo + title */}
         <div className="mb-8 text-center">
           <img
@@ -59,7 +59,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@example.com"
               autoComplete="email"
-              className="w-full rounded-xl border-[1.5px] border-brand-border bg-brand-50 px-3.5 py-2.5 text-sm text-brand-900 outline-none transition-all placeholder:text-brand-muted/50 focus:border-brand-500 focus:bg-white focus:ring-3 focus:ring-brand-500/15"
+              className="min-h-[44px] w-full rounded-xl border-[1.5px] border-brand-border bg-brand-50 px-3.5 py-2.5 text-base text-brand-900 outline-none transition-all placeholder:text-brand-muted/50 focus:border-brand-500 focus:bg-white focus:ring-3 focus:ring-brand-500/15 sm:min-h-0 sm:text-sm"
             />
           </div>
 
@@ -73,7 +73,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
               autoComplete="current-password"
-              className="w-full rounded-xl border-[1.5px] border-brand-border bg-brand-50 px-3.5 py-2.5 text-sm text-brand-900 outline-none transition-all placeholder:text-brand-muted/50 focus:border-brand-500 focus:bg-white focus:ring-3 focus:ring-brand-500/15"
+              className="min-h-[44px] w-full rounded-xl border-[1.5px] border-brand-border bg-brand-50 px-3.5 py-2.5 text-base text-brand-900 outline-none transition-all placeholder:text-brand-muted/50 focus:border-brand-500 focus:bg-white focus:ring-3 focus:ring-brand-500/15 sm:min-h-0 sm:text-sm"
             />
           </div>
 
@@ -86,7 +86,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-xl bg-gradient-to-br from-brand-700 to-brand-500 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:opacity-90 hover:shadow-md disabled:opacity-60"
+            className="min-h-[44px] w-full rounded-xl bg-gradient-to-br from-brand-700 to-brand-500 py-2.5 text-base font-semibold text-white shadow-sm transition-all hover:opacity-90 hover:shadow-md active:opacity-90 disabled:opacity-60 sm:min-h-0 sm:text-sm"
           >
             {loading ? "Signing in…" : "Sign in"}
           </button>

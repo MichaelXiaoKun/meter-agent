@@ -25,7 +25,9 @@ from typing import Optional
 from data_client import fetch_flow_data_range
 from agent import analyze
 from report import format_report
+from processors.analysis_bundle import build_analysis_bundle
 from processors.plots import pop_figures
+from processors.verified_facts import build_verified_facts
 
 
 def run(
@@ -55,6 +57,8 @@ def run(
             "end":            int,
             "data_points":    int | None,   # number of rows fetched
             "report":         str | None,   # full Markdown report
+            "plot_paths":     list | None,
+            "analysis_bundle": dict | None, # machine-readable verified_facts + plots (JSON-serialisable)
             "error":          str | None,   # populated only on failure
         }
     """
@@ -62,9 +66,15 @@ def run(
 
     try:
         df = fetch_flow_data_range(serial_number, start, end, token=token, verbose=False)
-        analysis = analyze(df, serial_number)
+        verified_facts = build_verified_facts(df)
+        analysis = analyze(df, serial_number, verified_facts=verified_facts)
         plot_paths = [path for _, path in pop_figures()]
-        report = format_report(analysis, serial_number, start, end)
+        report = format_report(
+            analysis, serial_number, start, end, verified_facts=verified_facts
+        )
+        analysis_bundle = build_analysis_bundle(
+            serial_number, start, end, verified_facts, plot_paths
+        )
 
         return {
             **base,
@@ -72,6 +82,7 @@ def run(
             "data_points": len(df),
             "report": report,
             "plot_paths": plot_paths,
+            "analysis_bundle": analysis_bundle,
             "error": None,
         }
 
@@ -81,5 +92,7 @@ def run(
             "success": False,
             "data_points": None,
             "report": None,
+            "plot_paths": None,
+            "analysis_bundle": None,
             "error": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
         }

@@ -27,6 +27,10 @@ from tpm_window import (
 
 from processors.time_range import TOOL_DEFINITION as _TIME_RANGE_DEF, resolve_time_range
 from tools.meter_status import TOOL_DEFINITION as _METER_STATUS_DEF, check_meter_status
+from tools.meter_profile import (
+    TOOL_DEFINITION as _METER_PROFILE_DEF,
+    get_meter_profile,
+)
 from tools.flow_analysis import TOOL_DEFINITION as _FLOW_ANALYSIS_DEF, analyze_flow_data
 from tools.pipe_configuration import (
     TOOL_DEFINITION as _PIPE_CONFIGURATION_DEF,
@@ -40,6 +44,7 @@ from tools.set_transducer_angle import (
 TOOLS = [
     _TIME_RANGE_DEF,
     _METER_STATUS_DEF,
+    _METER_PROFILE_DEF,
     _FLOW_ANALYSIS_DEF,
     _PIPE_CONFIGURATION_DEF,
     _SET_TRANSDUCER_ANGLE_DEF,
@@ -141,6 +146,7 @@ pipe parameters by delegating to specialist sub-agents through tool calls.
 Available tools:
   resolve_time_range     — convert natural language time expressions to Unix timestamps
   check_meter_status     — fetch current meter health (online state, signal quality, pipe config)
+  get_meter_profile      — management-API device metadata + Wi-Fi vs LoRaWAN classification
   analyze_flow_data      — analyse historical flow rate data over a time range
   configure_meter_pipe        — full pipe material/standard/size + transducer angle (management + MQTT)
   set_transducer_angle_only   — transducer angle only: MQTT **ssa** publish (no pipe catalog / spm)
@@ -179,6 +185,33 @@ Rules:
   10. When the user wants **only** a transducer angle change (no pipe material/standard/size),
      use **set_transducer_angle_only** with serial_number and transducer_angle.
      Use **configure_meter_pipe** when they need pipe dimensions or a full pipe + angle push.
+  11. Use **get_meter_profile** when the user asks about the meter's model, label, organization,
+     network type, or whether it is Wi-Fi vs LoRaWAN. Also call it **before analyze_flow_data**
+     whenever possible and pass through two fields from its result:
+       a. ``network_type`` → the analyze_flow_data ``network_type`` input — tunes gap detection
+          and coverage to the meter's physics (``wifi`` ≈ 2 s cadence, ``lorawan`` ≈ 12–60 s
+          bursty cadence; ``unknown`` keeps the conservative 60 s cap).
+       b. ``profile.deviceTimeZone`` → the analyze_flow_data ``meter_timezone`` input — renders
+          the plot x-axes in the meter's local clock so they match the verified-facts wall times.
+     Cite the classification reason verbatim when relevant.
+  12. **User-facing language (no implementation leakage).** Replies to the user must read like
+     product answers, not engineering notes. Specifically:
+       a. Never mention internal tool, function, module, environment-variable, or file names
+          (e.g. ``analyze_flow_data``, ``resolve_time_range``, ``get_meter_profile``,
+          ``verified_facts_precomputed``, ``baseline_quality``, ``BLUEBOT_*``, ``processors/``,
+          ``sub-agent``, ``subprocess``, "the API", "the JSON bundle", "analysis_*.json").
+          Talk about *capabilities* ("the meter analysis", "the time-range resolver") instead.
+       b. Never disclose absolute filesystem paths or server paths (``/Users/...``,
+          ``data-processing-agent/analyses/...``, Unix timestamp integers without context, etc.).
+          Artefacts like plots are surfaced through the UI attachments the tools return; do not
+          paste their raw paths into prose.
+       c. When a capability is missing or a tool returns ``success=false``, refuse briefly in
+          user terms and offer a concrete alternative — e.g. "I can't filter to business hours
+          automatically yet. Want me to analyze a specific block like *Tue 8 AM – 5 PM Denver*
+          instead?" — without explaining *why* the system can't do it (no references to
+          missing filters, schemas, JSON files, or code).
+       d. Do not speculate about what internal data *might* contain; only report what the tool
+          results actually say.
 """
 
 
@@ -415,6 +448,8 @@ def _run_analyze_flow_with_progress(
                     token,
                     display_timezone=client_timezone,
                     anthropic_api_key=anthropic_api_key,
+                    network_type=inputs.get("network_type"),
+                    meter_timezone=inputs.get("meter_timezone"),
                 )
             )
         except BaseException as e:
@@ -469,6 +504,12 @@ def _dispatch(
             anthropic_api_key=anthropic_api_key,
         )
 
+    elif name == "get_meter_profile":
+        result = get_meter_profile(
+            inputs["serial_number"],
+            token,
+        )
+
     elif name == "analyze_flow_data":
         result = analyze_flow_data(
             inputs["serial_number"],
@@ -477,6 +518,8 @@ def _dispatch(
             token,
             display_timezone=client_timezone,
             anthropic_api_key=anthropic_api_key,
+            network_type=inputs.get("network_type"),
+            meter_timezone=inputs.get("meter_timezone"),
         )
 
     elif name == "configure_meter_pipe":
@@ -692,6 +735,9 @@ def run_turn(
                     }
                     if block.name == "analyze_flow_data":
                         event["plot_paths"] = result_dict.get("plot_paths", [])
+                        aj = result_dict.get("analysis_json_path")
+                        if aj:
+                            event["analysis_json_path"] = aj
                     _emit(event)
                     tool_results.append({
                         "type": "tool_result",

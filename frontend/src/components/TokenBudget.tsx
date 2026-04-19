@@ -75,11 +75,13 @@ function TokenBudgetPanel({
 
   const hasThreadEstimate = used > 0 || budgetPct > 0;
   const hasAnySignal = hasThreadEstimate || tpm > 0;
+  const ctxPctRounded =
+    modelPctDisplay < 10 ? modelPctDisplay.toFixed(1) : modelPctDisplay.toFixed(0);
 
   return (
     <div
       className={[
-        "flex w-[min(100%,15.5rem)] flex-col justify-center rounded-xl border px-2.5 py-2 shadow-lg transition-colors",
+        "flex w-[min(100vw-1.5rem,20rem)] flex-col justify-center rounded-xl border px-3 py-2.5 shadow-lg transition-colors",
         tpmCrit
           ? "border-red-300 bg-red-50/95"
           : tpmWarn
@@ -89,90 +91,95 @@ function TokenBudgetPanel({
               : "border-brand-border/90 bg-brand-50/80",
       ].join(" ")}
     >
-      <div className="flex items-center justify-between gap-1">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-brand-muted">
+      <div className="flex items-start justify-between gap-2">
+        <span className="text-xs font-semibold uppercase tracking-wide text-brand-muted">
           Model context
         </span>
-        <span className="text-[10px] text-brand-muted tabular-nums">
+        <span className="text-right text-xs text-brand-muted tabular-nums">
           {hasThreadEstimate ? (
             <>
-              ~{modelPctDisplay < 10 ? modelPctDisplay.toFixed(1) : modelPctDisplay.toFixed(0)}%
-              <span className="text-brand-muted/80">
-                {" "}
-                · {formatCompactTokens(inputBudgetTarget)} target
+              <span className="font-semibold text-brand-900">~{ctxPctRounded}%</span>
+              <span className="block text-[11px] font-normal text-brand-muted/90">
+                of {formatCompactTokens(inputBudgetTarget)} target
               </span>
             </>
           ) : (
-            "—"
+            <span className="text-[11px]">No estimate yet</span>
           )}
         </span>
       </div>
-      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-brand-border">
+      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200/90">
         <div
           className={`h-full rounded-full transition-all ${barColor}`}
           style={{ width: `${ctxBarPct}%` }}
         />
       </div>
-      <p className="mt-1 text-[11px] leading-tight text-brand-900 tabular-nums">
+      <p className="mt-2 text-sm leading-snug text-brand-900 tabular-nums">
         <span className="font-semibold">{used.toLocaleString()}</span>
         <span className="text-brand-muted">
           {" "}
           / {budgetDen.toLocaleString()}
         </span>
-        <span className="block text-[10px] font-normal text-brand-muted">
-          est. input vs compress target (full model window up to{" "}
-          {modelContextMax.toLocaleString()})
+        <span className="mt-1 block text-xs font-normal leading-snug text-brand-muted">
+          Estimated input tokens vs compress target. Full model window up to{" "}
+          <span className="tabular-nums">{modelContextMax.toLocaleString()}</span>.
         </span>
       </p>
-      <p className="mt-0.5 text-[10px] leading-snug text-brand-muted">
+      <p className="mt-2 text-xs leading-snug text-brand-muted">
         {hasThreadEstimate ? (
           <>
-            <span className="tabular-nums text-brand-800">
+            <span className="font-medium tabular-nums text-brand-800">
               ~{remainingBeforeCompress.toLocaleString()}
             </span>{" "}
             tokens left before compress
           </>
         ) : (
-          <>Updates after each assistant reply</>
+          <>Updates after each assistant reply.</>
         )}
       </p>
 
-      <div className="mt-2 border-t border-brand-border/80 pt-2">
-        <div className="flex items-center justify-between gap-1">
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-brand-muted">
-            Server (60s)
-          </span>
+      <div className="mt-3 border-t border-brand-border/80 pt-3">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <span className="text-xs font-semibold uppercase tracking-wide text-brand-muted">
+              Rate limit (60s)
+            </span>
+            <p className="mt-0.5 text-[11px] leading-snug text-brand-muted">
+              Input TPM on this server (your key), rolling 60s window
+            </p>
+          </div>
           <span
             className={[
-              "text-[10px] tabular-nums",
+              "shrink-0 text-right text-xs tabular-nums",
               tpmCrit
                 ? "font-semibold text-red-800"
                 : tpmWarn
-                  ? "text-amber-900"
+                  ? "font-medium text-amber-900"
                   : "text-brand-muted",
             ].join(" ")}
           >
-            {tpm.toLocaleString()} / {tpmPerMinuteGuide.toLocaleString()}
+            {tpm.toLocaleString()}
+            <span className="text-brand-muted/90"> / {tpmPerMinuteGuide.toLocaleString()}</span>
           </span>
         </div>
-        <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-brand-border">
+        <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200/90">
           <div
             className={`h-full rounded-full transition-all ${tpmBarColor}`}
             style={{ width: `${tpmBarPct}%` }}
           />
         </div>
-        <p className="mt-1 text-[9px] leading-snug text-brand-muted">
-          Input tokens recorded by this API server for your Anthropic key in the last 60 seconds
-          (orchestrator process). Sub-agents run in other processes unless wired to report here.
+        <p className="mt-2 text-[11px] leading-relaxed text-brand-muted">
+          Compared to the configured per-minute guide (ITPM-style). Other processes may use the same
+          API key separately.
         </p>
         {tpmWarn && !tpmCrit && (
-          <p className="mt-1 text-[10px] font-medium text-amber-900">
+          <p className="mt-2 text-xs font-medium text-amber-900">
             Approaching ~{(tpmPerMinuteGuide / 1000).toFixed(0)}k/min guide — consider pausing or
             shorter turns.
           </p>
         )}
         {tpmCrit && (
-          <p className="mt-1 text-[10px] font-medium text-red-800">
+          <p className="mt-2 text-xs font-medium text-red-800">
             High usage vs ~{(tpmPerMinuteGuide / 1000).toFixed(0)}k/min guide — risk of rate limit;
             wait ~1 min or reduce tool-heavy requests.
           </p>
@@ -182,8 +189,103 @@ function TokenBudgetPanel({
   );
 }
 
+/** Animated placeholder on welcome when no usage yet (no static arcs to draw). */
+function WelcomeIdleSpinRing() {
+  return (
+    <>
+      <span
+        className="pointer-events-none absolute inset-0 rounded-full border-[2.2px] border-slate-200 border-t-brand-500 border-r-brand-400/35 animate-spin motion-reduce:animate-none"
+        style={{ animationDuration: "4s" }}
+        aria-hidden
+      />
+      <span
+        className="pointer-events-none absolute inset-[5px] rounded-full border-[1.85px] border-slate-200 border-t-brand-500/75 border-b-brand-400/20 animate-spin motion-reduce:animate-none"
+        style={{ animationDuration: "3.2s", animationDirection: "reverse" }}
+        aria-hidden
+      />
+    </>
+  );
+}
+
+/** Dual concentric rings: outer = model context %, inner = 60s TPM vs guide (same idea as panel bars). */
+function UsageGaugeRings({
+  contextFill,
+  tpmFill,
+  ctxStrokeClass,
+  tpmStrokeClass,
+}: {
+  contextFill: number;
+  tpmFill: number;
+  ctxStrokeClass: string;
+  tpmStrokeClass: string;
+}) {
+  /* Outer = context; inner = TPM. Inner radius must sit outside the center icon disk or the disk hides the TPM arc. */
+  const ro = 19;
+  const ri = 15.75;
+  const wo = 2.2;
+  const wi = 1.85;
+  const co = 2 * Math.PI * ro;
+  const ci = 2 * Math.PI * ri;
+  const cx = 24;
+  const cy = 24;
+
+  return (
+    <svg
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      viewBox="0 0 48 48"
+      fill="none"
+      aria-hidden
+    >
+      <circle
+        cx={cx}
+        cy={cy}
+        r={ro}
+        fill="none"
+        className="stroke-slate-200/95"
+        strokeWidth={wo}
+      />
+      <circle
+        cx={cx}
+        cy={cy}
+        r={ro}
+        fill="none"
+        strokeLinecap="round"
+        strokeWidth={wo}
+        className={["transition-[stroke-dashoffset] duration-300 ease-out", ctxStrokeClass].join(
+          " "
+        )}
+        strokeDasharray={co}
+        strokeDashoffset={co * (1 - contextFill)}
+        transform={`rotate(-90 ${cx} ${cy})`}
+      />
+      <circle
+        cx={cx}
+        cy={cy}
+        r={ri}
+        fill="none"
+        className="stroke-slate-200/80"
+        strokeWidth={wi}
+      />
+      <circle
+        cx={cx}
+        cy={cy}
+        r={ri}
+        fill="none"
+        strokeLinecap="round"
+        strokeWidth={wi}
+        className={["transition-[stroke-dashoffset] duration-300 ease-out", tpmStrokeClass].join(
+          " "
+        )}
+        strokeDasharray={ci}
+        strokeDashoffset={ci * (1 - tpmFill)}
+        transform={`rotate(-90 ${cx} ${cy})`}
+      />
+    </svg>
+  );
+}
+
 /**
- * Compact bar-chart control; opens full token / TPM details on click.
+ * Icon + dual usage rings (context + TPM); opens full details on click (hover title for summary).
  */
 export function TokenBudgetPopover({
   tokenUsage,
@@ -191,12 +293,24 @@ export function TokenBudgetPopover({
   tpmServerSliding60s,
   inputBudgetTarget = DEFAULT_INPUT_BUDGET_TARGET,
   modelContextMax = DEFAULT_MODEL_CONTEXT_MAX,
+  className,
+  /** Open the panel below the trigger (e.g. welcome composer) instead of above the footer. */
+  panelPlacement = "above",
+  /**
+   * Welcome composer only: show a subtle circling ring when there is no context or TPM yet
+   * (static usage arcs would both be empty).
+   */
+  welcomeIdleSpin = false,
 }: {
   tokenUsage: { tokens: number; pct: number };
   tpmPerMinuteGuide?: number;
   tpmServerSliding60s: number;
   inputBudgetTarget?: number;
   modelContextMax?: number;
+  /** Merged onto the trigger root (e.g. align in flex layouts). */
+  className?: string;
+  panelPlacement?: "above" | "below";
+  welcomeIdleSpin?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -205,13 +319,17 @@ export function TokenBudgetPopover({
   const used = Math.max(0, tokenUsage.tokens);
   const budgetDen = Math.max(1, inputBudgetTarget);
   const budgetPct = Math.min(1, used / budgetDen);
+  const modelPctDisplay = budgetPct * 100;
+  const hasThreadEstimate = used > 0 || budgetPct > 0;
   const tpm = Math.max(0, tpmServerSliding60s);
   const tpmWarn = tpm >= TPM_WARN * tpmPerMinuteGuide;
   const tpmCrit =
     tpm >= TPM_CRITICAL * tpmPerMinuteGuide || tpm > tpmPerMinuteGuide;
-  const ctxWarn = budgetPct >= 0.55;
-  const ctxCrit = budgetPct >= 0.85;
-  const showAlertDot = tpmCrit || tpmWarn || ctxCrit || ctxWarn;
+
+  const ctxSummary = hasThreadEstimate
+    ? `~${modelPctDisplay < 10 ? modelPctDisplay.toFixed(1) : modelPctDisplay.toFixed(0)}%`
+    : "—";
+  const tpmSummary = `${formatCompactTokens(tpm)} / ${formatCompactTokens(tpmPerMinuteGuide)}`;
 
   const close = useCallback(() => setOpen(false), []);
 
@@ -233,32 +351,65 @@ export function TokenBudgetPopover({
     };
   }, [open, close]);
 
+  /* Narrow viewports: center under/above trigger so the panel stays on-screen */
+  const panelPositionClass =
+    panelPlacement === "below"
+      ? "left-1/2 top-full z-40 mt-2 w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-env(safe-area-inset-left)-env(safe-area-inset-right)-0.5rem)] -translate-x-1/2 sm:left-0 sm:w-auto sm:max-w-[calc(100vw-1.5rem)] sm:translate-x-0"
+      : "bottom-full left-1/2 z-40 mb-2 w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-env(safe-area-inset-left)-env(safe-area-inset-right)-0.5rem)] -translate-x-1/2 sm:left-0 sm:w-auto sm:max-w-[calc(100vw-1.5rem)] sm:translate-x-0";
+
+  const tpmFill = Math.min(1, tpm / Math.max(1, tpmPerMinuteGuide));
+  const ctxStrokeClass =
+    budgetPct >= 0.85
+      ? "stroke-red-500"
+      : budgetPct >= 0.55
+        ? "stroke-amber-500"
+        : "stroke-brand-500";
+  const tpmStrokeClass = tpmCrit
+    ? "stroke-red-500"
+    : tpmWarn
+      ? "stroke-amber-500"
+      : "stroke-brand-500";
+
+  const showWelcomeIdleSpin =
+    welcomeIdleSpin && used <= 0 && tpm <= 0;
+
   return (
-    <div ref={rootRef} className="relative shrink-0 self-end">
+    <div
+      ref={rootRef}
+      className={["relative shrink-0 self-center", className].filter(Boolean).join(" ")}
+    >
       <button
         type="button"
         id="token-budget-trigger"
         aria-expanded={open}
         aria-controls={panelId}
-        aria-label="Token usage"
-        title="Token usage (context & server 60s TPM)"
+        aria-label={`Token usage: context ${ctxSummary}, 60s TPM ${tpmSummary}. Open details.`}
+        title={
+          showWelcomeIdleSpin
+            ? "No usage yet — rings will show context and 60s TPM after you chat. Click for details."
+            : `Context ${ctxSummary} · 60s TPM ${tpmSummary} — outer ring = context, inner = 60s TPM (click for full breakdown)`
+        }
         onClick={() => setOpen((o) => !o)}
         className={[
-          "relative flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-xl border text-brand-700 transition-colors",
+          "relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full border p-0 text-brand-700 transition-colors",
           open
-            ? "border-brand-500 bg-brand-100 shadow-inner"
-            : "border-brand-border bg-white hover:border-brand-400 hover:bg-brand-50",
+            ? "border-brand-500 bg-brand-50/90 shadow-inner ring-2 ring-brand-400/30"
+            : "border-brand-border bg-white hover:border-brand-400 hover:bg-brand-50/80",
         ].join(" ")}
       >
-        <BarChartIcon className="h-6 w-6" />
-        {showAlertDot && (
-          <span
-            className={[
-              "absolute right-1.5 top-1.5 h-2 w-2 rounded-full ring-2 ring-white",
-              tpmCrit || ctxCrit ? "bg-red-500" : "bg-amber-500",
-            ].join(" ")}
+        {showWelcomeIdleSpin ? (
+          <WelcomeIdleSpinRing />
+        ) : (
+          <UsageGaugeRings
+            contextFill={budgetPct}
+            tpmFill={tpmFill}
+            ctxStrokeClass={ctxStrokeClass}
+            tpmStrokeClass={tpmStrokeClass}
           />
         )}
+        <span className="relative z-10 flex h-4 w-4 items-center justify-center rounded-full bg-white/95 shadow-sm ring-1 ring-brand-border/40">
+          <BarChartIcon className="h-3 w-3" />
+        </span>
       </button>
 
       {open && (
@@ -266,9 +417,9 @@ export function TokenBudgetPopover({
           id={panelId}
           role="region"
           aria-labelledby="token-budget-trigger"
-          className="absolute bottom-full left-0 z-30 mb-2"
+          className={`absolute ${panelPositionClass}`}
         >
-          <div className="rounded-xl border border-brand-border/80 bg-white/95 p-1 shadow-xl backdrop-blur-sm">
+          <div className="max-h-[min(70vh,32rem)] overflow-y-auto rounded-xl border border-brand-border/80 bg-white p-1 shadow-xl backdrop-blur-sm">
             <TokenBudgetPanel
               tokenUsage={tokenUsage}
               tpmPerMinuteGuide={tpmPerMinuteGuide}

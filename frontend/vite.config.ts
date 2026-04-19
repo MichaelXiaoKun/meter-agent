@@ -8,6 +8,7 @@ export default defineConfig({
     sourcemap: false,
   },
   server: {
+    host: true,
     proxy: {
       // Long-lived SSE (/chat); avoid proxy/client timeouts during flow analysis
       '/api': {

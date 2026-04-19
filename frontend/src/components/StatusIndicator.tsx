@@ -3,6 +3,7 @@ import type { AgentStatus } from "../hooks/useChat";
 const TOOL_LABELS: Record<string, string> = {
   resolve_time_range: "Resolving time range",
   check_meter_status: "Checking meter status",
+  get_meter_profile: "Fetching meter profile",
   analyze_flow_data: "Analyzing flow data",
   configure_meter_pipe: "Configuring meter pipe",
   set_transducer_angle_only: "Setting transducer angle (SSA only)",
@@ -12,6 +13,7 @@ const TOOL_LABELS: Record<string, string> = {
 const TOOL_RESULT_DONE: Record<string, string> = {
   resolve_time_range: "Time range ready",
   check_meter_status: "Meter status received",
+  get_meter_profile: "Meter profile received",
   analyze_flow_data: "Flow analysis complete",
   configure_meter_pipe: "Pipe configuration updated",
   set_transducer_angle_only: "Angle update sent",

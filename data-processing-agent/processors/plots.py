@@ -13,12 +13,15 @@ Public API:
 """
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
+
+from processors.sampling_physics import max_healthy_inter_arrival_seconds
 
 # data-processing-agent/ (parent of processors/)
 _PKG_ROOT = Path(__file__).resolve().parent.parent
@@ -63,7 +66,129 @@ def _to_datetimes(timestamps: np.ndarray) -> list:
     return [datetime.fromtimestamp(float(t), tz=timezone.utc) for t in timestamps]
 
 
-def _format_xaxis(ax, timestamps: np.ndarray) -> None:
+def _to_datetimes_nan_aware(timestamps: np.ndarray) -> np.ndarray:
+    """
+    Convert unix-second timestamps to a numpy ``datetime64[ns]`` array, mapping
+    ``NaN`` to ``NaT``. Matplotlib breaks lines at ``NaT`` the same way it
+    does at ``NaN`` y-values, which is exactly what ``_series_with_gap_breaks``
+    relies on to avoid drawing interpolated segments through real outages.
+
+    We deliberately return a *tz-naive* datetime64 array (logically UTC) instead
+    of a tz-aware ``DatetimeIndex``; matplotlib's date converter chokes on
+    ``NaT`` values inside tz-aware ``Timestamp`` arrays but handles them cleanly
+    in the naive datetime64 path.
+    """
+    ts = np.asarray(timestamps, dtype=float)
+    out = np.empty(len(ts), dtype="datetime64[ns]")
+    if len(ts) == 0:
+        return out
+    nan_mask = np.isnan(ts)
+    if (~nan_mask).any():
+        ns = (ts[~nan_mask] * 1e9).astype("int64")
+        out[~nan_mask] = ns.astype("datetime64[ns]")
+    out[nan_mask] = np.datetime64("NaT")
+    return out
+
+
+def _series_with_gap_breaks(
+    timestamps: np.ndarray,
+    values: np.ndarray,
+    *,
+    cap_seconds: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return ``(timestamps, values)`` with a ``NaN`` row inserted between any two
+    consecutive samples whose spacing exceeds ``cap_seconds``.
+
+    Matplotlib's line plotter renders a single connected polyline through
+    everything you hand it, so a 5-hour outage shows up as a smooth diagonal
+    segment connecting the last pre-gap reading to the first post-gap reading.
+    That actively contradicts the verified-facts bundle, which always knows
+    the gap is there. Inserting a ``NaN`` row breaks the line at the exact
+    place data was missing, so the plot stops lying.
+
+    The cap defaults to ``max_healthy_inter_arrival_seconds()`` so the same
+    network-aware rule that drives gap detection drives the visual break — a
+    Wi-Fi meter breaks on > 5 s pauses; a LoRaWAN meter only on > 60 s.
+    """
+    ts = np.asarray(timestamps, dtype=float)
+    vals = np.asarray(values, dtype=float)
+    if len(ts) < 2:
+        return ts, vals
+
+    cap = max_healthy_inter_arrival_seconds() if cap_seconds is None else float(cap_seconds)
+    deltas = np.diff(ts)
+    breaks = np.where(deltas > cap)[0]
+    if len(breaks) == 0:
+        return ts, vals
+
+    out_ts = np.insert(ts, breaks + 1, np.nan)
+    out_v = np.insert(vals, breaks + 1, np.nan)
+    return out_ts, out_v
+
+
+def resolve_plot_tz(tz_name: str | None = None) -> tzinfo:
+    """
+    Resolve the timezone the plots should render in.
+
+    Precedence (first valid IANA name wins):
+
+    1. Explicit ``tz_name`` argument (call site override).
+    2. ``BLUEBOT_PLOT_TZ`` env var (set by the orchestrator from the meter's
+       ``deviceTimeZone`` or the user's browser timezone).
+    3. UTC fallback. Returned as :class:`datetime.timezone.utc`, never ``None``.
+
+    Unknown / malformed names silently fall back to UTC; callers that need to
+    distinguish "explicit UTC" from "fallback UTC" should use
+    :func:`describe_plot_tz`.
+    """
+    candidates = [tz_name, os.environ.get("BLUEBOT_PLOT_TZ")]
+    for name in candidates:
+        if not name:
+            continue
+        n = str(name).strip()
+        if not n:
+            continue
+        if n.upper() == "UTC":
+            return timezone.utc
+        try:
+            return ZoneInfo(n)
+        except ZoneInfoNotFoundError:
+            continue
+    return timezone.utc
+
+
+def describe_plot_tz(tz_name: str | None = None) -> dict:
+    """Return the resolved zone name + a short axis label for a reference timestamp.
+
+    Used both by tests and by the axis-label code so the fallback story is the
+    same everywhere: explicit IANA → short zone code at the reference instant
+    (e.g. ``"MDT"``); UTC fallback → ``"UTC — meter timezone unknown"`` so the
+    label can never be silently misread as local time.
+    """
+    tz = resolve_plot_tz(tz_name)
+    if tz is timezone.utc:
+        explicit_utc = bool(
+            (tz_name and tz_name.strip().upper() == "UTC")
+            or (os.environ.get("BLUEBOT_PLOT_TZ", "").strip().upper() == "UTC")
+        )
+        label = "UTC" if explicit_utc else "UTC — meter timezone unknown"
+        return {"zone": "UTC", "label": label, "tzinfo": tz}
+    iana = str(getattr(tz, "key", tz_name or ""))
+    return {"zone": iana, "label": iana, "tzinfo": tz}
+
+
+def _xaxis_label(tz: tzinfo, ref_unix_seconds: float, fallback_label: str) -> str:
+    """Build the ``Time (XYZ)`` x-axis label, preferring a short zone code."""
+    try:
+        short = datetime.fromtimestamp(float(ref_unix_seconds), tz=tz).strftime("%Z")
+    except (OverflowError, OSError, ValueError):
+        short = ""
+    short = short.strip()
+    return f"Time ({short})" if short else f"Time ({fallback_label})"
+
+
+def _format_xaxis(ax, timestamps: np.ndarray, tz: tzinfo | None = None) -> None:
     span_hours = (timestamps[-1] - timestamps[0]) / 3600
     if span_hours <= 6:
         fmt = "%H:%M"
@@ -71,7 +196,9 @@ def _format_xaxis(ax, timestamps: np.ndarray) -> None:
         fmt = "%d %b %H:%M"
     else:
         fmt = "%d %b"
-    ax.xaxis.set_major_formatter(mdates.DateFormatter(fmt, tz=timezone.utc))
+    ax.xaxis.set_major_formatter(
+        mdates.DateFormatter(fmt, tz=tz if tz is not None else timezone.utc)
+    )
     plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
 
 
@@ -85,11 +212,22 @@ def _time_series(
     quality: np.ndarray,
     serial_number: str,
     start: float,
+    tz_name: str | None = None,
 ) -> dict:
+    tz_info = describe_plot_tz(tz_name)
+    tz = tz_info["tzinfo"]
+
     fig, ax = plt.subplots(figsize=(12, 4))
     dts = _to_datetimes(timestamps)
 
-    ax.plot(dts, values, color="#2563eb", linewidth=0.8, label="Flow rate")
+    # Connected line is drawn over a NaN-broken copy so real outages render as
+    # gaps instead of interpolated diagonals; per-sample scatter overlays still
+    # use the unbroken arrays so individual markers stay at their true times.
+    line_ts, line_v = _series_with_gap_breaks(timestamps, values)
+    ax.plot(
+        _to_datetimes_nan_aware(line_ts), line_v,
+        color="#2563eb", linewidth=0.8, label="Flow rate",
+    )
 
     low_q_mask = (~np.isnan(quality)) & (quality <= 60)
     if low_q_mask.any():
@@ -101,11 +239,11 @@ def _time_series(
         )
 
     ax.set_title(f"Flow Rate — {serial_number}", fontsize=11)
-    ax.set_xlabel("Time (UTC)")
+    ax.set_xlabel(_xaxis_label(tz, float(timestamps[0]), tz_info["label"]))
     ax.set_ylabel("Flow Rate (gal/min)")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
-    _format_xaxis(ax, timestamps)
+    _format_xaxis(ax, timestamps, tz=tz)
     fig.tight_layout()
 
     path = _save(fig, serial_number, start, "time_series")
@@ -114,6 +252,7 @@ def _time_series(
         "path": path,
         "title": "Flow Rate Time Series",
         "low_quality_points_highlighted": int(low_q_mask.sum()),
+        "tz": tz_info["zone"],
     }
 
 
@@ -167,13 +306,23 @@ def _peaks_annotated(
     quality: np.ndarray,
     serial_number: str,
     start: float,
+    tz_name: str | None = None,
 ) -> dict:
     from scipy.signal import find_peaks
+
+    tz_info = describe_plot_tz(tz_name)
+    tz = tz_info["tzinfo"]
 
     fig, ax = plt.subplots(figsize=(12, 4))
     dts = _to_datetimes(timestamps)
 
-    ax.plot(dts, values, color="#2563eb", linewidth=0.8)
+    # Same gap-break treatment as _time_series: peak markers stay on the
+    # unbroken series so they keep their true coordinates.
+    line_ts, line_v = _series_with_gap_breaks(timestamps, values)
+    ax.plot(
+        _to_datetimes_nan_aware(line_ts), line_v,
+        color="#2563eb", linewidth=0.8,
+    )
 
     peak_indices = np.array([], dtype=int)
     std = float(np.nanstd(values))
@@ -206,15 +355,20 @@ def _peaks_annotated(
         )
 
     ax.set_title(f"Flow Rate with Peak Annotations — {serial_number}", fontsize=11)
-    ax.set_xlabel("Time (UTC)")
+    ax.set_xlabel(_xaxis_label(tz, float(timestamps[0]), tz_info["label"]))
     ax.set_ylabel("Flow Rate (gal/min)")
     ax.grid(True, alpha=0.3)
-    _format_xaxis(ax, timestamps)
+    _format_xaxis(ax, timestamps, tz=tz)
     fig.tight_layout()
 
     path = _save(fig, serial_number, start, "peaks_annotated")
     _pending.append((fig, path))
-    return {"path": path, "title": "Peaks Annotated", "peak_count": len(peak_indices)}
+    return {
+        "path": path,
+        "title": "Peaks Annotated",
+        "peak_count": len(peak_indices),
+        "tz": tz_info["zone"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -227,26 +381,37 @@ def _signal_quality(
     quality: np.ndarray,
     serial_number: str,
     start: float,
+    tz_name: str | None = None,
 ) -> dict:
     valid_mask = ~np.isnan(quality)
     if not valid_mask.any():
         return {"error": "No quality scores available to plot."}
 
-    dts     = _to_datetimes(timestamps)
-    q_dts   = [dts[i] for i in np.where(valid_mask)[0]]
-    q_vals  = quality[valid_mask]
+    tz_info = describe_plot_tz(tz_name)
+    tz = tz_info["tzinfo"]
+
+    q_ts_raw = timestamps[valid_mask].astype(float)
+    q_vals_raw = quality[valid_mask].astype(float)
+
+    # Break the quality line at gaps the same way we break flow_rate, so a
+    # transmission outage doesn't render as a smooth quality signal.
+    q_ts_broken, q_vals_broken = _series_with_gap_breaks(q_ts_raw, q_vals_raw)
+    q_dts = _to_datetimes_nan_aware(q_ts_broken)
 
     fig, ax = plt.subplots(figsize=(12, 3))
 
-    ax.plot(q_dts, q_vals, color="#7c3aed", linewidth=0.9, label="Signal quality")
+    ax.plot(q_dts, q_vals_broken, color="#7c3aed", linewidth=0.9, label="Signal quality")
     ax.axhline(y=60, color="#dc2626", linewidth=1.0, linestyle="--", label="Threshold (60)")
 
-    # Shade the low-quality region
+    # Shade the low-quality region (NaN values exclude themselves naturally).
+    low_mask = np.where(np.isnan(q_vals_broken), False, q_vals_broken <= 60)
     ax.fill_between(
-        q_dts, q_vals, 60,
-        where=[v <= 60 for v in q_vals],
+        q_dts, q_vals_broken, 60,
+        where=low_mask,
         alpha=0.25, color="#dc2626", label="Low quality zone",
     )
+
+    q_vals = q_vals_raw  # for the title's low-count summary, use real samples only
 
     low_count = int((q_vals <= 60).sum())
     ax.set_title(
@@ -254,12 +419,12 @@ def _signal_quality(
         f"({low_count} low-quality pts ≤60 of {len(q_vals)})",
         fontsize=11,
     )
-    ax.set_xlabel("Time (UTC)")
+    ax.set_xlabel(_xaxis_label(tz, float(q_ts_raw[0]), tz_info["label"]))
     ax.set_ylabel("Quality score")
     ax.set_ylim(0, 100)
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
-    _format_xaxis(ax, timestamps[valid_mask])
+    _format_xaxis(ax, timestamps[valid_mask], tz=tz)
     fig.tight_layout()
 
     path = _save(fig, serial_number, start, "signal_quality")
@@ -269,6 +434,7 @@ def _signal_quality(
         "title": "Signal Quality",
         "low_quality_count": low_count,
         "total_count": int(len(q_vals)),
+        "tz": tz_info["zone"],
     }
 
 
@@ -284,6 +450,9 @@ _HANDLERS = {
 }
 
 
+_TZ_AWARE_PLOT_TYPES = frozenset({"time_series", "peaks_annotated", "signal_quality"})
+
+
 def generate_plot(
     plot_type: str,
     timestamps: np.ndarray,
@@ -291,9 +460,15 @@ def generate_plot(
     quality: np.ndarray,
     serial_number: str,
     start: float,
+    tz_name: str | None = None,
 ) -> dict:
     """
     Generate and save a chart as a PNG file.
+
+    ``tz_name`` is the IANA timezone for time-axis rendering on the
+    time-series, peaks, and signal-quality plots; falls back to the
+    ``BLUEBOT_PLOT_TZ`` env var and finally to UTC. The flow-duration curve
+    has no time axis and ignores ``tz_name``.
 
     Registers the figure for plt.show() via pop_figures().
     Returns {"path": str, ...} on success or {"error": str} on failure.
@@ -306,4 +481,6 @@ def generate_plot(
                 f"Valid options: {list(_HANDLERS)}"
             )
         }
+    if plot_type in _TZ_AWARE_PLOT_TYPES:
+        return handler(timestamps, values, quality, serial_number, start, tz_name=tz_name)
     return handler(timestamps, values, quality, serial_number, start)

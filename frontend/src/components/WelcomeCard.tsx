@@ -53,25 +53,6 @@ const PIPE_ACTIONS: QuickAction[] = [
   },
 ];
 
-function ChevronIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <path d="M9 18l6-6-6-6" />
-    </svg>
-  );
-}
-
 interface WelcomeCardProps {
   /** Full message ready to send (serial already interpolated). */
   onCompose: (message: string) => void;
@@ -103,23 +84,20 @@ export default function WelcomeCard({ onCompose }: WelcomeCardProps) {
     onCompose(build(t));
   }
 
-  function ActionList({ actions }: { actions: QuickAction[] }) {
+  function ActionGrid({ actions }: { actions: QuickAction[] }) {
     return (
-      <ul className="space-y-2" role="list">
+      <ul className="grid gap-3.5 sm:grid-cols-2 sm:gap-3" role="list">
         {actions.map((a) => (
           <li key={a.id}>
             <button
               type="button"
               onClick={() => runAction(a.message)}
-              className="group flex w-full items-start gap-3 rounded-xl border border-brand-border bg-white/90 px-4 py-3.5 text-left shadow-sm transition-all hover:border-brand-500/80 hover:bg-white hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
+              className="group flex h-full min-h-[4.75rem] w-full flex-col items-start rounded-2xl border border-slate-200/90 bg-white px-4 py-4 text-left shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition hover:border-slate-300 hover:bg-slate-50/80 active:bg-slate-100/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 sm:min-h-[4.25rem] sm:py-3"
             >
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium text-brand-900">{a.title}</span>
-                <span className="mt-0.5 block text-xs leading-snug text-brand-muted">
-                  {a.subtitle}
-                </span>
+              <span className="text-base font-medium text-brand-900 sm:text-sm">{a.title}</span>
+              <span className="mt-1 line-clamp-2 text-sm leading-snug text-brand-muted sm:text-xs">
+                {a.subtitle}
               </span>
-              <ChevronIcon className="mt-1 shrink-0 text-brand-500 opacity-70 transition group-hover:translate-x-0.5 group-hover:opacity-100" />
             </button>
           </li>
         ))}
@@ -128,94 +106,73 @@ export default function WelcomeCard({ onCompose }: WelcomeCardProps) {
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-4 py-10 md:py-14">
-      <div className="rounded-2xl border border-brand-border/90 bg-gradient-to-b from-white via-brand-50/40 to-brand-50/90 p-8 shadow-sm md:p-10">
-        <p className="text-center text-[11px] font-semibold uppercase tracking-widest text-brand-500">
-          Getting started
-        </p>
-        <h2 className="mt-2 text-center text-xl font-bold tracking-tight text-brand-900 md:text-2xl">
-          What do you want to check today?
-        </h2>
-        <p className="mx-auto mt-3 max-w-xl text-center text-sm leading-relaxed text-brand-muted">
-          Enter your meter serial once, then use a shortcut — or type anything in the box below.
-        </p>
+    <div className="w-full">
+      <p className="text-center text-[0.6875rem] font-medium uppercase tracking-wider text-brand-muted sm:text-xs">
+        Suggestions
+      </p>
 
-        <div
-          className={[
-            "mt-8 rounded-2xl border bg-white/90 p-4 shadow-sm transition-colors md:p-5",
-            serialError
-              ? "border-amber-300 ring-2 ring-amber-100"
-              : "border-brand-border/90",
-          ].join(" ")}
+      <div
+        className={[
+          "mx-auto mt-4 max-w-md rounded-2xl border bg-white px-4 py-4 shadow-sm transition-colors sm:py-3",
+          serialError
+            ? "border-amber-300 ring-2 ring-amber-100"
+            : "border-slate-200/90",
+        ].join(" ")}
+      >
+        <label
+          htmlFor={serialId}
+          className="text-[0.8125rem] font-medium text-brand-muted sm:text-xs"
         >
-          <label
-            htmlFor={serialId}
-            className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-brand-muted"
-          >
-            <span
-              className="flex h-6 w-6 items-center justify-center rounded-lg bg-brand-100 text-[13px] text-brand-700"
-              aria-hidden
-            >
-              #
-            </span>
-            Meter serial
-          </label>
-          <input
-            id={serialId}
-            ref={serialInputRef}
-            type="text"
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="e.g. BB8100015261"
-            value={serial}
-            onChange={(e) => {
-              setSerial(e.target.value);
-              setSerialError(false);
-            }}
-            className="mt-3 w-full rounded-xl border border-brand-border bg-white px-4 py-3 text-sm font-medium text-brand-900 outline-none transition placeholder:text-brand-muted/50 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15"
-          />
-          {serialError ? (
-            <p className="mt-2 text-xs font-medium text-amber-800" role="status">
-              Add a serial number to use a shortcut.
-            </p>
-          ) : (
-            <p className="mt-2 text-xs text-brand-muted">
-              Same string you use in API paths — we insert it into your message automatically.
-            </p>
-          )}
-        </div>
-
-        <div className="mt-10 space-y-10">
-          <section aria-labelledby="welcome-status-flow">
-            <div className="mb-3 flex flex-col gap-1 border-b border-brand-border/80 pb-3 md:flex-row md:items-end md:justify-between">
-              <h3 id="welcome-status-flow" className="text-sm font-semibold text-brand-900">
-                Status &amp; flow
-              </h3>
-              <p className="text-xs leading-snug text-brand-muted md:max-w-[55%] md:text-right">
-                Diagnostics and historical flow for that meter.
-              </p>
-            </div>
-            <ActionList actions={STATUS_ACTIONS} />
-          </section>
-
-          <section aria-labelledby="welcome-pipe">
-            <div className="mb-3 flex flex-col gap-1 border-b border-brand-border/80 pb-3 md:flex-row md:items-end md:justify-between">
-              <h3 id="welcome-pipe" className="text-sm font-semibold text-brand-900">
-                Pipe &amp; angle
-              </h3>
-              <p className="text-xs leading-snug text-brand-muted md:max-w-[55%] md:text-right">
-                Management + MQTT — confirm details in chat before sending.
-              </p>
-            </div>
-            <ActionList actions={PIPE_ACTIONS} />
-          </section>
-        </div>
-
-        <p className="mt-10 text-center text-xs text-brand-muted/90">
-          Tip: for ranges, say things like &ldquo;last 6 hours&rdquo; or your timezone — time is
-          resolved before flow analysis runs.
-        </p>
+          Meter serial for shortcuts
+        </label>
+        <input
+          id={serialId}
+          ref={serialInputRef}
+          type="text"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="e.g. BB8100015261"
+          value={serial}
+          onChange={(e) => {
+            setSerial(e.target.value);
+            setSerialError(false);
+          }}
+          className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2.5 text-base text-brand-900 outline-none transition placeholder:text-brand-muted/45 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-500/15 sm:min-h-0 sm:text-sm"
+          inputMode="text"
+        />
+        {serialError ? (
+          <p className="mt-2 text-xs font-medium text-amber-800" role="status">
+            Add a serial to use a suggestion.
+          </p>
+        ) : (
+          <p className="mt-2 text-xs text-brand-muted">
+            We fill this into the message when you tap a card below.
+          </p>
+        )}
       </div>
+
+      <div className="mt-6 space-y-7 sm:mt-8 sm:space-y-8">
+        <section aria-labelledby="welcome-status-flow">
+          <h3
+            id="welcome-status-flow"
+            className="mb-3 text-base font-semibold text-brand-900 sm:text-sm"
+          >
+            Status &amp; flow
+          </h3>
+          <ActionGrid actions={STATUS_ACTIONS} />
+        </section>
+
+        <section aria-labelledby="welcome-pipe">
+          <h3 id="welcome-pipe" className="mb-3 text-base font-semibold text-brand-900 sm:text-sm">
+            Pipe &amp; angle
+          </h3>
+          <ActionGrid actions={PIPE_ACTIONS} />
+        </section>
+      </div>
+
+      <p className="mt-6 px-1 text-center text-sm leading-relaxed text-brand-muted sm:mt-8 sm:px-0 sm:text-xs">
+        Tip: say &ldquo;last 6 hours&rdquo; or your timezone — time is resolved before flow analysis runs.
+      </p>
     </div>
   );
 }

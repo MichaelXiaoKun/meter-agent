@@ -13,6 +13,12 @@ build/
 venv/
 env/
 
+# Test artefacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
 # Environment / secrets
 .env
 .env.*
@@ -29,6 +35,10 @@ env/
 **/plots/*.png
 **/plots/*.jpg
 **/plots/*.svg
+
+# Generated analysis bundles (audit JSON from data-processing-agent)
+**/analyses/
+**/analysis_*.json
 
 # macOS
 .DS_Store

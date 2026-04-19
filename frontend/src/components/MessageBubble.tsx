@@ -83,18 +83,18 @@ export default function MessageBubble({ message, plotPaths }: MessageBubbleProps
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
-        className={`max-w-[75%] rounded-2xl px-4 py-3 ${
+        className={`max-w-[min(92%,28rem)] rounded-2xl px-4 py-3.5 sm:max-w-[75%] sm:py-3 ${
           isUser
             ? "bg-brand-700 text-white"
             : "border border-brand-border bg-white text-brand-900"
         }`}
       >
         {isUser ? (
-          <p className="whitespace-pre-wrap text-sm">{text}</p>
+          <p className="whitespace-pre-wrap text-base leading-relaxed sm:text-sm">{text}</p>
         ) : (
           <>
             {text ? (
-              <div className="prose prose-sm max-w-none prose-p:my-1 prose-headings:text-brand-900 prose-a:text-brand-500 prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm">
+              <div className="prose prose-base max-w-none prose-p:my-2 prose-p:leading-relaxed prose-headings:text-brand-900 prose-a:text-brand-500 prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm sm:prose-sm sm:prose-p:my-1">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   components={{

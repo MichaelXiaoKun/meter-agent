@@ -26,7 +26,11 @@ import matplotlib.pyplot as plt
 from data_client import fetch_flow_data_range
 from agent import analyze
 from report import format_report
+from processors.analysis_bundle import build_analysis_bundle
 from processors.plots import pop_figures
+from processors.verified_facts import build_verified_facts
+
+_ANALYSIS_JSON_MARKER = "__BLUEBOT_ANALYSIS_JSON__"
 
 
 def main() -> None:
@@ -68,8 +72,27 @@ def main() -> None:
     print(f"Fetched {len(df)} data points total.", file=sys.stderr)
 
     print("Running analysis...", file=sys.stderr)
-    analysis = analyze(df, args.serial)
-    report = format_report(analysis, args.serial, args.start, args.end)
+    verified_facts = build_verified_facts(df)
+    analysis = analyze(df, args.serial, verified_facts=verified_facts)
+    report = format_report(
+        analysis, args.serial, args.start, args.end, verified_facts=verified_facts
+    )
+
+    pending = pop_figures()
+    plot_paths = [path for _, path in pending]
+
+    _here = os.path.dirname(os.path.abspath(__file__))
+    bundle = build_analysis_bundle(args.serial, args.start, args.end, verified_facts, plot_paths)
+    # Analysis bundles live under <agent>/analyses/ (gitignored) alongside plots/.
+    # Override with BLUEBOT_ANALYSES_DIR when a persistent volume is needed.
+    analyses_dir = os.environ.get("BLUEBOT_ANALYSES_DIR") or os.path.join(_here, "analyses")
+    os.makedirs(analyses_dir, exist_ok=True)
+    aj_path = os.path.join(
+        analyses_dir, f"analysis_{args.serial}_{args.start}_{args.end}.json"
+    )
+    with open(aj_path, "w", encoding="utf-8") as f:
+        json.dump(bundle, f, indent=2, default=str)
+    print(_ANALYSIS_JSON_MARKER + json.dumps({"path": os.path.abspath(aj_path)}), file=sys.stderr)
 
     if args.output == "file":
         filename = f"report_{args.serial}_{args.start}_{args.end}.md"
@@ -79,9 +102,8 @@ def main() -> None:
     else:
         print(report)
 
-    pending = pop_figures()
     if pending:
-        paths = [path for _, path in pending]
+        paths = plot_paths
         # Orchestrator parses this line for authoritative paths (not markdown).
         print("__BLUEBOT_PLOT_PATHS__" + json.dumps(paths), file=sys.stderr)
         for path in paths:

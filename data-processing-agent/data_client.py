@@ -8,7 +8,9 @@ Long ranges are automatically partitioned into 1-hour chunks so that
 no single API request exceeds 3600 seconds of data.
 """
 
+import json
 import os
+import sys
 from io import StringIO
 from typing import List, Optional, Tuple
 
@@ -27,6 +29,37 @@ def _flow_base_url() -> str:
 _FLOW_HEADERS_EXTRA = {"x-admin-query": "true"}
 
 CHUNK_SECONDS = 3600
+
+
+def _is_no_data_to_export_404(response: httpx.Response) -> bool:
+    """
+    True when the API has no samples for the requested window (e.g. meter offline).
+    In that case the server returns 404 with a JSON body instead of an empty CSV.
+    """
+    if response.status_code != 404:
+        return False
+    try:
+        data = response.json()
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    msg = data.get("message")
+    if not isinstance(msg, str) or msg.strip().lower() != "no data to export":
+        return False
+    code = data.get("statusCode", data.get("status_code"))
+    return code == 404
+
+
+def _empty_flow_dataframe() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "timestamp": pd.Series(dtype="int64"),
+            "flow_rate": pd.Series(dtype="float64"),
+            "flow_amount": pd.Series(dtype="float64"),
+            "quality": pd.Series(dtype="float64"),
+        }
+    )
 
 
 def partition_range(start: int, end: int, chunk_seconds: int = CHUNK_SECONDS) -> List[Tuple[int, int]]:
@@ -61,6 +94,7 @@ def fetch_flow_data(
     range_start: int,
     range_end: int,
     token: Optional[str] = None,
+    verbose: bool = False,
 ) -> pd.DataFrame:
     """
     Fetch flow rate time series from the bluebot API.
@@ -71,10 +105,13 @@ def fetch_flow_data(
         range_start:    Start of range as Unix timestamp (seconds)
         range_end:      End of range as Unix timestamp (seconds)
         token:          Bearer token. Falls back to BLUEBOT_TOKEN env var.
+        verbose:        If True, print when a window is skipped due to "no data to export".
 
     Returns:
         DataFrame with columns: timestamp (int64), flow_rate (float64)
         Sorted ascending by timestamp, nulls preserved in flow_rate.
+        May be empty when the API returns 404 with ``{"message": "no data to export", ...}``
+        (e.g. meter offline for that hour); hourly range fetches continue with other chunks.
     """
     token = token or os.environ.get("BLUEBOT_TOKEN")
     if not token:
@@ -92,8 +129,16 @@ def fetch_flow_data(
     }
     headers = {**_FLOW_HEADERS_EXTRA, "Authorization": f"Bearer {token}"}
 
+    response = httpx.get(url, params=params, headers=headers, timeout=30)
+    if _is_no_data_to_export_404(response):
+        if verbose:
+            print(
+                f"  No data to export for range {range_start}–{range_end} (e.g. meter offline); skipping.",
+                file=sys.stderr,
+            )
+        return _empty_flow_dataframe()
+
     try:
-        response = httpx.get(url, params=params, headers=headers, timeout=30)
         response.raise_for_status()
     except httpx.HTTPStatusError as e:
         code = e.response.status_code
@@ -186,7 +231,7 @@ def fetch_flow_data_range(
                 f"({chunk_end - chunk_start}s)",
                 file=__import__("sys").stderr,
             )
-        df_chunk = fetch_flow_data(serial_number, chunk_start, chunk_end, token)
+        df_chunk = fetch_flow_data(serial_number, chunk_start, chunk_end, token, verbose=verbose)
         frames.append(df_chunk)
 
     combined = (

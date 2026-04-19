@@ -13,6 +13,7 @@ import sys
 
 from processors.time_range import display_tz_name_for_user, format_unix_range_display
 from subprocess_env import tool_subprocess_env
+from tools.plot_tz import resolve_plot_tz_name as _resolve_plot_tz_name
 
 _AGENT_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "data-processing-agent")
@@ -23,6 +24,7 @@ _VENV_PYTHON = os.path.join(_AGENT_DIR, ".venv", "bin", "python")
 _PYTHON = _VENV_PYTHON if os.path.exists(_VENV_PYTHON) else sys.executable
 
 _PLOT_PATHS_MARKER = "__BLUEBOT_PLOT_PATHS__"
+_ANALYSIS_JSON_MARKER = "__BLUEBOT_ANALYSIS_JSON__"
 
 _TRUNCATION_NOTE = "\n\n…*(Report truncated for length; increase `BLUEBOT_FLOW_REPORT_MAX_CHARS` if needed.)*"
 
@@ -100,6 +102,26 @@ def _collect_plot_paths(report: str, stderr: str, agent_dir: str) -> list[str]:
     return out
 
 
+def _collect_analysis_json_path(stderr: str) -> str | None:
+    """Absolute path written by data-processing-agent main.py (machine-readable bundle)."""
+    if not stderr:
+        return None
+    idx = stderr.find(_ANALYSIS_JSON_MARKER)
+    if idx == -1:
+        return None
+    tail = stderr[idx + len(_ANALYSIS_JSON_MARKER) :].strip()
+    line = tail.splitlines()[0] if tail else ""
+    try:
+        data = json.loads(line)
+        if isinstance(data, dict) and isinstance(data.get("path"), str):
+            p = data["path"]
+            if isinstance(p, str) and ".." not in p and "\x00" not in p:
+                return p
+    except json.JSONDecodeError:
+        pass
+    return None
+
+
 TOOL_DEFINITION = {
     "name": "analyze_flow_data",
     "description": (
@@ -108,6 +130,9 @@ TOOL_DEFINITION = {
         "trend direction, and flags low signal-quality readings. "
         "Always call resolve_time_range first when the user expresses the time range "
         "in natural language (e.g. 'last 6 hours', 'yesterday morning'). "
+        "When available, call get_meter_profile first and pass the resulting "
+        "``network_type`` (``wifi`` ≈ 2 s cadence, ``lorawan`` ≈ 12–60 s cadence) "
+        "so gap detection and coverage expectations match the meter's physics. "
         "The tool result includes display_range: server-formatted wall times for the "
         "start/end Unix seconds — cite that for human-readable times, not your own conversion."
     ),
@@ -129,10 +154,39 @@ TOOL_DEFINITION = {
                 "type": "integer",
                 "description": "Range end as Unix timestamp (seconds, UTC)",
             },
+            "network_type": {
+                "type": "string",
+                "enum": ["wifi", "lorawan", "unknown"],
+                "description": (
+                    "Meter network category from get_meter_profile. Tunes the sampling "
+                    "caps used by gap detection and coverage: ``wifi`` ≈ 5 s healthy "
+                    "inter-arrival cap (~2 s cadence), ``lorawan``/``unknown`` ≈ 60 s cap "
+                    "(12–60 s bursty cadence). Omit if unknown."
+                ),
+            },
+            "meter_timezone": {
+                "type": "string",
+                "description": (
+                    "IANA timezone of the meter (e.g. ``America/Denver``). Pass the "
+                    "``deviceTimeZone`` field returned by get_meter_profile so plot "
+                    "x-axes render in the meter's local clock (matching the verified-"
+                    "facts report). Falls back to the user's browser timezone, then UTC."
+                ),
+            },
         },
         "required": ["serial_number", "start", "end"],
     },
 }
+
+
+_ALLOWED_NETWORK_TYPES = {"wifi", "lorawan", "unknown"}
+
+
+def _normalize_network_type(value: str | None) -> str | None:
+    if not value:
+        return None
+    v = value.strip().lower()
+    return v if v in _ALLOWED_NETWORK_TYPES else None
 
 
 def analyze_flow_data(
@@ -143,6 +197,8 @@ def analyze_flow_data(
     *,
     display_timezone: str | None = None,
     anthropic_api_key: str | None = None,
+    network_type: str | None = None,
+    meter_timezone: str | None = None,
 ) -> dict:
     """
     Run the data-processing-agent for a meter (by serial number) over a time range.
@@ -153,13 +209,22 @@ def analyze_flow_data(
             "report":            str | None,   # Markdown (may be truncated — see report_truncated)
             "report_truncated":  bool,         # True if report was shortened for token/length limits
             "plot_paths":        list[str],     # absolute PNG paths embedded in the report
+            "analysis_json_path": str | None, # absolute path to analysis_*.json (verified_facts bundle)
             "display_range": str,          # wall times for start/end (user TZ when set)
+            "plot_timezone": str,          # IANA zone the plot x-axes were rendered in
             "error":         str | None,
         }
     """
     tz_name = display_tz_name_for_user(display_timezone)
     display_range = format_unix_range_display(start, end, tz_name=tz_name)
+    plot_tz = _resolve_plot_tz_name(
+        meter_timezone=meter_timezone, display_timezone=tz_name
+    )
     env = tool_subprocess_env(token, anthropic_api_key)
+    nt = _normalize_network_type(network_type)
+    if nt:
+        env["BLUEBOT_METER_NETWORK_TYPE"] = nt
+    env["BLUEBOT_PLOT_TZ"] = plot_tz
     result = subprocess.run(
         [
             _PYTHON, "main.py",
@@ -174,16 +239,19 @@ def analyze_flow_data(
     )
     if result.returncode == 0:
         raw_report = result.stdout.strip()
-        plot_paths = _collect_plot_paths(raw_report, result.stderr or "", _AGENT_DIR)
+        stderr = result.stderr or ""
+        plot_paths = _collect_plot_paths(raw_report, stderr, _AGENT_DIR)
         report, truncated = _maybe_truncate_report(raw_report)
         if truncated:
-            plot_paths = _collect_plot_paths(report, result.stderr or "", _AGENT_DIR)
+            plot_paths = _collect_plot_paths(report, stderr, _AGENT_DIR)
         return {
             "success": True,
             "report": report,
             "report_truncated": truncated,
             "plot_paths": plot_paths,
+            "analysis_json_path": _collect_analysis_json_path(stderr),
             "display_range": display_range,
+            "plot_timezone": plot_tz,
             "error": None,
         }
     return {
@@ -191,6 +259,8 @@ def analyze_flow_data(
         "report": None,
         "report_truncated": False,
         "plot_paths": [],
+        "analysis_json_path": None,
         "display_range": display_range,
+        "plot_timezone": plot_tz,
         "error": result.stderr.strip() or f"Process exited with code {result.returncode}",
     }
