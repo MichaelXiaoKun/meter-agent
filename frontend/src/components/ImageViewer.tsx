@@ -9,7 +9,9 @@ interface ImageViewerProps {
 export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
   const [scale, setScale] = useState(1);
   const [translate, setTranslate] = useState({ x: 0, y: 0 });
-  const dragging = useRef(false);
+  /** Ref: synchronous drag check for move; state: transition on <img> (no ref read during render). */
+  const draggingRef = useRef(false);
+  const [dragging, setDragging] = useState(false);
   const lastPos = useRef({ x: 0, y: 0 });
 
   const resetView = useCallback(() => {
@@ -36,13 +38,14 @@ export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
 
   function handlePointerDown(e: React.PointerEvent) {
     if (e.button !== 0) return;
-    dragging.current = true;
+    draggingRef.current = true;
+    setDragging(true);
     lastPos.current = { x: e.clientX, y: e.clientY };
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   }
 
   function handlePointerMove(e: React.PointerEvent) {
-    if (!dragging.current) return;
+    if (!draggingRef.current) return;
     const dx = e.clientX - lastPos.current.x;
     const dy = e.clientY - lastPos.current.y;
     lastPos.current = { x: e.clientX, y: e.clientY };
@@ -50,7 +53,8 @@ export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
   }
 
   function handlePointerUp() {
-    dragging.current = false;
+    draggingRef.current = false;
+    setDragging(false);
   }
 
   return (
@@ -60,38 +64,38 @@ export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
     >
       {/* Toolbar */}
       <div
-        className="absolute top-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-xl bg-white/95 px-2 py-1.5 shadow-lg"
+        className="absolute top-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-brand-border/60 bg-white/95 px-2 py-1.5 shadow-lg backdrop-blur-sm dark:border-brand-border dark:bg-brand-100/95"
         onClick={(e) => e.stopPropagation()}
       >
         <button
           onClick={() => setScale((s) => Math.max(s - 0.25, 0.25))}
-          className="rounded-lg px-2.5 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100"
+          className="rounded-lg px-2.5 py-1 text-sm font-medium text-brand-800 hover:bg-brand-50 dark:text-brand-muted dark:hover:bg-white/10"
           title="Zoom out (-)"
         >
           &minus;
         </button>
-        <span className="min-w-[3.5rem] text-center text-xs text-gray-500">
+        <span className="min-w-[3.5rem] text-center text-xs text-brand-muted">
           {Math.round(scale * 100)}%
         </span>
         <button
           onClick={() => setScale((s) => Math.min(s + 0.25, 5))}
-          className="rounded-lg px-2.5 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100"
+          className="rounded-lg px-2.5 py-1 text-sm font-medium text-brand-800 hover:bg-brand-50 dark:text-brand-muted dark:hover:bg-white/10"
           title="Zoom in (+)"
         >
           +
         </button>
-        <div className="mx-1 h-4 w-px bg-gray-200" />
+        <div className="mx-1 h-4 w-px bg-brand-border dark:bg-brand-border/80" />
         <button
           onClick={resetView}
-          className="rounded-lg px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100"
+          className="rounded-lg px-2.5 py-1 text-xs font-medium text-brand-800 hover:bg-brand-50 dark:text-brand-muted dark:hover:bg-white/10"
           title="Reset (0)"
         >
           Reset
         </button>
-        <div className="mx-1 h-4 w-px bg-gray-200" />
+        <div className="mx-1 h-4 w-px bg-brand-border dark:bg-brand-border/80" />
         <button
           onClick={onClose}
-          className="rounded-lg px-2.5 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100"
+          className="rounded-lg px-2.5 py-1 text-sm font-medium text-brand-800 hover:bg-brand-50 dark:text-brand-muted dark:hover:bg-white/10"
           title="Close (Esc)"
         >
           &times;
@@ -106,6 +110,7 @@ export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
       >
         <img
           src={src}
@@ -115,7 +120,7 @@ export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
           style={{
             transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale})`,
             transformOrigin: "center center",
-            transition: dragging.current ? "none" : "transform 0.15s ease-out",
+            transition: dragging ? "none" : "transform 0.15s ease-out",
           }}
         />
       </div>

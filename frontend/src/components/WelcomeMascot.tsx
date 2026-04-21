@@ -1,29 +1,25 @@
 /**
  * WelcomeMascot
- * -------------
- * Small inline-SVG cartoon of a water meter holding a pipe, rendered above
- * the welcome-screen heading. It runs three coordinated animations that
- * each live on their own transform layer so they don't fight each other:
+ * ---------------
+ * Stylized **inline electromagnetic / ultrasonic flow meter** (flanged
+ * sensing tube + transmitter housing + LCD) for the welcome screen. Kept
+ * readable at favicon sizes: simple solids, brand CSS variables, no raster.
  *
- *   • Outer wrapper (``.mascot-wrap``)   — one-shot **pop-in** on mount.
- *   • Inner wrapper (``.mascot-bob``)    — continuous gentle **vertical bob**.
- *   • SVG group     (``.mascot-upper``)  — occasional **pipe-lift wave**.
+ * Motion (see ``index.css``):
  *
- * ``prefers-reduced-motion`` disables all three animations; the mascot is
- * still drawn in its final pose.
- *
- * The SVG itself is hand-authored from simple primitives (rounded-rect
- * body, gauge face, eye dots, curved arms, pipe cylinder, droplet) so it
- * stays crisp at any size and inherits the project's brand colors from
- * CSS custom properties — no external asset pipeline.
+ *   • ``.mascot-wrap``  — one-shot pop-in on mount.
+ *   • ``.mascot-bob``   — gentle vertical bob on the whole graphic.
+ *   • ``.mascot-upper`` — occasional tiny **nod** of the transmitter housing
+ *                         (same keyframes name ``mascot-pipe-wave``, milder
+ *                         angles than the old cartoon pipe lift).
+ *   • ``.mascot-display`` — LCD face briefly **dims** like a refresh tick.
  */
 
+const VIEW_W = 180;
+const VIEW_H = 108;
+
 interface WelcomeMascotProps {
-  /**
-   * Rendered pixel height. Default 72 px (≈ one headline tall). Consumers
-   * can pass smaller/larger values for responsive tweaking; width scales
-   * via the fixed viewBox aspect ratio.
-   */
+  /** Rendered width in px; height follows viewBox aspect ratio. */
   size?: number;
   className?: string;
 }
@@ -43,147 +39,124 @@ export default function WelcomeMascot({
       <div className="mascot-bob">
         <svg
           role="img"
-          aria-label="A cartoon water meter holding a pipe"
+          aria-label="Stylized flow meter with flanged pipe and transmitter display"
           xmlns="http://www.w3.org/2000/svg"
-          viewBox="0 0 140 120"
+          viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
           width={size}
-          height={(size * 120) / 140}
+          height={(size * VIEW_H) / VIEW_W}
           className="mascot-svg block"
         >
-          {/* ------------------------------------------------------------
-              Static character: body, feet, face, gauge, droplet.
-              Drawn first so the pipe + arms overlap it on top.
-              ------------------------------------------------------------ */}
-
-          {/* Water droplet above the head — subtle water cue. */}
-          <path
-            d="M70 6 C63 18, 62 26, 70 28 C78 26, 77 18, 70 6 Z"
+          {/* Left process flange */}
+          <rect
+            x="8"
+            y="34"
+            width="30"
+            height="40"
+            rx="4"
             fill="var(--color-brand-500)"
             stroke="var(--color-brand-900)"
-            strokeWidth="1.4"
-            strokeLinejoin="round"
-            opacity="0.9"
+            strokeWidth="2"
           />
-          <path
-            d="M68 12 Q66 18, 68 22"
-            fill="none"
-            stroke="#ffffff"
-            strokeWidth="1.2"
-            strokeLinecap="round"
-            opacity="0.7"
-          />
+          <circle cx="17" cy="46" r="2.2" fill="var(--color-brand-900)" />
+          <circle cx="29" cy="46" r="2.2" fill="var(--color-brand-900)" />
+          <circle cx="17" cy="62" r="2.2" fill="var(--color-brand-900)" />
+          <circle cx="29" cy="62" r="2.2" fill="var(--color-brand-900)" />
 
-          {/* Feet — drawn before body so they look tucked under it. */}
+          {/* Sensing tube (metering section) */}
           <rect
-            x="50"
-            y="92"
-            width="12"
-            height="7"
-            rx="2.5"
-            fill="var(--color-brand-900)"
-          />
-          <rect
-            x="78"
-            y="92"
-            width="12"
-            height="7"
-            rx="2.5"
-            fill="var(--color-brand-900)"
-          />
-
-          {/* Meter body — rounded rectangle. */}
-          <rect
-            x="42"
-            y="38"
-            width="56"
-            height="56"
-            rx="14"
-            ry="14"
+            x="34"
+            y="46"
+            width="112"
+            height="24"
+            rx="12"
             fill="var(--color-brand-500)"
             stroke="var(--color-brand-900)"
             strokeWidth="2.5"
           />
-
-          {/* Subtle highlight on the body for a slightly lit / wet feel. */}
           <path
-            d="M48 46 Q52 42, 58 42"
+            d="M44 50 Q90 47 136 50"
             fill="none"
             stroke="#ffffff"
-            strokeWidth="2.2"
+            strokeWidth="1.8"
             strokeLinecap="round"
-            opacity="0.55"
+            opacity="0.35"
           />
 
-          {/* Eyes. */}
-          <circle cx="58" cy="56" r="3" fill="#ffffff" />
-          <circle cx="58" cy="56" r="1.4" fill="var(--color-brand-900)" />
-          <circle cx="82" cy="56" r="3" fill="#ffffff" />
-          <circle cx="82" cy="56" r="1.4" fill="var(--color-brand-900)" />
-
-          {/* Gauge face — the "water meter" cue. */}
-          <circle
-            cx="70"
-            cy="76"
-            r="11"
-            fill="#f5f8ff"
+          {/* Right process flange */}
+          <rect
+            x="142"
+            y="34"
+            width="30"
+            height="40"
+            rx="4"
+            fill="var(--color-brand-500)"
             stroke="var(--color-brand-900)"
-            strokeWidth="1.5"
+            strokeWidth="2"
           />
-          {/* Tick marks at 12/3/6/9. */}
-          <line x1="70" y1="67" x2="70" y2="69" stroke="var(--color-brand-900)" strokeWidth="1" strokeLinecap="round" />
-          <line x1="79" y1="76" x2="77" y2="76" stroke="var(--color-brand-900)" strokeWidth="1" strokeLinecap="round" />
-          <line x1="61" y1="76" x2="63" y2="76" stroke="var(--color-brand-900)" strokeWidth="1" strokeLinecap="round" />
-          <line x1="70" y1="83" x2="70" y2="85" stroke="var(--color-brand-900)" strokeWidth="1" strokeLinecap="round" />
-          {/* Needle pointing roughly to the "2 o'clock" position. */}
-          <line x1="70" y1="76" x2="76" y2="71" stroke="#c0392b" strokeWidth="1.8" strokeLinecap="round" />
-          <circle cx="70" cy="76" r="1.6" fill="var(--color-brand-900)" />
+          <circle cx="151" cy="46" r="2.2" fill="var(--color-brand-900)" />
+          <circle cx="163" cy="46" r="2.2" fill="var(--color-brand-900)" />
+          <circle cx="151" cy="62" r="2.2" fill="var(--color-brand-900)" />
+          <circle cx="163" cy="62" r="2.2" fill="var(--color-brand-900)" />
 
-          {/* ------------------------------------------------------------
-              Upper group — pipe + arms. Rotates together during the
-              periodic ``mascot-pipe-wave`` animation so the meter looks
-              like it's proudly lifting the pipe overhead.
-              ------------------------------------------------------------ */}
+          {/* Flow direction (process right) */}
+          <path
+            d="M 118 72 L 132 72 L 126 67 M 132 72 L 126 77"
+            fill="none"
+            stroke="var(--color-brand-900)"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            opacity="0.85"
+          />
+
+          {/* Transmitter housing + LCD (animated nod on ``.mascot-upper``) */}
           <g className="mascot-upper">
-            {/* Pipe — horizontal cylinder. */}
             <rect
-              x="18"
-              y="26"
-              width="104"
-              height="14"
-              rx="7"
-              ry="7"
-              fill="#a7d8f0"
+              x="58"
+              y="6"
+              width="64"
+              height="44"
+              rx="8"
+              fill="var(--color-brand-700)"
               stroke="var(--color-brand-900)"
               strokeWidth="2"
             />
-            {/* Pipe end caps (flanges). */}
-            <circle cx="18" cy="33" r="5.5" fill="var(--color-brand-500)" stroke="var(--color-brand-900)" strokeWidth="2" />
-            <circle cx="122" cy="33" r="5.5" fill="var(--color-brand-500)" stroke="var(--color-brand-900)" strokeWidth="2" />
-            {/* Highlight stripe on pipe — reads as light catching water/metal. */}
-            <path
-              d="M26 30 L114 30"
-              stroke="#ffffff"
-              strokeWidth="1.4"
-              strokeLinecap="round"
-              opacity="0.55"
+            <rect
+              x="64"
+              y="10"
+              width="52"
+              height="6"
+              rx="2"
+              fill="color-mix(in oklab, var(--color-brand-900) 35%, transparent)"
+              opacity="0.9"
             />
+            {/* Cable / conduit stub */}
+            <path
+              d="M 108 6 Q 112 0 116 2"
+              fill="none"
+              stroke="var(--color-brand-900)"
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
+            <circle cx="116" cy="2" r="2.5" fill="var(--color-brand-500)" stroke="var(--color-brand-900)" strokeWidth="1.2" />
 
-            {/* Left arm — from body shoulder up to the pipe. */}
-            <path
-              d="M48 44 Q 38 36, 30 34"
-              fill="none"
-              stroke="var(--color-brand-900)"
-              strokeWidth="3"
-              strokeLinecap="round"
-            />
-            {/* Right arm. */}
-            <path
-              d="M92 44 Q 102 36, 110 34"
-              fill="none"
-              stroke="var(--color-brand-900)"
-              strokeWidth="3"
-              strokeLinecap="round"
-            />
+            {/* Status LED */}
+            <circle cx="70" cy="19" r="2" fill="#34d399" stroke="var(--color-brand-900)" strokeWidth="0.8" />
+
+            {/* LCD stack — opacity flicker reads like a live readout */}
+            <g className="mascot-display" transform="translate(76, 24)">
+              <rect
+                width="28"
+                height="18"
+                rx="2.5"
+                fill="#0a1628"
+                stroke="var(--color-brand-border)"
+                strokeWidth="0.9"
+              />
+              <rect x="4" y="4" width="20" height="2.8" rx="1" fill="#d4e4ff" opacity="0.92" />
+              <rect x="4" y="8.5" width="14" height="2.6" rx="1" fill="#d4e4ff" opacity="0.88" />
+              <rect x="4" y="12.5" width="18" height="2.2" rx="1" fill="#d4e4ff" opacity="0.82" />
+            </g>
           </g>
         </svg>
       </div>

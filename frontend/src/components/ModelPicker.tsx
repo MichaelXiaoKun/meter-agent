@@ -53,7 +53,7 @@ const TIER_BADGE_CLASS: Record<string, string> = {
   fast: "bg-emerald-100 text-emerald-700",
   balanced: "bg-amber-100 text-amber-700",
   max: "bg-indigo-100 text-indigo-700",
-  custom: "bg-slate-100 text-slate-600",
+  custom: "bg-slate-100 text-slate-600 dark:bg-brand-100 dark:text-brand-muted",
 };
 
 function tierLabel(tier: string): string {
@@ -157,11 +157,11 @@ export default function ModelPicker({
         aria-controls={panelId}
         title={selected ? `${selected.label} — ${selected.description}` : "Pick a model"}
         className={[
-          "flex h-12 min-h-[48px] min-w-0 max-w-full items-center gap-1.5 rounded-full border px-3 text-sm font-medium text-brand-800 transition-colors",
+          "flex h-12 min-h-[48px] min-w-0 max-w-full items-center gap-1.5 rounded-full border px-3 text-sm font-medium text-brand-800 transition-colors dark:text-brand-muted dark:hover:text-brand-900",
           "sm:min-h-[44px] sm:h-11",
           open
-            ? "border-brand-500 bg-brand-50/90 shadow-inner ring-2 ring-brand-400/30"
-            : "border-brand-border bg-white hover:border-brand-400 hover:bg-brand-50/80",
+            ? "border-brand-500 bg-brand-50/90 shadow-inner ring-2 ring-brand-400/30 dark:bg-brand-100/80 dark:ring-brand-500/25"
+            : "border-brand-border bg-white hover:border-brand-400 hover:bg-brand-50/80 dark:bg-brand-100 dark:hover:bg-white/10",
           disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
         ].join(" ")}
       >
@@ -183,7 +183,7 @@ export default function ModelPicker({
           role="listbox"
           aria-label="Claude model"
           className={[
-            "absolute rounded-2xl border border-brand-border bg-white p-1.5 shadow-[0_18px_56px_-18px_rgba(15,23,42,0.28)]",
+            "absolute rounded-2xl border border-brand-border bg-white p-1.5 shadow-[0_18px_56px_-18px_rgba(15,23,42,0.28)] dark:shadow-[0_18px_56px_-18px_rgba(0,0,0,0.55)]",
             panelPositionClass,
           ].join(" ")}
         >

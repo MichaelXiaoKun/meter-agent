@@ -7,7 +7,7 @@ import MessageBubble, { extractPlotPaths } from "./MessageBubble";
 import PlotImage from "./PlotImage";
 import StatusIndicator from "./StatusIndicator";
 import WelcomeCard from "./WelcomeCard";
-import WelcomeLogo from "./WelcomeLogo";
+import WelcomeBluebotLogo from "./WelcomeBluebotLogo";
 import TurnActivityTimeline from "./TurnActivityTimeline";
 import { TokenBudgetPopover } from "./TokenBudget";
 import ModelPicker from "./ModelPicker";
@@ -578,7 +578,7 @@ export default function ChatView({
 
   /** Same pill + field styling for welcome and active conversation (all viewports). */
   const composerShellClass =
-    "w-full max-w-2xl rounded-2xl border border-slate-200/90 bg-white p-2.5 shadow-[0_12px_48px_-12px_rgba(15,23,42,0.14)] sm:rounded-[1.75rem] sm:p-2.5 md:p-2.5";
+    "w-full max-w-2xl rounded-2xl border border-brand-border/90 bg-white p-2.5 shadow-[0_12px_48px_-12px_rgba(15,23,42,0.14)] dark:border-brand-border dark:bg-brand-100 dark:shadow-[0_12px_48px_-12px_rgba(0,0,0,0.45)] sm:rounded-[1.75rem] sm:p-2.5 md:p-2.5";
   /**
    * Auto-grow ``<textarea>`` used by the unified composer. The textarea
    * occupies its own row at the top of the pill and visually blends into
@@ -589,7 +589,7 @@ export default function ChatView({
    * ~6 lines, then the textarea scrolls internally).
    */
   const composerTextareaClass =
-    "block min-h-[36px] w-full min-w-0 resize-none rounded-none border-0 bg-transparent px-1.5 py-1 text-base leading-6 text-brand-900 outline-none ring-0 placeholder:text-brand-muted/55 focus:outline-none focus:ring-0 disabled:opacity-50";
+    "block min-h-[36px] w-full min-w-0 resize-none rounded-none border-0 bg-transparent px-1.5 py-1 text-base leading-6 text-brand-900 outline-none ring-0 placeholder:text-brand-muted/55 focus:outline-none focus:ring-0 disabled:opacity-50 dark:placeholder:text-brand-muted/50";
   const composerSendIconButtonClass =
     "flex h-12 w-12 min-h-[48px] min-w-[48px] shrink-0 items-center justify-center rounded-full bg-brand-700 text-white transition-opacity hover:opacity-90 active:opacity-90 disabled:bg-brand-300 disabled:opacity-60 sm:min-h-[44px] sm:min-w-[44px]";
   /**
@@ -605,7 +605,7 @@ export default function ChatView({
     "w-full bg-transparent px-4 pb-[max(1rem,env(safe-area-inset-bottom,0px))] pt-4 sm:px-6 sm:pb-[max(1rem,env(safe-area-inset-bottom,0px))] sm:pt-4";
 
   const composerDisabled = (
-    <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-center text-sm text-amber-700">
+    <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-center text-sm text-amber-700 dark:border-amber-900/45 dark:bg-amber-950/35 dark:text-amber-200">
       Enter your bluebot token in Settings to start chatting.
     </div>
   );
@@ -757,7 +757,7 @@ export default function ChatView({
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* Header — full width of main pane, inset from sidebar via px-6 */}
-      <header className="shrink-0 border-b border-brand-border/90 bg-gradient-to-b from-white to-brand-50/40 pt-[env(safe-area-inset-top,0px)] shadow-[0_1px_0_0_rgba(15,23,42,0.04)] backdrop-blur-md">
+      <header className="shrink-0 border-b border-brand-border/90 bg-gradient-to-b from-white to-brand-50/40 pt-[env(safe-area-inset-top,0px)] shadow-[0_1px_0_0_rgba(15,23,42,0.04)] backdrop-blur-md dark:from-brand-100 dark:to-brand-50 dark:shadow-[0_1px_0_0_rgba(0,0,0,0.2)]">
         <div
           className={`text-left sm:px-6 ${narrowNav
             ? "flex min-h-[2.75rem] items-center gap-3 px-4 py-3.5"
@@ -769,7 +769,7 @@ export default function ChatView({
               <button
                 type="button"
                 onClick={narrowNav.onOpenSidebar}
-                className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-brand-border/80 bg-white text-brand-700 shadow-sm ring-1 ring-brand-border/40 transition-[border-color,box-shadow,background-color] hover:border-brand-400 hover:bg-brand-50"
+                className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-brand-border/80 bg-white text-brand-700 shadow-sm ring-1 ring-brand-border/40 transition-[border-color,box-shadow,background-color] hover:border-brand-400 hover:bg-brand-50 dark:bg-brand-100 dark:text-brand-muted dark:hover:bg-white/10"
                 title="Open conversations"
                 aria-label="Open conversations sidebar"
               >
@@ -858,14 +858,14 @@ export default function ChatView({
               {status.kind === "error" && (
                 <div
                   role="alert"
-                  className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900 shadow-sm"
+                  className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900 shadow-sm dark:border-red-900/55 dark:bg-red-950/35 dark:text-red-100 dark:shadow-none"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                      <p className="font-semibold text-red-950">
+                      <p className="font-semibold text-red-950 dark:text-red-100">
                         Assistant couldn&apos;t finish (Claude API)
                       </p>
-                      <p className="mt-1.5 whitespace-pre-wrap break-words text-red-800/95">
+                      <p className="mt-1.5 whitespace-pre-wrap break-words text-red-800/95 dark:text-red-200/90">
                         {status.error}
                       </p>
                     </div>
@@ -873,7 +873,7 @@ export default function ChatView({
                       <button
                         type="button"
                         onClick={onDismissAssistantError}
-                        className="shrink-0 rounded-lg border border-red-300 bg-white px-2.5 py-1 text-xs font-medium text-red-800 hover:bg-red-100"
+                        className="shrink-0 rounded-lg border border-red-300 bg-white px-2.5 py-1 text-xs font-medium text-red-800 hover:bg-red-100 dark:border-red-800/70 dark:bg-brand-100 dark:text-red-200 dark:hover:bg-red-950/40"
                       >
                         Dismiss
                       </button>
@@ -899,7 +899,7 @@ export default function ChatView({
               {streamingText && (
                 <div className="flex justify-start">
                   <div className="max-w-[75%] min-w-0 overflow-hidden rounded-2xl border border-brand-border bg-white px-4 py-3 text-brand-900">
-                    <div className="prose prose-sm max-w-none break-words prose-p:my-1 prose-a:break-words prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full">
+                    <div className="prose prose-sm max-w-none break-words prose-p:my-1 prose-a:break-words prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm dark:prose-invert dark:prose-headings:text-brand-100 [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingText}</ReactMarkdown>
                     </div>
                   </div>
@@ -924,7 +924,7 @@ export default function ChatView({
               <StatusIndicator status={status} />
 
               {serverProcessing && status.kind === "idle" && (
-                <div className="flex items-center gap-2 rounded-lg bg-brand-100 px-3 py-2 text-sm text-brand-muted">
+                <div className="flex items-center gap-2 rounded-lg bg-brand-100 px-3 py-2 text-sm text-brand-muted dark:bg-brand-100/70">
                   <svg
                     className="h-4 w-4 animate-spin text-brand-500"
                     fill="none"
@@ -967,7 +967,7 @@ export default function ChatView({
                   <button
                     type="button"
                     onClick={jumpToLatest}
-                    className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-brand-border bg-white/95 px-3 py-1.5 text-xs font-medium text-brand-700 shadow-md backdrop-blur transition-opacity hover:bg-white"
+                    className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-brand-border bg-white/95 px-3 py-1.5 text-xs font-medium text-brand-700 shadow-md backdrop-blur transition-opacity hover:bg-white dark:border-brand-border dark:text-brand-muted dark:hover:bg-white/10 dark:hover:text-brand-900"
                     aria-label="Jump to latest message"
                   >
                     <svg
@@ -1005,8 +1005,8 @@ export default function ChatView({
                       : "flex w-full max-w-2xl flex-1 flex-col items-center justify-center py-6 sm:py-10 md:py-14"
                   }
                 >
-                  <WelcomeLogo
-                    size={welcomeComposerAtBottom ? 80 : 96}
+                  <WelcomeBluebotLogo
+                    size={welcomeComposerAtBottom ? 88 : 104}
                     className="mb-3 sm:mb-4"
                   />
                   <h2 className="welcome-heading px-1 text-center text-2xl font-semibold leading-snug tracking-tight text-brand-900 sm:px-2 sm:text-3xl">

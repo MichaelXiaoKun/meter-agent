@@ -1,0 +1,55 @@
+# semantic-release: analyzes conventional commits on ``main``, creates a
+# semver Git tag (``v*``) and a GitHub Release when there are releasable
+# changes. No npm package is published — this repo is Docker/Python-first.
+#
+# Railway:
+#   • Easiest: keep auto-deploy on ``main``; tags/releases are for humans,
+#     rollback by commit, and semver visibility.
+#   • Tag-only deploy: in Railway → Service → Settings, set the deploy branch
+#     or trigger to match your workflow (some teams use a ``production``
+#     branch updated only by CI).
+#   • Deploy hook: create a Deploy Hook in Railway, add repo secret
+#     ``RAILWAY_DEPLOY_HOOK``, then extend this workflow with a step that
+#     ``curl -fsS -X POST`` that URL after release (often via
+#     ``@semantic-release/exec`` in ``.releaserc.json``).
+
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: semantic-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install release tooling
+        run: npm ci
+
+      - name: semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release

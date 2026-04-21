@@ -93,7 +93,7 @@ export default function MessageBubble({ message, plotPaths }: MessageBubbleProps
         className={`max-w-[min(92%,28rem)] min-w-0 overflow-hidden rounded-2xl px-4 py-3.5 sm:max-w-[75%] sm:py-3 ${
           isUser
             ? "bg-brand-700 text-white"
-            : "border border-brand-border bg-white text-brand-900"
+            : "border border-brand-border bg-white text-brand-900 dark:border-brand-border"
         }`}
       >
         {isUser ? (
@@ -117,7 +117,7 @@ export default function MessageBubble({ message, plotPaths }: MessageBubbleProps
                   ``[&_img]:max-w-full`` is belt-and-braces for any raw
                   ``<img>`` the model inlines.
               */
-              <div className="prose prose-base max-w-none break-words prose-p:my-2 prose-p:leading-relaxed prose-headings:text-brand-900 prose-a:break-words prose-a:text-brand-500 prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full sm:prose-sm sm:prose-p:my-1">
+              <div className="prose prose-base max-w-none break-words prose-p:my-2 prose-p:leading-relaxed prose-headings:text-brand-900 prose-a:break-words prose-a:text-brand-500 prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm dark:prose-invert dark:prose-headings:text-brand-100 [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full sm:prose-sm sm:prose-p:my-1">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   components={{

@@ -103,7 +103,7 @@ export default function WelcomeCard({ onCompose, compact = false }: WelcomeCardP
           <button
             type="button"
             onClick={() => runAction(a.message)}
-            className="inline-flex min-h-[2.25rem] items-center rounded-full border border-slate-200/90 bg-white px-3.5 py-1.5 text-sm font-medium text-brand-800 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition hover:border-slate-300 hover:bg-slate-50 active:bg-slate-100/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 sm:text-[0.8125rem]"
+            className="inline-flex min-h-[2.25rem] items-center rounded-full border border-slate-200/90 bg-white px-3.5 py-1.5 text-sm font-medium text-brand-800 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition hover:border-slate-300 hover:bg-slate-50 active:bg-slate-100/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 dark:border-brand-border dark:bg-brand-100 dark:text-brand-muted dark:hover:border-brand-border dark:hover:bg-white/10 dark:hover:text-brand-900 dark:active:bg-white/[0.08] sm:text-[0.8125rem]"
           >
             {a.label}
           </button>
@@ -120,12 +120,12 @@ export default function WelcomeCard({ onCompose, compact = false }: WelcomeCardP
           {serial.trim() ? (
             <>
               Uses saved serial{" "}
-              <span className="font-mono text-brand-800">{serial.trim()}</span>.
+              <span className="font-mono text-brand-800 dark:text-brand-900">{serial.trim()}</span>.
             </>
           ) : (
             <>
               Tap a pill — the serial appears as{" "}
-              <span className="font-mono text-brand-800">{SERIAL_PLACEHOLDER}</span>{" "}
+              <span className="font-mono text-brand-800 dark:text-brand-900">{SERIAL_PLACEHOLDER}</span>{" "}
               for you to fill in.
             </>
           )}
@@ -139,10 +139,10 @@ export default function WelcomeCard({ onCompose, compact = false }: WelcomeCardP
       {/* Desktop: slim serial input + pill row, no section headers or tips. */}
       <div
         className={[
-          "mx-auto flex max-w-md items-center gap-2 rounded-full border bg-white px-3 py-1.5 shadow-sm transition-colors",
+          "mx-auto flex max-w-md items-center gap-2 rounded-full border bg-white px-3 py-1.5 shadow-sm transition-colors dark:border-brand-border dark:bg-brand-100",
           serialError
             ? "border-amber-300 ring-2 ring-amber-100"
-            : "border-slate-200/90",
+            : "border-slate-200/90 dark:border-brand-border",
         ].join(" ")}
       >
         <label

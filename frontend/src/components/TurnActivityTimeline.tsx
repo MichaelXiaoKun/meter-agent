@@ -125,8 +125,8 @@ function StepRow({
         compact ? "rounded-md px-2 py-1" : "rounded-xl px-3 py-2",
         responding
           ? compact
-            ? "bg-brand-50/90 ring-1 ring-brand-300/60"
-            : "border border-brand-300/80 bg-brand-50/90 shadow-sm ring-1 ring-brand-400/25"
+            ? "bg-brand-50/90 ring-1 ring-brand-300/60 dark:bg-brand-100/70 dark:ring-brand-border"
+            : "border border-brand-300/80 bg-brand-50/90 shadow-sm ring-1 ring-brand-400/25 dark:border-brand-border dark:bg-brand-100/55 dark:ring-brand-500/20"
           : compact
             ? "bg-transparent"
             : "border border-transparent bg-transparent opacity-80",
@@ -142,7 +142,7 @@ function StepRow({
           {step.kind === "error" ? (
             <span
               className={[
-                "flex items-center justify-center rounded-full bg-red-100 font-bold text-red-700",
+                "flex items-center justify-center rounded-full bg-red-100 font-bold text-red-700 dark:bg-red-950/55 dark:text-red-200",
                 compact ? "h-4 w-4 text-[10px]" : "h-5 w-5 text-[11px]",
               ].join(" ")}
             >
@@ -151,7 +151,7 @@ function StepRow({
           ) : complete && (step.kind === "done" || (step.kind === "tool_result" && step.ok)) ? (
             <span
               className={[
-                "flex items-center justify-center rounded-full bg-emerald-100 text-emerald-700",
+                "flex items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950/45 dark:text-emerald-300",
                 compact ? "h-4 w-4 text-[10px]" : "h-5 w-5 text-[11px]",
               ].join(" ")}
             >
@@ -160,7 +160,7 @@ function StepRow({
           ) : complete && step.kind === "tool_result" && step.ok === false ? (
             <span
               className={[
-                "flex items-center justify-center rounded-full bg-amber-100 text-amber-800",
+                "flex items-center justify-center rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950/45 dark:text-amber-200",
                 compact ? "h-4 w-4 text-[10px]" : "h-5 w-5 text-[11px]",
               ].join(" ")}
             >
@@ -260,7 +260,7 @@ export default function TurnActivityTimeline({
     >
       <div
         className={[
-          "min-w-0 rounded-2xl border border-brand-border/80 bg-white/95 shadow-sm backdrop-blur-sm",
+          "min-w-0 rounded-2xl border border-brand-border/80 bg-white/95 shadow-sm backdrop-blur-sm dark:shadow-[0_8px_30px_-12px_rgba(0,0,0,0.45)]",
           compact ? "w-full max-w-[94%] px-1.5 py-1.5" : "w-full max-w-[75%] px-2 py-2",
         ].join(" ")}
       >

@@ -108,7 +108,7 @@ function TokenBudgetPanel({
           )}
         </span>
       </div>
-      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200/90">
+      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200/90 dark:bg-brand-border/50">
         <div
           className={`h-full rounded-full transition-all ${barColor}`}
           style={{ width: `${ctxBarPct}%` }}
@@ -162,7 +162,7 @@ function TokenBudgetPanel({
             <span className="text-brand-muted/90"> / {tpmPerMinuteGuide.toLocaleString()}</span>
           </span>
         </div>
-        <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200/90">
+        <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200/90 dark:bg-brand-border/50">
           <div
             className={`h-full rounded-full transition-all ${tpmBarColor}`}
             style={{ width: `${tpmBarPct}%` }}
@@ -194,12 +194,12 @@ function WelcomeIdleSpinRing() {
   return (
     <>
       <span
-        className="pointer-events-none absolute inset-0 rounded-full border-[2.2px] border-slate-200 border-t-brand-500 border-r-brand-400/35 animate-spin motion-reduce:animate-none"
+        className="pointer-events-none absolute inset-0 rounded-full border-[2.2px] border-slate-200 border-t-brand-500 border-r-brand-400/35 animate-spin motion-reduce:animate-none dark:border-brand-border/50 dark:border-t-brand-700 dark:border-r-brand-500/70"
         style={{ animationDuration: "4s" }}
         aria-hidden
       />
       <span
-        className="pointer-events-none absolute inset-[5px] rounded-full border-[1.85px] border-slate-200 border-t-brand-500/75 border-b-brand-400/20 animate-spin motion-reduce:animate-none"
+        className="pointer-events-none absolute inset-[5px] rounded-full border-[1.85px] border-slate-200 border-t-brand-500/75 border-b-brand-400/20 animate-spin motion-reduce:animate-none dark:border-brand-border/45 dark:border-t-brand-700 dark:border-b-brand-500/55"
         style={{ animationDuration: "3.2s", animationDirection: "reverse" }}
         aria-hidden
       />
@@ -241,7 +241,7 @@ function UsageGaugeRings({
         cy={cy}
         r={ro}
         fill="none"
-        className="stroke-slate-200/95"
+        className="stroke-slate-200/95 dark:stroke-brand-border/80"
         strokeWidth={wo}
       />
       <circle
@@ -263,7 +263,7 @@ function UsageGaugeRings({
         cy={cy}
         r={ri}
         fill="none"
-        className="stroke-slate-200/80"
+        className="stroke-slate-200/80 dark:stroke-brand-border/80"
         strokeWidth={wi}
       />
       <circle
@@ -368,15 +368,15 @@ export function TokenBudgetPopover({
   const tpmFill = Math.min(1, tpm / Math.max(1, tpmPerMinuteGuide));
   const ctxStrokeClass =
     budgetPct >= 0.85
-      ? "stroke-red-500"
+      ? "stroke-red-500 dark:stroke-red-400"
       : budgetPct >= 0.55
-        ? "stroke-amber-500"
-        : "stroke-brand-500";
+        ? "stroke-amber-500 dark:stroke-amber-400"
+        : "stroke-brand-500 dark:stroke-brand-700";
   const tpmStrokeClass = tpmCrit
-    ? "stroke-red-500"
+    ? "stroke-red-500 dark:stroke-red-400"
     : tpmWarn
-      ? "stroke-amber-500"
-      : "stroke-brand-500";
+      ? "stroke-amber-500 dark:stroke-amber-400"
+      : "stroke-brand-500 dark:stroke-brand-700";
 
   const showWelcomeIdleSpin =
     welcomeIdleSpin && used <= 0 && tpm <= 0;
@@ -399,10 +399,10 @@ export function TokenBudgetPopover({
         }
         onClick={() => setOpen((o) => !o)}
         className={[
-          "relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full border p-0 text-brand-700 transition-colors",
+          "relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full border p-0 text-brand-700 transition-colors dark:text-brand-muted dark:hover:text-brand-900",
           open
-            ? "border-brand-500 bg-brand-50/90 shadow-inner ring-2 ring-brand-400/30"
-            : "border-brand-border bg-white hover:border-brand-400 hover:bg-brand-50/80",
+            ? "border-brand-500 bg-brand-50/90 shadow-inner ring-2 ring-brand-400/30 dark:bg-brand-100/80 dark:ring-brand-500/25"
+            : "border-brand-border bg-white hover:border-brand-400 hover:bg-brand-50/80 dark:bg-brand-100 dark:hover:bg-white/10",
         ].join(" ")}
       >
         {showWelcomeIdleSpin ? (
@@ -415,7 +415,7 @@ export function TokenBudgetPopover({
             tpmStrokeClass={tpmStrokeClass}
           />
         )}
-        <span className="relative z-10 flex h-4 w-4 items-center justify-center rounded-full bg-white/95 shadow-sm ring-1 ring-brand-border/40">
+        <span className="relative z-10 flex h-4 w-4 items-center justify-center rounded-full bg-white/95 shadow-sm ring-1 ring-brand-border/40 dark:bg-brand-100 dark:ring-brand-border">
           <BarChartIcon className="h-3 w-3" />
         </span>
       </button>
@@ -427,7 +427,7 @@ export function TokenBudgetPopover({
           aria-labelledby="token-budget-trigger"
           className={`absolute ${panelPositionClass}`}
         >
-          <div className="max-h-[min(70vh,32rem)] overflow-y-auto rounded-xl border border-brand-border/80 bg-white p-1 shadow-xl backdrop-blur-sm">
+          <div className="max-h-[min(70vh,32rem)] overflow-y-auto rounded-xl border border-brand-border/80 bg-white p-1 shadow-xl backdrop-blur-sm dark:shadow-[0_20px_50px_-20px_rgba(0,0,0,0.55)]">
             <TokenBudgetPanel
               tokenUsage={tokenUsage}
               tpmPerMinuteGuide={tpmPerMinuteGuide}
