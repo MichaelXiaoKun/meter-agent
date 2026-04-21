@@ -111,6 +111,60 @@ export async function updateTitle(
   if (!res.ok) throw new Error(await res.text());
 }
 
+/**
+ * Kick off a chat turn and return its ``stream_id``.
+ *
+ * Split out so both the EventSource and polling transports below can
+ * share it. Persists the user's message and starts the worker thread
+ * server-side; the caller chooses how to consume the event log.
+ */
+async function initChatTurn(
+  convId: string,
+  message: string,
+  token: string,
+  signal?: AbortSignal,
+  clientTurnId?: string,
+  anthropicApiKey?: string | null,
+  model?: string | null,
+): Promise<string> {
+  const clientTimezone =
+    typeof Intl !== "undefined"
+      ? Intl.DateTimeFormat().resolvedOptions().timeZone
+      : undefined;
+  const trimmedModel = model ? model.trim() : "";
+
+  const initRes = await fetch(`${BASE}/conversations/${convId}/chat`, {
+    method: "POST",
+    headers: headers(token, { anthropicApiKey }),
+    body: JSON.stringify({
+      message,
+      ...(clientTimezone ? { client_timezone: clientTimezone } : {}),
+      ...(clientTurnId ? { client_turn_id: clientTurnId } : {}),
+      ...(trimmedModel ? { model: trimmedModel } : {}),
+    }),
+    signal,
+  });
+  if (!initRes.ok) throw new Error(await initRes.text());
+  const initBody = (await initRes.json()) as { stream_id?: string };
+  const streamId = initBody.stream_id;
+  if (!streamId) throw new Error("Missing stream_id in chat init response");
+  return streamId;
+}
+
+/**
+ * Stream a chat reply over the desktop path: ``POST`` to create the
+ * turn, then subscribe via native ``EventSource``. The native SSE
+ * implementation parses events as bytes arrive and fires JS callbacks
+ * per event boundary — on desktop WebKit/Blink this means per-token
+ * typing works reliably through the Vite proxy.
+ *
+ * **Mobile caveat**: iOS Safari's EventSource *also* works by the spec
+ * but its Wi-Fi receive path aggressively coalesces small TCP segments,
+ * which (combined with node-http-proxy buffering in Vite dev) made the
+ * entire reply arrive in one burst at end-of-stream. For mobile we use
+ * ``streamChatViaPolling`` below, which sidesteps all streaming
+ * semantics by polling a JSON endpoint every ~200 ms.
+ */
 export async function streamChat(
   convId: string,
   message: string,
@@ -118,73 +172,142 @@ export async function streamChat(
   onEvent: (event: SSEEvent) => void,
   signal?: AbortSignal,
   clientTurnId?: string,
-  anthropicApiKey?: string | null
+  anthropicApiKey?: string | null,
+  model?: string | null,
 ): Promise<void> {
-  const clientTimezone =
-    typeof Intl !== "undefined"
-      ? Intl.DateTimeFormat().resolvedOptions().timeZone
-      : undefined;
-  const res = await fetch(`${BASE}/conversations/${convId}/chat`, {
-    method: "POST",
-    headers: headers(token, { anthropicApiKey }),
-    body: JSON.stringify({
-      message,
-      ...(clientTimezone ? { client_timezone: clientTimezone } : {}),
-      ...(clientTurnId ? { client_turn_id: clientTurnId } : {}),
-    }),
+  const streamId = await initChatTurn(
+    convId,
+    message,
+    token,
     signal,
-  });
-  if (!res.ok) throw new Error(await res.text());
+    clientTurnId,
+    anthropicApiKey,
+    model,
+  );
 
-  const reader = res.body?.getReader();
-  if (!reader) throw new Error("No response body");
-
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  let currentEventType = "";
-  const dispatchLine = (line: string) => {
-    const trimmed = line.replace(/\r$/, "");
-    if (trimmed.startsWith("event:")) {
-      currentEventType = trimmed.slice(6).trim();
-    } else if (trimmed.startsWith("data:")) {
-      const data = trimmed.slice(5).trim();
-      if (data) {
-        try {
-          const parsed: SSEEvent = JSON.parse(data);
-          if (!parsed.type && currentEventType) {
-            parsed.type = currentEventType as SSEEvent["type"];
-          }
-          onEvent(parsed);
-        } catch {
-          // skip malformed events
-        }
-      }
-      currentEventType = "";
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("aborted", "AbortError"));
+      return;
     }
-  };
+
+    const es = new EventSource(`${BASE}/streams/${streamId}`);
+    let settled = false;
+    /**
+     * EventSource auto-reconnects on transport errors. Once we've seen
+     * the terminal "done" / "error" event, the server-side session is
+     * gone (single-use) and any reconnect attempt would just 409 / 404,
+     * so we close the source and ignore subsequent error callbacks.
+     */
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      es.close();
+      fn();
+    };
+
+    const onAbort = () => settle(() => reject(new DOMException("aborted", "AbortError")));
+    signal?.addEventListener("abort", onAbort);
+
+    es.onmessage = (ev: MessageEvent<string>) => {
+      let parsed: SSEEvent | null = null;
+      try {
+        parsed = JSON.parse(ev.data) as SSEEvent;
+      } catch {
+        return;
+      }
+      onEvent(parsed);
+      if (parsed.type === "done" || parsed.type === "error") {
+        settle(() => resolve());
+      }
+    };
+
+    es.onerror = () => {
+      if (settled) return;
+      settle(() => reject(new Error("EventSource connection error")));
+    };
+  });
+}
+
+/**
+ * Stream a chat reply over the **mobile** path: long-polling.
+ *
+ * Why: iOS WebKit's fetch buffer + ``EventSource`` Wi-Fi coalescing +
+ * node-http-proxy in Vite dev made true streaming unreliable on phones
+ * no matter how much we padded / flushed / disabled Nagle. Polling
+ * sidesteps all of that — each request is a short-lived JSON response,
+ * which every mobile browser handles perfectly.
+ *
+ * The server's ``/poll`` endpoint long-polls for up to ``wait_ms`` if
+ * the event log is idle, so ~200 ms between client polls feels live
+ * (each response arrives within a few hundred ms of the next event
+ * server-side) without drowning the network in empty requests.
+ */
+export async function streamChatViaPolling(
+  convId: string,
+  message: string,
+  token: string,
+  onEvent: (event: SSEEvent) => void,
+  signal?: AbortSignal,
+  clientTurnId?: string,
+  anthropicApiKey?: string | null,
+  model?: string | null,
+): Promise<void> {
+  const streamId = await initChatTurn(
+    convId,
+    message,
+    token,
+    signal,
+    clientTurnId,
+    anthropicApiKey,
+    model,
+  );
+
+  let cursor = 0;
+  const POLL_WAIT_MS = 1500;
 
   while (true) {
-    const { done, value } = await reader.read();
-    if (value) {
-      buffer += decoder.decode(value, { stream: true });
-    }
-    if (done) {
-      buffer += decoder.decode();
+    if (signal?.aborted) {
+      throw new DOMException("aborted", "AbortError");
     }
 
-    const lines = buffer.split("\n");
-    if (done) {
-      buffer = "";
-      for (const line of lines) {
-        if (line.length > 0) dispatchLine(line);
-      }
-      break;
+    // Cache-buster in the URL on top of ``cache: "no-store"`` — iOS
+    // Safari has a long history of caching same-path GETs even with
+    // varying query strings, and the only truly reliable way to
+    // guarantee each poll hits the network is a unique URL. Cost is
+    // negligible (~20 extra bytes per request).
+    const url =
+      `${BASE}/streams/${streamId}/poll` +
+      `?cursor=${cursor}` +
+      `&wait_ms=${POLL_WAIT_MS}` +
+      `&_=${Date.now()}`;
+    const res = await fetch(url, {
+      signal,
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+    });
+    if (!res.ok) {
+      throw new Error(
+        `Poll failed (${res.status}): ${await res.text().catch(() => res.statusText)}`,
+      );
     }
+    const body = (await res.json()) as {
+      events?: SSEEvent[];
+      done?: boolean;
+      next_cursor?: number;
+    };
+    const events = body.events ?? [];
+    for (const ev of events) {
+      onEvent(ev);
+    }
+    cursor = body.next_cursor ?? cursor + events.length;
+    if (body.done) return;
 
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      dispatchLine(line);
+    // If the server returned no events (short-circuited with timeout),
+    // add a tiny client-side delay so a pathologically fast server
+    // can't spin us. Normally the server's long-poll absorbs the wait.
+    if (events.length === 0) {
+      await new Promise((r) => setTimeout(r, 50));
     }
   }
 }
@@ -192,6 +315,21 @@ export async function streamChat(
 // ---------------------------------------------------------------------------
 // Server tuning (public)
 // ---------------------------------------------------------------------------
+
+export interface OrchestratorModelOption {
+  /** Anthropic model ID — also the value sent back to the server. */
+  id: string;
+  /** Short human label for the picker (e.g. "Sonnet 4.5"). */
+  label: string;
+  /** Coarse tier bucket used for UI hints: ``"fast" | "balanced" | "max" | "custom"``. */
+  tier: string;
+  /** One-line description shown on hover / inside the dropdown. */
+  description: string;
+  /** Per-model TPM guide for the UI's rate-limit bar when this model is selected. */
+  tpm_input_guide_tokens: number;
+  /** True for the model the server falls back to when no pick is sent. */
+  is_default: boolean;
+}
 
 export interface OrchestratorConfig {
   tpm_input_guide_tokens: number;
@@ -205,6 +343,10 @@ export interface OrchestratorConfig {
   tpm_window_seconds: number;
   /** True if ANTHROPIC_API_KEY is set on the server (user may still pass X-Anthropic-Key). */
   anthropic_server_configured?: boolean;
+  /** Server default model ID (used by the UI when no stored pick is available). */
+  default_model?: string;
+  /** Allowlist the UI's model picker should render. */
+  available_models?: OrchestratorModelOption[];
 }
 
 export async function fetchOrchestratorConfig(

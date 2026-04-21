@@ -3,10 +3,12 @@ import LoginPage from "./components/LoginPage";
 import Sidebar from "./components/Sidebar";
 import SidebarIconRail from "./components/SidebarIconRail";
 import ChatView from "./components/ChatView";
+import { readStoredModel, writeStoredModel } from "./components/ModelPicker";
 import { useConversations } from "./hooks/useConversations";
 import { useChat } from "./hooks/useChat";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { fetchOrchestratorConfig } from "./api";
+import type { OrchestratorModelOption } from "./api";
 
 function useLocalStorage(key: string, fallback: string) {
   const [value, setValue] = useState(
@@ -51,6 +53,15 @@ export default function App() {
   const [anthropicServerConfigured, setAnthropicServerConfigured] = useState<
     boolean | null
   >(null);
+  const [availableModels, setAvailableModels] = useState<
+    OrchestratorModelOption[]
+  >([]);
+  const [defaultModel, setDefaultModel] = useState<string | null>(null);
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const handleSelectModel = useCallback((modelId: string) => {
+    setSelectedModel(modelId);
+    writeStoredModel(modelId);
+  }, []);
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     try {
       const v = localStorage.getItem("bb_sidebar_open");
@@ -114,6 +125,17 @@ export default function App() {
           if (typeof c.anthropic_server_configured === "boolean") {
             setAnthropicServerConfigured(c.anthropic_server_configured);
           }
+          if (Array.isArray(c.available_models)) {
+            setAvailableModels(c.available_models);
+            const dflt = typeof c.default_model === "string" ? c.default_model : null;
+            setDefaultModel(dflt);
+            // Only seed on first load: keep user's stored pick across polls
+            // so a /api/config refresh doesn't clobber a freshly-picked model
+            // with the server default.
+            setSelectedModel((prev) =>
+              prev ?? readStoredModel(c.available_models, dflt ?? undefined),
+            );
+          }
         })
         .catch(() => {});
     };
@@ -137,7 +159,7 @@ export default function App() {
     sendMessage,
     cancel,
     clearAssistantError,
-  } = useChat(activeConvId, token, anthropicApiKey);
+  } = useChat(activeConvId, token, anthropicApiKey, selectedModel);
 
   // Auto-select: only when there's no persisted active conversation
   useEffect(() => {
@@ -206,16 +228,34 @@ export default function App() {
 
   return (
     <div className="relative flex h-[100dvh] max-h-[100dvh] min-h-0 overflow-hidden overflow-x-hidden bg-brand-50">
-      {isNarrow && sidebarOpen && (
+      {/*
+        Mobile drawer — kept in the DOM while ``isNarrow`` is true so the
+        slide-in/out is a real CSS transition instead of a mount pop.
+        When closed we translate it off-screen and make the backdrop +
+        drawer inert (``pointer-events-none``, ``aria-hidden``, ``tabIndex -1``)
+        so nothing invisible can be tapped or focused behind the scenes.
+      */}
+      {isNarrow && (
         <>
           <button
             type="button"
-            className="fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-[1px] lg:hidden"
+            className={`fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-[1px] transition-opacity duration-300 ease-out lg:hidden ${
+              sidebarOpen
+                ? "opacity-100"
+                : "pointer-events-none opacity-0"
+            }`}
             aria-label="Close sidebar"
+            aria-hidden={!sidebarOpen}
+            tabIndex={sidebarOpen ? 0 : -1}
             onClick={() => setSidebarOpen(false)}
           />
           <div
-            className="fixed inset-y-0 left-0 z-50 flex h-[100dvh] max-h-[100dvh] min-w-0 overflow-hidden border-r border-brand-border bg-brand-100 shadow-2xl lg:hidden [width:min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))] max-w-[min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))]"
+            className={`fixed inset-y-0 left-0 z-50 flex h-[100dvh] max-h-[100dvh] min-w-0 overflow-hidden border-r border-brand-border bg-brand-100 shadow-2xl transition-transform duration-300 ease-out will-change-transform lg:hidden [width:min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))] max-w-[min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))] ${
+              sidebarOpen
+                ? "translate-x-0"
+                : "pointer-events-none -translate-x-full"
+            }`}
+            aria-hidden={!sidebarOpen}
           >
             <div className="h-full min-h-0 min-w-0 flex-1 overflow-hidden [&>aside]:max-w-full [&>aside]:min-w-0 [&>aside]:w-full">
               <Sidebar {...sidebarProps} />
@@ -260,6 +300,9 @@ export default function App() {
           onSend={handleSend}
           onDismissAssistantError={clearAssistantError}
           disabled={false}
+          availableModels={availableModels}
+          selectedModel={selectedModel ?? defaultModel}
+          onSelectModel={handleSelectModel}
           narrowNav={
             isNarrow
               ? {

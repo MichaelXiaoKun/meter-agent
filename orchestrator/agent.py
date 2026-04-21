@@ -31,6 +31,10 @@ from tools.meter_profile import (
     TOOL_DEFINITION as _METER_PROFILE_DEF,
     get_meter_profile,
 )
+from tools.meters_by_email import (
+    TOOL_DEFINITION as _METERS_BY_EMAIL_DEF,
+    list_meters_for_account,
+)
 from tools.flow_analysis import TOOL_DEFINITION as _FLOW_ANALYSIS_DEF, analyze_flow_data
 from tools.pipe_configuration import (
     TOOL_DEFINITION as _PIPE_CONFIGURATION_DEF,
@@ -45,6 +49,7 @@ TOOLS = [
     _TIME_RANGE_DEF,
     _METER_STATUS_DEF,
     _METER_PROFILE_DEF,
+    _METERS_BY_EMAIL_DEF,
     _FLOW_ANALYSIS_DEF,
     _PIPE_CONFIGURATION_DEF,
     _SET_TRANSDUCER_ANGLE_DEF,
@@ -55,6 +60,86 @@ _CHEAP_MODEL = "claude-haiku-4-5"
 _DEFAULT_ORCHESTRATOR_MODEL = _CHEAP_MODEL
 _MODEL = (os.environ.get("ORCHESTRATOR_MODEL") or _DEFAULT_ORCHESTRATOR_MODEL).strip() or _DEFAULT_ORCHESTRATOR_MODEL
 _MODEL_CONTEXT_WINDOW = 200_000   # tokens
+
+# ---------------------------------------------------------------------------
+# Per-turn model selection (from the UI). We keep a tight allowlist so the
+# frontend cannot pass an arbitrary string to Anthropic. The list is also
+# exposed via /api/config so the UI can populate its picker.
+#
+# ORCHESTRATOR_ALLOWED_MODELS (comma-separated IDs) extends / overrides the
+# built-in defaults if an operator wants to expose a different mix.
+# ---------------------------------------------------------------------------
+
+
+_MODEL_CATALOG: dict[str, dict[str, object]] = {
+    "claude-haiku-4-5": {
+        "label": "Haiku 4.5",
+        "tier": "fast",
+        "description": "Fast + cheap; great default for routine analysis.",
+        "tpm_input_guide_tokens": 50_000,
+    },
+    "claude-sonnet-4-5": {
+        "label": "Sonnet 4.5",
+        "tier": "balanced",
+        "description": "Balanced quality / cost; better multi-step reasoning.",
+        "tpm_input_guide_tokens": 30_000,
+    },
+    "claude-opus-4-5": {
+        "label": "Opus 4.5",
+        "tier": "max",
+        "description": "Highest quality, slowest + most expensive.",
+        "tpm_input_guide_tokens": 30_000,
+    },
+}
+
+
+def _configured_allowed_models() -> list[str]:
+    raw = (os.environ.get("ORCHESTRATOR_ALLOWED_MODELS") or "").strip()
+    if not raw:
+        return list(_MODEL_CATALOG.keys())
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    return [p for p in parts if p] or list(_MODEL_CATALOG.keys())
+
+
+def list_available_models() -> list[dict[str, object]]:
+    """Public metadata for /api/config — drives the UI's model picker."""
+    out: list[dict[str, object]] = []
+    default_id = _MODEL
+    for mid in _configured_allowed_models():
+        meta = _MODEL_CATALOG.get(mid) or {
+            "label": mid,
+            "tier": "custom",
+            "description": "",
+            "tpm_input_guide_tokens": 30_000,
+        }
+        out.append(
+            {
+                "id": mid,
+                "label": meta["label"],
+                "tier": meta["tier"],
+                "description": meta["description"],
+                "tpm_input_guide_tokens": meta["tpm_input_guide_tokens"],
+                "is_default": mid == default_id,
+            }
+        )
+    return out
+
+
+def resolve_orchestrator_model(requested: str | None) -> str:
+    """Return *requested* if in the allowlist, else the server default.
+
+    Silently falling back prevents a misconfigured client from breaking chat;
+    the UI learns the real model from the token-budget ``/api/config`` call.
+    """
+    if not requested:
+        return _MODEL
+    r = str(requested).strip()
+    if not r:
+        return _MODEL
+    allowed = set(_configured_allowed_models())
+    if r in allowed:
+        return r
+    return _MODEL
 # Compress earlier so long threads (big tool payloads) stay smaller — helps TPM rate limits too.
 _COMPRESS_THRESHOLD   = 0.40      # compress when input hits this fraction of context window
 _COMPRESS_KEEP_RECENT = 5         # number of recent messages to leave untouched
@@ -124,7 +209,7 @@ def _estimate_stream_turn_tpm_cost(token_count: int) -> int:
     return max(1, int(token_count * f))
 
 
-def get_rate_limit_config_for_api() -> dict[str, float | int]:
+def get_rate_limit_config_for_api() -> dict[str, object]:
     """Public knobs for /api/config and logging (matches run_turn budgeting)."""
     return {
         "tpm_input_guide_tokens": _TPM_INPUT_GUIDE_TOKENS,
@@ -136,6 +221,11 @@ def get_rate_limit_config_for_api() -> dict[str, float | int]:
         "anthropic_server_configured": bool(
             (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
         ),
+        # Model selection: UI uses ``available_models`` to populate the
+        # picker and falls back to ``default_model`` when the user has not
+        # made a choice yet (or their stored choice is no longer allowed).
+        "default_model": _MODEL,
+        "available_models": list_available_models(),
     }
 
 _SYSTEM_PROMPT = """\
@@ -146,7 +236,8 @@ pipe parameters by delegating to specialist sub-agents through tool calls.
 Available tools:
   resolve_time_range     — convert natural language time expressions to Unix timestamps
   check_meter_status     — fetch current meter health (online state, signal quality, pipe config)
-  get_meter_profile      — management-API device metadata + Wi-Fi vs LoRaWAN classification
+  get_meter_profile      — management-API device metadata + Wi-Fi vs LoRaWAN classification (by serial number)
+  list_meters_for_account — list every meter attached to a Bluebot user account (by account email)
   analyze_flow_data      — analyse historical flow rate data over a time range
   configure_meter_pipe        — full pipe material/standard/size + transducer angle (management + MQTT)
   set_transducer_angle_only   — transducer angle only: MQTT **ssa** publish (no pipe catalog / spm)
@@ -194,7 +285,21 @@ Rules:
        b. ``profile.deviceTimeZone`` → the analyze_flow_data ``meter_timezone`` input — renders
           the plot x-axes in the meter's local clock so they match the verified-facts wall times.
      Cite the classification reason verbatim when relevant.
-  12. **User-facing language (no implementation leakage).** Replies to the user must read like
+  12. Use **list_meters_for_account** when the user asks questions keyed by an **email address**
+     rather than a serial number — for example: "what meters does alice@acme.com have?",
+     "list the devices on bob@example.com's account", "how many meters are registered to this email?".
+     The user must supply the email verbatim in their message; do not guess or assume one.
+     Stay email-centric in your reply: report the meter list back against the email the user gave,
+     and do not introduce account ids or organization concepts the user did not ask about.
+     After the list returns, offer to run check_meter_status / get_meter_profile / analyze_flow_data
+     on a specific serial number of interest. Error handling:
+       a. If the tool returns ``success: false``, relay the ``error`` field verbatim — it is already
+          phrased for end users and tells you (via ``error_stage``) whether the problem was looking
+          up the account, its ownership, or its meters.
+       b. If ``success: true`` but ``meters`` is empty, use the ``notice`` field verbatim.
+       c. If ``truncated`` is true, tell the user how many meters were returned vs the real total
+          and ask them to narrow down (e.g. by a specific serial number of interest).
+  13. **User-facing language (no implementation leakage).** Replies to the user must read like
      product answers, not engineering notes. Specifically:
        a. Never mention internal tool, function, module, environment-variable, or file names
           (e.g. ``analyze_flow_data``, ``resolve_time_range``, ``get_meter_profile``,
@@ -215,10 +320,21 @@ Rules:
 """
 
 
-def _count_tokens(client: anthropic.Anthropic, messages: list) -> int:
-    """Return the input token count for the current conversation state."""
+def _count_tokens(
+    client: anthropic.Anthropic,
+    messages: list,
+    *,
+    model: str | None = None,
+) -> int:
+    """Return the input token count for the current conversation state.
+
+    Per-turn *model* overrides the server default so the estimate matches
+    the model that will actually handle this turn. Different Claude tiers
+    can tokenise slightly differently, but more importantly this keeps the
+    UI's ``token_usage`` events honest when the user switches model.
+    """
     response = client.messages.count_tokens(
-        model=_MODEL,
+        model=model or _MODEL,
         system=_SYSTEM_PROMPT,
         tools=TOOLS,
         messages=messages,
@@ -510,6 +626,13 @@ def _dispatch(
             token,
         )
 
+    elif name == "list_meters_for_account":
+        result = list_meters_for_account(
+            inputs["email"],
+            token,
+            limit=inputs.get("limit"),
+        )
+
     elif name == "analyze_flow_data":
         result = analyze_flow_data(
             inputs["serial_number"],
@@ -554,6 +677,7 @@ def run_turn(
     *,
     client_timezone: str | None = None,
     anthropic_api_key: str | None = None,
+    model: str | None = None,
 ) -> str:
     """
     Process one conversational turn.
@@ -566,6 +690,9 @@ def run_turn(
                     Modified in place — pass the same list on every turn.
         token:      bluebot Bearer token forwarded to sub-agent tool calls.
         anthropic_api_key: Optional. When set (e.g. from web UI), used instead of ANTHROPIC_API_KEY.
+        model:      Optional Claude model ID (e.g. "claude-sonnet-4-5"). Must be in the
+                    server's allowlist (see ``resolve_orchestrator_model``) — invalid or
+                    missing values fall back to the server default.
         client_timezone: Optional IANA zone from the browser (e.g. America/New_York).
                     Used for resolve_time_range and analyze_flow_data display_range when set.
         on_event:   Optional callable(event: dict) for progress updates.
@@ -586,13 +713,17 @@ def run_turn(
             on_event(event)
 
     _anthropic_key = _resolve_anthropic_api_key(anthropic_api_key)
+    # Resolve once; subsequent iterations / rate-limit retries all use the
+    # same model so a user-picked Opus turn doesn't silently downgrade to
+    # the server default halfway through.
+    active_model = resolve_orchestrator_model(model)
     client = anthropic.Anthropic(api_key=_anthropic_key)
     history_replaced = False
 
     while True:
-        token_count = _count_tokens(client, messages)
+        token_count = _count_tokens(client, messages, model=active_model)
         pct = token_count / _MODEL_CONTEXT_WINDOW
-        _emit({"type": "token_usage", "tokens": token_count, "pct": pct})
+        _emit({"type": "token_usage", "tokens": token_count, "pct": pct, "model": active_model})
 
         # Stay under ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET (default: headroom fraction × TPM guide).
         if token_count > _MAX_INPUT_TOKENS_TARGET:
@@ -610,9 +741,9 @@ def run_turn(
                 client, messages, _MAX_INPUT_TOKENS_TARGET
             ):
                 history_replaced = True
-            token_count = _count_tokens(client, messages)
+            token_count = _count_tokens(client, messages, model=active_model)
             pct = token_count / _MODEL_CONTEXT_WINDOW
-            _emit({"type": "token_usage", "tokens": token_count, "pct": pct})
+            _emit({"type": "token_usage", "tokens": token_count, "pct": pct, "model": active_model})
             if token_count > _MAX_INPUT_TOKENS_TARGET:
                 raise RuntimeError(
                     f"Could not compress context below {_MAX_INPUT_TOKENS_TARGET} input tokens "
@@ -636,7 +767,7 @@ def run_turn(
             stream_attempt += 1
             try:
                 with client.messages.stream(
-                    model=_MODEL,
+                    model=active_model,
                     max_tokens=4096,
                     system=_SYSTEM_PROMPT,
                     tools=TOOLS,
@@ -664,9 +795,9 @@ def run_turn(
                     client, messages, _MAX_INPUT_TOKENS_TARGET
                 ):
                     history_replaced = True
-                token_count = _count_tokens(client, messages)
+                token_count = _count_tokens(client, messages, model=active_model)
                 pct = token_count / _MODEL_CONTEXT_WINDOW
-                _emit({"type": "token_usage", "tokens": token_count, "pct": pct})
+                _emit({"type": "token_usage", "tokens": token_count, "pct": pct, "model": active_model})
                 if token_count > _MAX_INPUT_TOKENS_TARGET:
                     raise RuntimeError(
                         f"Context still above {_MAX_INPUT_TOKENS_TARGET} tokens after compression "

@@ -351,11 +351,19 @@ export function TokenBudgetPopover({
     };
   }, [open, close]);
 
-  /* Narrow viewports: center under/above trigger so the panel stays on-screen */
+  /*
+   * Panel positioning — always left-aligned to the trigger so the panel
+   * unfurls to the right and stays within the viewport, even when the
+   * trigger sits near the left edge of the composer (the previous
+   * ``-translate-x-1/2`` centering cut the panel off-screen on narrow
+   * phones — see the composer footer at the bottom of the mobile
+   * viewport). The ``max-w`` clamp keeps the panel from overflowing
+   * the opposite edge on wider triggers.
+   */
   const panelPositionClass =
     panelPlacement === "below"
-      ? "left-1/2 top-full z-40 mt-2 w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-env(safe-area-inset-left)-env(safe-area-inset-right)-0.5rem)] -translate-x-1/2 sm:left-0 sm:w-auto sm:max-w-[calc(100vw-1.5rem)] sm:translate-x-0"
-      : "bottom-full left-1/2 z-40 mb-2 w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-env(safe-area-inset-left)-env(safe-area-inset-right)-0.5rem)] -translate-x-1/2 sm:left-0 sm:w-auto sm:max-w-[calc(100vw-1.5rem)] sm:translate-x-0";
+      ? "left-0 top-full z-40 mt-2 w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-env(safe-area-inset-left)-env(safe-area-inset-right)-0.5rem)] sm:w-auto sm:max-w-[calc(100vw-1.5rem)]"
+      : "bottom-full left-0 z-40 mb-2 w-[min(20rem,calc(100vw-1rem))] max-w-[calc(100vw-env(safe-area-inset-left)-env(safe-area-inset-right)-0.5rem)] sm:w-auto sm:max-w-[calc(100vw-1.5rem)]";
 
   const tpmFill = Math.min(1, tpm / Math.max(1, tpmPerMinuteGuide));
   const ctxStrokeClass =

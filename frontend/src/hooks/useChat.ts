@@ -74,7 +74,13 @@ function shouldApplySseEvent(
 export function useChat(
   activeConvId: string | null,
   token: string,
-  anthropicApiKey?: string | null
+  anthropicApiKey?: string | null,
+  /**
+   * Optional Claude model ID from the UI's picker. Read via a ref inside
+   * ``sendMessage`` so changes mid-session (user picks a different model)
+   * take effect on the very next send without re-binding the callback.
+   */
+  model?: string | null,
 ) {
   const [viewedMessages, setViewedMessages] = useState<Message[]>([]);
   const [processingConvId, setProcessingConvId] = useState<string | null>(null);
@@ -93,6 +99,9 @@ export function useChat(
   const processingMsgs = useRef<Message[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const activeConvRef = useRef(activeConvId);
+  // Model is held in a ref so the picker can change mid-session without
+  // rebinding sendMessage. Each send reads the latest value at fetch time.
+  const modelRef = useRef<string | null>(model ?? null);
   const accumulatedRef = useRef("");
   const plotsRef = useRef<string[]>([]);
   /** Only clear the thread when switching to a different conversation — not on remount (Strict Mode) or re-fetch. */
@@ -105,6 +114,10 @@ export function useChat(
   useEffect(() => {
     activeConvRef.current = activeConvId;
   }, [activeConvId]);
+
+  useEffect(() => {
+    modelRef.current = model ?? null;
+  }, [model]);
 
   // Restore context token snapshot after refresh / conv switch (sessionStorage per conversation).
   useLayoutEffect(() => {
@@ -250,10 +263,27 @@ export function useChat(
       accumulatedRef.current = "";
       plotsRef.current = [];
       sseLastSeqRef.current = 0;
-      const turnUuid =
-        typeof crypto !== "undefined" && crypto.randomUUID
-          ? crypto.randomUUID()
-          : `turn-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+      // Per-turn nonce for event dedup — server echoes it back on every
+      // SSE/poll event so the client can filter stale ones. Must be
+      // stable across this single ``sendMessage`` call and unique among
+      // concurrent turns. Historically we used ``crypto.randomUUID``
+      // with a ``turn-{ts}-{rand}`` fallback, but the fallback broke
+      // event filtering on iOS < 15.4 (server used to reject the shape
+      // and mint its own UUID, which then didn't match this ref).
+      // Generate a UUIDv4 directly so the format is stable everywhere.
+      const turnUuid = (() => {
+        if (typeof crypto !== "undefined" && crypto.randomUUID) {
+          return crypto.randomUUID();
+        }
+        // RFC4122 v4 shape with Math.random — cryptographic strength
+        // isn't required; this is just a local nonce.
+        const hex = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx";
+        return hex.replace(/[xy]/g, (c) => {
+          const r = (Math.random() * 16) | 0;
+          const v = c === "x" ? r : (r & 0x3) | 0x8;
+          return v.toString(16);
+        });
+      })();
       sseExpectedTurnIdRef.current = turnUuid;
 
       const controller = new AbortController();
@@ -261,8 +291,22 @@ export function useChat(
       let streamReportedError = false;
       let streamErrorMessage: string | null = null;
 
+      // ------------------------------------------------------------------
+      // Transport selection: desktop streams via EventSource, phones
+      // long-poll JSON. iOS WebKit + node-http-proxy + Wi-Fi coalescing
+      // made the EventSource path arrive in one burst on phones no
+      // matter how we padded / NODELAY'd, so for coarse-pointer clients
+      // (touchscreens) we fall through to plain HTTP polling which is
+      // immune to all of that.
+      // ------------------------------------------------------------------
+      const isCoarsePointer =
+        typeof window !== "undefined" &&
+        typeof window.matchMedia === "function" &&
+        window.matchMedia("(pointer: coarse)").matches;
+      const stream = isCoarsePointer ? api.streamChatViaPolling : api.streamChat;
+
       try {
-        await api.streamChat(
+        await stream(
           convId,
           text,
           token,
@@ -339,7 +383,8 @@ export function useChat(
           },
           controller.signal,
           turnUuid,
-          anthropicApiKey
+          anthropicApiKey,
+          modelRef.current,
         );
 
         // Stream finished — load final persisted messages

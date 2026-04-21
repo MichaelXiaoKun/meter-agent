@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message } from "../types";
@@ -7,10 +7,15 @@ import MessageBubble, { extractPlotPaths } from "./MessageBubble";
 import PlotImage from "./PlotImage";
 import StatusIndicator from "./StatusIndicator";
 import WelcomeCard from "./WelcomeCard";
+import WelcomeLogo from "./WelcomeLogo";
 import TurnActivityTimeline from "./TurnActivityTimeline";
 import { TokenBudgetPopover } from "./TokenBudget";
+import ModelPicker from "./ModelPicker";
+import MicButton from "./MicButton";
+import type { OrchestratorModelOption } from "../api";
 import type { TurnActivityStep } from "../turnActivity";
 import { useMediaQuery } from "../hooks/useMediaQuery";
+import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 
 interface ChatViewProps {
   /**
@@ -48,6 +53,15 @@ interface ChatViewProps {
   narrowNav?: {
     onOpenSidebar: () => void;
   };
+  /**
+   * Claude model allowlist from ``/api/config`` — populates the composer's
+   * :component:`ModelPicker`. Undefined / empty hides the picker.
+   */
+  availableModels?: OrchestratorModelOption[];
+  /** Currently selected model ID (``null`` = use server default). */
+  selectedModel?: string | null;
+  /** Called with the new model ID when the user picks one. */
+  onSelectModel?: (modelId: string) => void;
 }
 
 export default function ChatView({
@@ -69,9 +83,37 @@ export default function ChatView({
   onDismissAssistantError,
   disabled,
   narrowNav,
+  availableModels,
+  selectedModel,
+  onSelectModel,
 }: ChatViewProps) {
   const [input, setInput] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
+  /**
+   * Voice-to-text dictation state. See :hook:`useSpeechRecognition`.
+   *
+   * The mic button snapshots the current textarea value into
+   * ``speechBaselineRef`` at the moment the user taps "record", and while
+   * the session is active we mirror
+   *
+   *   textarea = baseline + finalText [+ " " + interim]
+   *
+   * into :state:`input`. That way the user sees their dictation land in
+   * the composer live, but typed text entered before the session started
+   * is preserved (we don't overwrite "Hi, here's the serial: " with the
+   * spoken addendum — we prepend to it).
+   *
+   * If the user manually edits the textarea while listening, we treat
+   * their edit as the new baseline so interim results can't clobber it.
+   */
+  const speech = useSpeechRecognition();
+  const speechBaselineRef = useRef<string>("");
+  const lastAppliedFinalRef = useRef<string>("");
+  /**
+   * Shared by the desktop ``<input>`` and the mobile auto-grow
+   * ``<textarea>`` so suggestion taps from :component:`WelcomeCard` can
+   * focus / select placeholder text in both variants.
+   */
+  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollElRef = useRef<HTMLDivElement | null>(null);
   const scrollListenerCleanupRef = useRef<(() => void) | null>(null);
@@ -91,15 +133,15 @@ export default function ChatView({
    * Scroll the transcript container all the way to the end of its
    * *scrollable area* — not just to ``bottomRef`` via ``scrollIntoView``.
    *
-   * The composer is rendered as a ``position: sticky`` sibling at the bottom
-   * of the same scroll container; ``scrollIntoView({ block: "end" })`` would
-   * align ``bottomRef`` to the container's bottom edge, where the sticky
-   * composer is also pinned, so the last lines of the response (and the
-   * bottom edge of plot images) ended up tucked behind the composer.
-   *
-   * Setting ``scrollTop = scrollHeight`` lands at the true end of scrollable
-   * content. The transcript's ``pb-36/sm:pb-40`` bottom padding then keeps
-   * the last message and any attached plots clear of the sticky composer.
+   * The composer is ``position: sticky; bottom: 0`` inside this same
+   * scroll container so content can flow behind the transparent input
+   * bar. Setting ``scrollTop = scrollHeight`` lands at the true end of
+   * scrollable content; the browser clamps to ``scrollHeight -
+   * clientHeight``, which positions the last message directly above the
+   * composer (the sticky dock then occupies its natural slot at the very
+   * bottom of the flex column). On short replies the ``flex-1`` spacer
+   * above the transcript absorbs all the slack so ``scrollHeight`` equals
+   * ``clientHeight`` and this call is a harmless clamp-to-0 no-op.
    */
   const scrollContainerToBottom = (smooth = false) => {
     const el = scrollElRef.current;
@@ -122,14 +164,68 @@ export default function ChatView({
   /**
    * Sticky-bottom autoscroll. ``true`` → the viewport is "following the latest
    * output" and we should snap to bottom whenever new content arrives. As soon
-   * as the user scrolls up by more than ``STICK_THRESHOLD_PX`` we flip to
-   * ``false`` so they can read history without being yanked back. We mirror the
-   * value into a ref so the autoscroll effect can read the latest value
-   * without re-running the listener-attach effect.
+   * as the user scrolls up by more than the active "near-bottom" threshold
+   * we flip to ``false`` so they can read history without being yanked back.
+   * We mirror the value into a ref so the autoscroll effect can read the
+   * latest value without re-running the listener-attach effect.
    */
-  const STICK_THRESHOLD_PX = 80;
+  /**
+   * Distance-from-bottom (in CSS px) that we still consider "at the bottom"
+   * **for the Jump-to-latest pill**. This is intentionally generous so a
+   * finger flick or momentum overshoot on a phone doesn't flash the pill on
+   * every interaction.
+   */
+  const NEAR_BOTTOM_PX_MOUSE = 80;
+  const NEAR_BOTTOM_PX_TOUCH = 200;
+  /**
+   * Distance-from-bottom (in CSS px) below which we keep
+   * ``stickToBottomRef`` ``true`` — i.e. we will keep auto-snapping to the
+   * latest content as it streams in / images decode / the keyboard opens.
+   *
+   * This MUST be much smaller than the pill threshold above. The previous
+   * implementation reused the 200 px touch threshold here, which meant a
+   * deliberate ~30-50 px scroll-up by the user wasn't enough to "leave
+   * the bottom" — so the very next ResizeObserver tick (streaming) or
+   * ``visualViewport`` tick (URL bar collapsing during their scroll on iOS
+   * Safari) would auto-snap them right back to the bottom, undoing their
+   * scroll. Anything past ~32 px is unmistakably an intentional gesture
+   * even on a coarse pointer, so we cut sticky-bottom there regardless of
+   * input modality.
+   */
+  const STICK_BOTTOM_PX = 32;
+  /**
+   * Minimum overflow above the sticky composer (in CSS px) before we flip
+   * the scroll container from ``overflow-y-hidden`` → ``overflow-y-auto``.
+   * Kept tiny — even a one-line overflow on a phone is worth letting the
+   * user reach by scrolling.
+   */
+  const ENABLE_SCROLL_OVERFLOW_PX = 8;
+  const isCoarsePointer = useMediaQuery("(pointer: coarse)");
+  const nearBottomThresholdRef = useRef(NEAR_BOTTOM_PX_MOUSE);
+  useEffect(() => {
+    nearBottomThresholdRef.current = isCoarsePointer
+      ? NEAR_BOTTOM_PX_TOUCH
+      : NEAR_BOTTOM_PX_MOUSE;
+  }, [isCoarsePointer]);
   const stickToBottomRef = useRef(true);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  /**
+   * Mirrors ``showJumpToLatest`` availability: ``true`` only when the
+   * transcript *above* the sticky composer is actually taller than the
+   * viewport. We flip the scroll container between ``overflow-y-auto``
+   * and ``overflow-y-hidden`` on this flag so short replies can't be
+   * wheel-scrolled past the sticky dock — there is nothing above to
+   * reveal, and a tiny bit of scroll travel there feels like a bug.
+   */
+  const [transcriptOverflowsViewport, setTranscriptOverflowsViewport] = useState(false);
+  /**
+   * Stashed reference to the current ``hasMeaningfulTranscriptAbove`` closure
+   * from ``setScrollEl`` so the transcript ``ResizeObserver`` can re-check
+   * whether the content now overflows the viewport (e.g. after streaming
+   * text grew the bubble, or a plot image decoded). Using a ref avoids
+   * tearing down/recreating the observer on every rerender.
+   */
+  const scrollRecomputeRef = useRef<(() => boolean) | null>(null);
   const isProcessing = status.kind !== "idle" && status.kind !== "error";
   /** Same breakpoint as App sidebar — pin welcome composer to bottom on phones/tablets. */
   const welcomeComposerAtBottom = useMediaQuery("(max-width: 1023px)");
@@ -146,16 +242,65 @@ export default function ChatView({
     scrollListenerCleanupRef.current = null;
     scrollElRef.current = el;
     if (!el) return;
+    /**
+     * Compute the two booleans the rest of the scroll logic cares about,
+     * carefully separating "is there enough overflow to enable scrolling
+     * at all?" from "is there enough overflow to bother showing the
+     * Jump-to-latest pill?".
+     *
+     *   • ``overflows`` (sets ``transcriptOverflowsViewport``) — even a
+     *     few px of real scroll distance should let the user scroll. The
+     *     sticky composer overlays the bottom ``dockHeight`` px of the
+     *     viewport, so when a response is just barely longer than
+     *     ``clientHeight - dockHeight`` the *only* way for the user to
+     *     see the last lines is to scroll up by ``dockHeight`` and lift
+     *     the floating input off them. We must NOT subtract dockHeight
+     *     here — that scroll distance is the whole point.
+     *   • Return value (drives the pill) — pill / "near-bottom" decisions
+     *     use the touch-aware threshold so a finger flick doesn't flicker
+     *     the pill and so auto-scroll keeps sticky-bottom for thumb
+     *     wobbles.
+     *
+     * Notes on viewport sizing:
+     *   - We deliberately use ``el.clientHeight`` (the layout viewport of
+     *     the scroll container) and NOT ``window.visualViewport.height``.
+     *     On iOS Safari, opening the keyboard shrinks visualViewport but
+     *     leaves the layout viewport (and our scroll container) intact;
+     *     mixing them caused phantom overflow into empty space. The
+     *     visualViewport listener still triggers recomputes when the
+     *     layout itself reflows (URL bar collapse with ``100dvh``-style
+     *     layouts, orientation change, Android keyboard with
+     *     ``interactive-widget=resizes-content``).
+     */
+    const hasMeaningfulTranscriptAbove = () => {
+      const maxScrollTop = el.scrollHeight - el.clientHeight;
+      const overflows = maxScrollTop > ENABLE_SCROLL_OVERFLOW_PX;
+      setTranscriptOverflowsViewport((prev) => (prev === overflows ? prev : overflows));
+      return maxScrollTop > nearBottomThresholdRef.current;
+    };
+    scrollRecomputeRef.current = hasMeaningfulTranscriptAbove;
+    const recomputeFromScrollPos = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      // Sticky-bottom uses a tight threshold so that any deliberate scroll
+      // gesture (more than ~32 px) immediately releases sticky mode. If we
+      // reused the larger pill threshold, an intentional 50 px scroll-up
+      // would still register as "still at the bottom" and the next content-
+      // size or viewport tick would yank them back.
+      stickToBottomRef.current = distanceFromBottom < STICK_BOTTOM_PX;
+      // Pill visibility uses the larger touch-aware threshold so a casual
+      // finger flick doesn't flash it on screen.
+      const nearForPill = distanceFromBottom < nearBottomThresholdRef.current;
+      const meaningful = hasMeaningfulTranscriptAbove();
+      const shouldShow = !nearForPill && meaningful;
+      setShowJumpToLatest((prev) => (prev === shouldShow ? prev : shouldShow));
+    };
     const onScroll = () => {
       // Don't let an in-flight programmatic smooth scroll flip the sticky
       // state mid-animation — the user explicitly asked to land at the
       // bottom, and the intermediate distances would otherwise hide the
       // pill and back again, then mark them as "scrolled away".
       if (smoothScrollInFlightRef.current) return;
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      const near = distanceFromBottom < STICK_THRESHOLD_PX;
-      stickToBottomRef.current = near;
-      setShowJumpToLatest((prev) => (prev === near ? !near : prev));
+      recomputeFromScrollPos();
     };
     // ``scrollend`` is the precise signal that a smooth scroll has finished
     // (both user-initiated wheel/touch and ``scrollTo({behavior:"smooth"})``).
@@ -167,10 +312,7 @@ export default function ChatView({
         window.clearTimeout(smoothScrollTimeoutRef.current);
         smoothScrollTimeoutRef.current = null;
       }
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      const near = distanceFromBottom < STICK_THRESHOLD_PX;
-      stickToBottomRef.current = near;
-      setShowJumpToLatest((prev) => (prev === near ? !near : prev));
+      recomputeFromScrollPos();
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     el.addEventListener("scrollend", onScrollEnd);
@@ -192,6 +334,11 @@ export default function ChatView({
     resizeObserverRef.current = null;
     if (!el) return;
     const ro = new ResizeObserver(() => {
+      // Re-evaluate "does the transcript actually overflow?" on every size
+      // change so the scroll container flips between ``auto`` and
+      // ``hidden`` the moment a streamed reply grows past the viewport (or
+      // shrinks back, e.g. on a new-conversation reset).
+      scrollRecomputeRef.current?.();
       // Don't snap during an in-flight smooth scroll — an instant snap mid-
       // animation feels like the page glitched, and is the main reason
       // ``Jump to latest`` looked like it teleported when plot images were
@@ -231,8 +378,12 @@ export default function ChatView({
   useLayoutEffect(() => {
     stickToBottomRef.current = true;
     setShowJumpToLatest(false);
+    setTranscriptOverflowsViewport(false);
     scrollContainerToBottom();
-    const raf = requestAnimationFrame(() => scrollContainerToBottom());
+    const raf = requestAnimationFrame(() => {
+      scrollContainerToBottom();
+      scrollRecomputeRef.current?.();
+    });
     return () => cancelAnimationFrame(raf);
   }, [conversationId, historyLoading]);
 
@@ -245,6 +396,44 @@ export default function ChatView({
     [],
   );
 
+  /**
+   * Re-evaluate "is there meaningful transcript above?" / "should the pill
+   * show?" / "should scroll be enabled?" whenever the *visible* viewport
+   * changes — even if the scroll container's own ``clientHeight`` doesn't.
+   *
+   * IMPORTANT: this hook only **recomputes pill/overflow state** — it
+   * deliberately does NOT call ``scrollContainerToBottom`` on viewport
+   * changes. On iOS Safari, the user's own scroll gesture causes the URL
+   * bar to collapse, which fires ``visualViewport.scroll``/``resize``;
+   * if we re-snap to bottom inside this handler we end up undoing the
+   * user's scroll a fraction of a second after they finish it ("scroll up
+   * a little, it jumps back to the original position"). The streaming
+   * ``useEffect`` below already re-snaps when *content* grows, and the
+   * conversation-switch ``useLayoutEffect`` re-snaps on conversation
+   * change — those are the only two cases where an automatic snap is
+   * actually wanted.
+   *
+   * ``ResizeObserver`` on the transcript inner div doesn't fire for
+   * URL-bar collapse / keyboard show because the transcript node itself
+   * doesn't change size — only the visible window into it does. So we
+   * still need this hook for the recompute side-effect (pill visibility,
+   * ``transcriptOverflowsViewport``), just not for re-snapping.
+   */
+  useEffect(() => {
+    const recompute = () => scrollRecomputeRef.current?.();
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    vv?.addEventListener("resize", recompute);
+    vv?.addEventListener("scroll", recompute);
+    window.addEventListener("resize", recompute);
+    window.addEventListener("orientationchange", recompute);
+    return () => {
+      vv?.removeEventListener("resize", recompute);
+      vv?.removeEventListener("scroll", recompute);
+      window.removeEventListener("resize", recompute);
+      window.removeEventListener("orientationchange", recompute);
+    };
+  }, []);
+
   function jumpToLatest() {
     stickToBottomRef.current = true;
     setShowJumpToLatest(false);
@@ -254,9 +443,85 @@ export default function ChatView({
   function handleSubmit(text?: string) {
     const msg = text ?? input;
     if (!msg.trim() || disabled) return;
+    // Guarantee any in-flight dictation is aborted before we clear the input;
+    // otherwise the recogniser's trailing ``onresult`` could re-populate the
+    // textarea after the user has already submitted.
+    if (speech.listening) speech.stop();
     onSend(msg);
     setInput("");
+    lastAppliedFinalRef.current = "";
   }
+
+  /**
+   * Voice-input toggle. Tapping the mic while idle starts a dictation
+   * session; tapping again stops it. We snapshot the current textarea
+   * contents into ``speechBaselineRef`` so interim/final transcript is
+   * appended to — rather than replacing — text the user typed manually.
+   */
+  function toggleVoiceInput() {
+    if (disabled || isProcessing || !speech.usable) return;
+    if (speech.listening) {
+      speech.stop();
+      return;
+    }
+    const trimmedTail = input.length > 0 && !/\s$/.test(input) ? input + " " : input;
+    speechBaselineRef.current = trimmedTail;
+    lastAppliedFinalRef.current = "";
+    void speech.start();
+  }
+
+  /**
+   * While the recogniser is active, mirror ``baseline + finalText +
+   * interim`` into the textarea so dictation lands live. On the first
+   * render after ``listening`` flips back to false, we keep whatever
+   * ``finalText`` has accumulated (it's already been applied via the
+   * baseline) and drop the interim tail — the final result is the one
+   * the user will edit / send.
+   */
+  useEffect(() => {
+    if (!speech.listening && !speech.interim && !speech.finalText) return;
+    // If a new final chunk arrived, bake it into the baseline so it's
+    // preserved if the user starts typing and interrupts the live mirror.
+    const newFinalSuffix = speech.finalText.slice(lastAppliedFinalRef.current.length);
+    if (newFinalSuffix) {
+      speechBaselineRef.current += newFinalSuffix;
+      lastAppliedFinalRef.current = speech.finalText;
+    }
+    const interimSuffix = speech.interim
+      ? (speechBaselineRef.current && !/\s$/.test(speechBaselineRef.current)
+          ? " "
+          : "") + speech.interim
+      : "";
+    setInput(speechBaselineRef.current + interimSuffix);
+  }, [speech.listening, speech.interim, speech.finalText]);
+
+  /**
+   * Auto-grow the composer textarea so long messages **wrap** onto
+   * additional lines (up to a 6-line cap, then internal scroll) instead of
+   * being hidden behind a single-line horizontal scroll.
+   *
+   * The composer lays out as **two rows** on every viewport: the textarea
+   * spans the full width of the pill on row 1; the merged settings button
+   * + send button sit on row 2 (left / right respectively). That layout is
+   * static — we only drive the textarea's height here, never re-arrange
+   * children based on measurement, which keeps the composer from flashing
+   * mid-keystroke.
+   *
+   * ``useLayoutEffect`` so the height is applied before paint and the user
+   * never sees a frame of clipped content.
+   */
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el || el.tagName !== "TEXTAREA") return;
+    el.style.height = "auto";
+    const style = getComputedStyle(el);
+    const lineHeight = parseFloat(style.lineHeight) || 24;
+    const paddingY =
+      (parseFloat(style.paddingTop) || 0) +
+      (parseFloat(style.paddingBottom) || 0);
+    const max = 6 * lineHeight + paddingY; /* ~6 lines, then internal scroll */
+    el.style.height = `${Math.min(el.scrollHeight, max)}px`;
+  }, [input]);
 
   // Keep the transcript + status visible while a turn is running even if messages were cleared
   // briefly (load effect, Strict Mode) — otherwise the whole pane becomes Welcome + idle.
@@ -314,22 +579,145 @@ export default function ChatView({
   /** Same pill + field styling for welcome and active conversation (all viewports). */
   const composerShellClass =
     "w-full max-w-2xl rounded-2xl border border-slate-200/90 bg-white p-2.5 shadow-[0_12px_48px_-12px_rgba(15,23,42,0.14)] sm:rounded-[1.75rem] sm:p-2.5 md:p-2.5";
-  const composerInputClass =
-    "min-h-[48px] min-w-0 flex-1 rounded-xl border border-transparent bg-slate-50/90 px-3 py-2.5 text-base text-brand-900 outline-none ring-0 placeholder:text-brand-muted/55 focus:border-brand-400/40 focus:bg-white focus:ring-2 focus:ring-brand-500/15 disabled:opacity-50 sm:border-0 sm:bg-transparent sm:px-2 sm:py-2 sm:focus:ring-0";
+  /**
+   * Auto-grow ``<textarea>`` used by the unified composer. The textarea
+   * occupies its own row at the top of the pill and visually blends into
+   * it (transparent background, no inner border), so the only visible
+   * boundary is the pill itself — same layout on desktop, tablet and
+   * phone. ``resize-none`` disables the native corner handle; height is
+   * driven imperatively from the :func:`useLayoutEffect` above (up to
+   * ~6 lines, then the textarea scrolls internally).
+   */
+  const composerTextareaClass =
+    "block min-h-[36px] w-full min-w-0 resize-none rounded-none border-0 bg-transparent px-1.5 py-1 text-base leading-6 text-brand-900 outline-none ring-0 placeholder:text-brand-muted/55 focus:outline-none focus:ring-0 disabled:opacity-50";
   const composerSendIconButtonClass =
     "flex h-12 w-12 min-h-[48px] min-w-[48px] shrink-0 items-center justify-center rounded-full bg-brand-700 text-white transition-opacity hover:opacity-90 active:opacity-90 disabled:bg-brand-300 disabled:opacity-60 sm:min-h-[44px] sm:min-w-[44px]";
   /**
-   * Used inside the same scroll container as messages (`sticky bottom-0`).
-   * Top is fully transparent so scrolled text shows through; fades to a light veil above the dock.
+   * Composer wrapper — fully transparent so the input field blends into the
+   * surrounding chat area (no opaque "bottom header" bar). On the hasMessages
+   * layout the composer sits below the scroll region, so "transparent" here
+   * means it inherits the chat-area background. On the welcome screen
+   * (``welcomeComposerAtBottom``) it's still ``sticky bottom-0`` inside the
+   * scroll container, and transparency lets whatever scrolled past the
+   * composer remain visible underneath.
    */
   const composerBottomWrapClass =
-    "w-full bg-[linear-gradient(180deg,transparent_0%,transparent_15%,rgba(245,248,255,0.35)_45%,rgba(255,255,255,0.75)_100%)] px-4 pb-[max(1rem,env(safe-area-inset-bottom,0px))] pt-10 sm:px-6 sm:pb-[max(1rem,env(safe-area-inset-bottom,0px))] sm:pt-12";
+    "w-full bg-transparent px-4 pb-[max(1rem,env(safe-area-inset-bottom,0px))] pt-4 sm:px-6 sm:pb-[max(1rem,env(safe-area-inset-bottom,0px))] sm:pt-4";
 
   const composerDisabled = (
     <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-center text-sm text-amber-700">
       Enter your bluebot token in Settings to start chatting.
     </div>
   );
+
+  /**
+   * Send button shared by welcome / footer composers.
+   */
+  const sendButton = (
+    <button
+      type="submit"
+      disabled={isProcessing || !input.trim()}
+      className={composerSendIconButtonClass}
+      aria-label="Send message"
+    >
+      <SendArrowIcon className="h-5 w-5" />
+    </button>
+  );
+
+  /**
+   * Handle keyboard shortcuts on the composer textarea.
+   *
+   * - Fine pointer (desktop): bare ``Enter`` submits; ``Shift+Enter`` and
+   *   ``(Meta|Ctrl)+Enter`` insert a newline (the latter preserves the
+   *   familiar macOS/Windows habit).
+   * - Coarse pointer (mobile/tablet): ``Enter`` always inserts a newline;
+   *   the on-screen send button is the only way to submit. That matches
+   *   native messaging apps and avoids accidental submits while typing a
+   *   multi-line serial / description.
+   */
+  function handleComposerKeyDown(
+    e: React.KeyboardEvent<HTMLTextAreaElement>,
+  ) {
+    if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+    if (isCoarsePointer) return;
+    if (e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
+    e.preventDefault();
+    handleSubmit();
+  }
+
+  /**
+   * Unified composer body used on every viewport (desktop, tablet, phone):
+   *
+   * 1. Row 1 — auto-grow ``<textarea>`` spans the full width of the pill.
+   *    Long messages wrap onto additional lines (up to a 6-line cap, then
+   *    internal scroll) and stay fully visible.
+   * 2. Row 2 — :component:`TokenBudgetPopover` + :component:`ModelPicker`
+   *    as two separate controls on the left, send button on the right.
+   *    Both popovers open **above** because the composer sits at the
+   *    bottom of the chat area (or at the bottom of the viewport while
+   *    the welcome screen is on a narrow device).
+   *
+   * Modeled after modern chat composers (ChatGPT / Claude) where the
+   * controls live beneath the input, not beside it. Keeps the pill
+   * footprint stable as the textarea grows and avoids any "button jumps
+   * to a new row" layout shift.
+   */
+  function composerBody(placeholder: string, welcomeIdle: boolean) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        <textarea
+          ref={inputRef as RefObject<HTMLTextAreaElement>}
+          value={input}
+          onChange={(e) => {
+            const next = e.target.value;
+            // If the user types while dictation is active, re-baseline to
+            // their edited text so the next interim result appends to what
+            // they actually see, not to the pre-edit snapshot.
+            if (speech.listening) {
+              speechBaselineRef.current = next;
+              lastAppliedFinalRef.current = speech.finalText;
+            }
+            setInput(next);
+          }}
+          onKeyDown={handleComposerKeyDown}
+          placeholder={speech.listening ? "Listening…" : placeholder}
+          disabled={isProcessing}
+          autoComplete="off"
+          rows={1}
+          className={composerTextareaClass}
+          enterKeyHint={isCoarsePointer ? "enter" : "send"}
+          inputMode="text"
+        />
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <TokenBudgetPopover
+              {...tokenBudgetProps}
+              panelPlacement="above"
+              welcomeIdleSpin={welcomeIdle}
+            />
+            {onSelectModel && (
+              <ModelPicker
+                models={availableModels}
+                value={selectedModel ?? null}
+                onChange={onSelectModel}
+                disabled={isProcessing}
+                panelPlacement="above"
+              />
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <MicButton
+              listening={speech.listening}
+              disabled={disabled || isProcessing || !speech.usable}
+              error={speech.blockReason ?? speech.error}
+              onToggle={toggleVoiceInput}
+            />
+            {sendButton}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const composerWelcome = disabled ? (
     composerDisabled
@@ -340,39 +728,8 @@ export default function ChatView({
           e.preventDefault();
           handleSubmit();
         }}
-        className="flex flex-nowrap items-center gap-2 md:gap-2"
       >
-        <TokenBudgetPopover
-          {...tokenBudgetProps}
-          // Always open above the trigger. On mobile the welcome composer is
-          // pinned to the sticky bottom of the viewport, so a panel that
-          // dropped below the icon would fall off-screen. Opening upward
-          // keeps the panel visible in both desktop and mobile layouts.
-          panelPlacement="above"
-          welcomeIdleSpin
-        />
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <input
-            ref={inputRef}
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Message bluebot Assistant…"
-            disabled={isProcessing}
-            autoComplete="off"
-            className={composerInputClass}
-            enterKeyHint="send"
-            inputMode="text"
-          />
-          <button
-            type="submit"
-            disabled={isProcessing || !input.trim()}
-            className={composerSendIconButtonClass}
-            aria-label="Send message"
-          >
-            <SendArrowIcon className="h-5 w-5" />
-          </button>
-        </div>
+        {composerBody("Message bluebot Assistant…", true)}
       </form>
     </div>
   );
@@ -386,31 +743,11 @@ export default function ChatView({
           e.preventDefault();
           handleSubmit();
         }}
-        className="flex flex-nowrap items-center gap-2 md:gap-2"
       >
-        <TokenBudgetPopover {...tokenBudgetProps} />
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <input
-            ref={inputRef}
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about health, flow, or pipe setup (serial number)..."
-            disabled={isProcessing}
-            autoComplete="off"
-            className={composerInputClass}
-            enterKeyHint="send"
-            inputMode="text"
-          />
-          <button
-            type="submit"
-            disabled={isProcessing || !input.trim()}
-            className={composerSendIconButtonClass}
-            aria-label="Send message"
-          >
-            <SendArrowIcon className="h-5 w-5" />
-          </button>
-        </div>
+        {composerBody(
+          "Ask about health, flow, or pipe setup (serial number)...",
+          false,
+        )}
       </form>
     </div>
   );
@@ -420,11 +757,10 @@ export default function ChatView({
       {/* Header — full width of main pane, inset from sidebar via px-6 */}
       <header className="shrink-0 border-b border-brand-border/90 bg-gradient-to-b from-white to-brand-50/40 pt-[env(safe-area-inset-top,0px)] shadow-[0_1px_0_0_rgba(15,23,42,0.04)] backdrop-blur-md">
         <div
-          className={`text-left sm:px-6 ${
-            narrowNav
-              ? "flex min-h-[2.75rem] items-center gap-3 px-4 py-3.5"
-              : "px-4 py-4 sm:py-3.5"
-          }`}
+          className={`text-left sm:px-6 ${narrowNav
+            ? "flex min-h-[2.75rem] items-center gap-3 px-4 py-3.5"
+            : "px-4 py-4 sm:py-3.5"
+            }`}
         >
           {narrowNav ? (
             <div className="flex shrink-0 items-center">
@@ -490,11 +826,32 @@ export default function ChatView({
         ) : hasMessages ? (
           <div
             ref={setScrollEl}
-            className="relative min-h-0 flex-1 overflow-y-auto overscroll-y-contain [-webkit-overflow-scrolling:touch]"
+            /*
+              Composer lives **inside** this scroll region as a
+              ``position: sticky; bottom: 0`` sibling so scrolled transcript
+              can flow behind the transparent input bar (including while the
+              "Jump to latest" pill is visible). The layout recipe:
+
+                • ``flex flex-col`` scroll container
+                • ``flex-1`` spacer before the transcript (bottom-anchors
+                  content on short replies; collapses on long ones)
+                • transcript (``flex-shrink-0``) — its natural height
+                • sticky composer dock (``flex-shrink-0``) at the end
+
+              This gives:
+                • short replies — spacer absorbs all slack; transcript sits
+                  directly above the transparent composer with no dead zone.
+                • long replies — spacer collapses to 0; transcript overflows;
+                  composer stays stuck to the viewport bottom with content
+                  visibly scrolling behind its transparent background.
+            */
+            className={`relative flex min-h-0 flex-1 flex-col overscroll-y-contain [-webkit-overflow-scrolling:touch] ${transcriptOverflowsViewport ? "overflow-y-auto" : "overflow-y-hidden"
+              }`}
           >
+            <div className="min-h-0 flex-1" aria-hidden />
             <div
               ref={setTranscriptInnerEl}
-              className="mx-auto max-w-3xl space-y-3 px-4 py-4 pb-36 sm:px-6 sm:pb-40"
+              className="mx-auto w-full max-w-3xl flex-shrink-0 space-y-3 px-4 py-4 sm:px-6"
             >
               {status.kind === "error" && (
                 <div
@@ -539,8 +896,8 @@ export default function ChatView({
 
               {streamingText && (
                 <div className="flex justify-start">
-                  <div className="max-w-[75%] rounded-2xl border border-brand-border bg-white px-4 py-3 text-brand-900">
-                    <div className="prose prose-sm max-w-none prose-p:my-1 prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm">
+                  <div className="max-w-[75%] min-w-0 overflow-hidden rounded-2xl border border-brand-border bg-white px-4 py-3 text-brand-900">
+                    <div className="prose prose-sm max-w-none break-words prose-p:my-1 prose-a:break-words prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingText}</ReactMarkdown>
                     </div>
                   </div>
@@ -591,7 +948,18 @@ export default function ChatView({
 
               <div ref={bottomRef} />
             </div>
-            <div className="sticky bottom-0 z-10 w-full pointer-events-none">
+            {/*
+              Sticky composer dock — lives INSIDE the scroll container so
+              scrolled transcript can flow behind its transparent
+              background (including while the "Jump to latest" pill is
+              visible). ``flex-shrink-0`` keeps it from being squeezed by
+              the flex layout; ``sticky bottom-0`` pins it at the viewport
+              bottom while content scrolls; ``pointer-events-none`` on the
+              wrapper lets clicks pass through the transparent margins and
+              is re-enabled on the actual input via ``pointer-events-auto``
+              on the inner wrapper.
+            */}
+            <div className="sticky bottom-0 z-10 w-full flex-shrink-0 pointer-events-none">
               {showJumpToLatest && (
                 <div className="pointer-events-none flex justify-center pb-2">
                   <button
@@ -625,9 +993,8 @@ export default function ChatView({
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden overscroll-y-contain [-webkit-overflow-scrolling:touch]">
               <div
-                className={`flex min-h-0 flex-1 flex-col items-center px-[max(1rem,env(safe-area-inset-left,0px))] pr-[max(1rem,env(safe-area-inset-right,0px))] sm:px-6 ${
-                  welcomeComposerAtBottom ? "pb-36 sm:pb-40" : ""
-                }`}
+                className={`flex min-h-0 flex-1 flex-col items-center px-[max(1rem,env(safe-area-inset-left,0px))] pr-[max(1rem,env(safe-area-inset-right,0px))] sm:px-6 ${welcomeComposerAtBottom ? "pb-36 sm:pb-40" : ""
+                  }`}
               >
                 <div
                   className={
@@ -636,12 +1003,13 @@ export default function ChatView({
                       : "flex w-full max-w-2xl flex-1 flex-col items-center justify-center py-6 sm:py-10 md:py-14"
                   }
                 >
-                  <h2 className="px-1 text-center text-2xl font-semibold leading-snug tracking-tight text-brand-900 sm:px-2 sm:text-3xl">
+                  <WelcomeLogo
+                    size={welcomeComposerAtBottom ? 80 : 96}
+                    className="mb-3 sm:mb-4"
+                  />
+                  <h2 className="welcome-heading px-1 text-center text-2xl font-semibold leading-snug tracking-tight text-brand-900 sm:px-2 sm:text-3xl">
                     What can I help with?
                   </h2>
-                  <p className="mt-3 max-w-md px-1 text-center text-[0.9375rem] leading-relaxed text-brand-muted sm:mt-2 sm:px-2 sm:text-[0.9375rem]">
-                    Ask about meter health, flow analysis, or pipe configuration — include a serial number when you can.
-                  </p>
                   {!welcomeComposerAtBottom && (
                     <div className="mt-6 w-full max-w-full sm:mt-8 sm:px-1">
                       {composerWelcome}

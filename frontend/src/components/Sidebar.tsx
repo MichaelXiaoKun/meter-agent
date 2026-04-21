@@ -77,12 +77,18 @@ export default function Sidebar({
       <header className="shrink-0 border-b border-brand-border/80 bg-gradient-to-b from-white/95 to-brand-100/80 px-3 pb-3.5 pt-[max(1rem,env(safe-area-inset-top,0px))] shadow-[0_1px_0_0_rgba(15,23,42,0.04)] backdrop-blur-sm">
         <div className="flex items-center gap-2">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white shadow-sm ring-1 ring-brand-border/70">
+            {/*
+              Logo sized identically to the chat-header variant in
+              ``ChatView`` (``h-8 w-8`` / 32 px image inside a 40 px tile)
+              so the mobile drawer doesn't "jump" to a larger glyph as it
+              slides over the chat header.
+            */}
             <img
               src="/api/logo"
               alt=""
-              width={36}
-              height={36}
-              className="h-9 w-9 rounded-lg object-cover"
+              width={32}
+              height={32}
+              className="h-8 w-8 rounded-md object-cover"
             />
           </div>
           <p className="min-w-0 flex-1 text-sm font-semibold leading-tight text-brand-900">

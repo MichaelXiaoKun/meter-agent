@@ -7,11 +7,13 @@
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
   }
+
   html,
   body {
     overflow-x: hidden;
     max-width: 100vw;
   }
+
   /* Snappier taps; does not disable pinch-zoom */
   button,
   a,
@@ -39,4 +41,357 @@
   --color-brand-50: #f5f8ff;
   --color-brand-border: #dce7f8;
   --color-brand-muted: #5a6a88;
+}
+
+/* ---------------------------------------------------------------------------
+ * Welcome heading — water-flow style.
+ *
+ * Two animations play together:
+ *
+ *   1. ``welcome-heading-in`` — 600 ms fade + 6 px slide-up that runs once
+ *      when the welcome screen first mounts.
+ *   2. ``welcome-heading-flow`` — a slow (~12 s) continuous drift of a
+ *      multi-stop blue gradient across the letters. The gradient stops go
+ *      *shallow → deep → shallow* (light sky-blue → brand-500 → brand-900)
+ *      so the color motion reads like looking down into running water. The
+ *      animation is ``linear`` + ``infinite`` and the gradient's first and
+ *      last stops match, so each cycle loops seamlessly.
+ *
+ * On top of that a soft blue ``drop-shadow`` gives the letters a
+ * wet / lit-from-behind feel — :property:`text-shadow` can't render here
+ * because the text itself is painted transparent and clipped to the
+ * animated background (``background-clip: text``).
+ *
+ * ``prefers-reduced-motion`` parks the flow at a fixed position so users
+ * who opt out of animation still see the gradient but no movement.
+ * -------------------------------------------------------------------------- */
+@keyframes welcome-heading-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes welcome-heading-flow {
+  from {
+    background-position: 0% 50%;
+  }
+
+  to {
+    /* Exactly one image-width shift (``background-size: 200%`` → -200%
+       of box width) so the gradient tiles seamlessly into its next repeat. */
+    background-position: -200% 50%;
+  }
+}
+
+.welcome-heading {
+  /* Fredoka's curves read as soft pipe fittings / droplets. Weight 600 is
+     strong enough to carry a display size without feeling bulky. */
+  font-family: "Fredoka", system-ui, sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  line-height: 1.1;
+
+  /* Shallow → deep → shallow water gradient. End color matches start color
+     so ``welcome-heading-flow`` can loop without a visible seam. */
+  background-image: linear-gradient(100deg,
+      #a7d8f0 0%,
+      var(--color-brand-500) 30%,
+      var(--color-brand-900) 50%,
+      var(--color-brand-500) 70%,
+      #a7d8f0 100%);
+  background-size: 200% 100%;
+  background-position: 0% 50%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+
+  /* Soft brand-blue halo — caustic / wet-surface highlight. ``drop-shadow``
+     respects the text silhouette after ``background-clip: text``; plain
+     ``text-shadow`` would be invisible since the text color is transparent. */
+  filter:
+    drop-shadow(0 2px 10px rgba(74, 128, 192, 0.22)) drop-shadow(0 1px 3px rgba(26, 42, 74, 0.14));
+
+  animation:
+    welcome-heading-in 600ms cubic-bezier(0.2, 0.8, 0.2, 1) both,
+    welcome-heading-flow 12s linear 250ms infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .welcome-heading {
+    animation: none;
+    /* Freeze the gradient near the center so the headline still looks
+       lit but never moves for users who've opted out of motion. */
+    background-position: 50% 50%;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Welcome mascot — a tiny water meter holding a pipe above the heading.
+ *
+ * Three nested transform layers so the animations compose cleanly:
+ *
+ *   .mascot-wrap  → one-shot pop-in (``mascot-enter``) on mount.
+ *   .mascot-bob   → continuous ~3 s vertical bob (``mascot-bob``).
+ *   .mascot-upper → periodic pipe-lift wave (``mascot-pipe-wave``) inside
+ *                   the SVG; rotates the pipe + arms group only.
+ *
+ * Reduced-motion users still see the mascot; all three animations stop
+ * and the element rests in its natural pose.
+ * -------------------------------------------------------------------------- */
+@keyframes mascot-enter {
+  0% {
+    opacity: 0;
+    transform: scale(0.72) translateY(8px);
+  }
+
+  60% {
+    opacity: 1;
+    transform: scale(1.06) translateY(-2px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes mascot-bob {
+
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+/*
+ * ``mascot-pipe-wave`` spends most of the cycle at rest (0° rotation),
+ * then performs a quick "lift + lower" near the end of each loop. Feels
+ * like an occasional proud flex rather than a continuous wag.
+ */
+@keyframes mascot-pipe-wave {
+
+  0%,
+  68% {
+    transform: rotate(0deg);
+  }
+
+  76% {
+    transform: rotate(-7deg);
+  }
+
+  84% {
+    transform: rotate(5deg);
+  }
+
+  92% {
+    transform: rotate(-2deg);
+  }
+
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+.mascot-wrap {
+  display: inline-block;
+  transform-origin: 50% 80%;
+  animation: mascot-enter 650ms cubic-bezier(0.2, 1.3, 0.4, 1) both;
+}
+
+.mascot-bob {
+  display: inline-block;
+  animation: mascot-bob 3.2s ease-in-out infinite;
+}
+
+.mascot-upper {
+  /*
+   * Rotate around the pipe's midpoint so lifting feels anchored at the
+   * character's chest. Coordinates are in the SVG's ``viewBox`` units
+   * (140×120) — ``transform-box: view-box`` is the modern default for
+   * SVG child elements but we set it explicitly to avoid surprises in
+   * older engines that defaulted to ``fill-box``.
+   */
+  transform-box: view-box;
+  transform-origin: 70px 44px;
+  animation: mascot-pipe-wave 7s ease-in-out 1.4s infinite;
+}
+
+.mascot-svg {
+  /* Gentle blue halo — matches ``welcome-heading`` so they read as a pair. */
+  filter: drop-shadow(0 4px 12px rgba(74, 128, 192, 0.22));
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+  .mascot-wrap,
+  .mascot-bob,
+  .mascot-upper {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Welcome logo animation
+ * ---------------------------------------------------------------------------
+ * Drives the animated presentation of the company logo on the welcome
+ * screen (see :component:`WelcomeLogo`). Four nested layers:
+ *
+ *   .welcome-logo-wrap    → pop-in on mount + blue halo glow pulse (filter
+ *                           drop-shadow keyframes). Persistent.
+ *   .welcome-logo-bob     → continuous vertical bob (translateY).
+ *   .welcome-logo-breathe → slow scale breathe (1 → 1.03 → 1).
+ *   img.welcome-logo-img  → rounded corners + subtle brand ring.
+ *
+ * Separating transform and filter into distinct layers means the GPU can
+ * hand each animation to its own compositor thread; no "filter blocks the
+ * transform" stutter on lower-end phones. Reduced-motion disables the
+ * transform + filter animations; the static ring + rounded corners stay.
+ * ------------------------------------------------------------------------- */
+@keyframes welcome-logo-enter {
+  0% {
+    opacity: 0;
+    transform: scale(0.78) translateY(10px);
+    filter: drop-shadow(0 0 0 rgba(74, 128, 192, 0));
+  }
+
+  60% {
+    opacity: 1;
+    transform: scale(1.05) translateY(-2px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes welcome-logo-glow {
+
+  0%,
+  100% {
+    filter:
+      drop-shadow(0 6px 16px rgba(74, 128, 192, 0.24)) drop-shadow(0 0 0 rgba(74, 128, 192, 0.0));
+  }
+
+  50% {
+    filter:
+      drop-shadow(0 10px 26px rgba(74, 128, 192, 0.38)) drop-shadow(0 0 18px rgba(74, 128, 192, 0.35));
+  }
+}
+
+@keyframes welcome-logo-bob {
+
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes welcome-logo-breathe {
+
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.03);
+  }
+}
+
+.welcome-logo-wrap {
+  display: inline-block;
+  transform-origin: 50% 80%;
+  /*
+   * One-shot pop-in, then fall into a continuous halo pulse. ``forwards``
+   * on the enter keeps the final opacity; the glow keyframes take over
+   * via animation list order.
+   */
+  animation:
+    welcome-logo-enter 700ms cubic-bezier(0.2, 1.3, 0.4, 1) 0ms both,
+    welcome-logo-glow 4.8s ease-in-out 700ms infinite;
+}
+
+.welcome-logo-bob {
+  display: inline-block;
+  animation: welcome-logo-bob 3.6s ease-in-out infinite;
+}
+
+.welcome-logo-breathe {
+  display: inline-block;
+  animation: welcome-logo-breathe 5.2s ease-in-out infinite;
+}
+
+.welcome-logo-img {
+  border-radius: 1.25rem;
+  /* 20px — pairs well with 72–112 px sizes */
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.55),
+    inset 0 0 0 2px rgba(74, 128, 192, 0.18);
+  object-fit: cover;
+  /*
+   * Prevent iOS Safari from briefly flashing the raw JPEG edge during the
+   * pop-in scale; clipping to the rounded rect keeps the transition clean.
+   */
+  overflow: hidden;
+  -webkit-user-drag: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+  .welcome-logo-wrap,
+  .welcome-logo-bob,
+  .welcome-logo-breathe {
+    animation: none;
+  }
+
+  /* Restore the static halo that the glow keyframes would normally carry. */
+  .welcome-logo-wrap {
+    filter: drop-shadow(0 6px 16px rgba(74, 128, 192, 0.24));
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Microphone button — recording pulse
+ * ---------------------------------------------------------------------------
+ * Expanding ring around :component:`MicButton` while the Web Speech API is
+ * actively capturing audio. Purely decorative: the button itself stays a
+ * solid filled circle so the hit-target never shifts. Reduced-motion users
+ * get a static ring so the "listening" state is still visually obvious.
+ * ------------------------------------------------------------------------- */
+@keyframes mic-button-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(220, 38, 38, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0);
+  }
+}
+
+.mic-button-pulse {
+  animation: mic-button-pulse 1.4s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mic-button-pulse {
+    animation: none;
+    box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.4);
+  }
 }

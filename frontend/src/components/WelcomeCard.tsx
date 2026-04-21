@@ -10,46 +10,38 @@ function readStoredSerial(): string {
 
 type QuickAction = {
   id: string;
-  title: string;
-  subtitle: string;
+  /** Short label shown on the pill (1–2 words ideally). */
+  label: string;
   message: (serial: string) => string;
 };
 
-const STATUS_ACTIONS: QuickAction[] = [
+/**
+ * Four core questions, kept intentionally short so the welcome screen reads as
+ * a single chip row rather than a wall of cards. Subtitles are dropped — the
+ * pill label is enough to disambiguate, and the user lands inside the chat
+ * composer (with the message already typed) where they can edit before sending.
+ */
+const QUICK_ACTIONS: QuickAction[] = [
   {
     id: "health",
-    title: "Health check",
-    subtitle: "Status, signal quality, pipe snapshot",
+    label: "Health check",
     message: (s) => `Run a health check on meter ${s}`,
   },
   {
     id: "flow-7d",
-    title: "Flow analysis — last 7 days",
-    subtitle: "Trends, gaps, and quality over a week",
+    label: "7-day flow",
     message: (s) => `Analyse the last 7 days of flow data for meter ${s}`,
   },
   {
     id: "online",
-    title: "Online & transmitting?",
-    subtitle: "Quick connectivity check",
+    label: "Online?",
     message: (s) => `Is meter ${s} online and transmitting?`,
   },
-];
-
-const PIPE_ACTIONS: QuickAction[] = [
   {
-    id: "pipe-full",
-    title: "Configure pipe + angle",
-    subtitle: "PVC Sch 40, 2″, 45° — edit in chat if needed",
+    id: "pipe",
+    label: "Configure pipe",
     message: (s) =>
       `Configure pipe for serial ${s}: PVC, Schedule 40, 2 inch nominal, transducer angle 45º`,
-  },
-  {
-    id: "angle-only",
-    title: "Transducer angle only",
-    subtitle: "SSA update without changing pipe catalog",
-    message: (s) =>
-      `Set transducer angle only for serial ${s} to 35º (no pipe size change)`,
   },
 ];
 
@@ -101,114 +93,87 @@ export default function WelcomeCard({ onCompose, compact = false }: WelcomeCardP
     onCompose(build(t));
   }
 
-  function ActionGrid({ actions }: { actions: QuickAction[] }) {
+  const pillRow = (
+    <ul
+      role="list"
+      className="flex flex-wrap justify-center gap-2"
+    >
+      {QUICK_ACTIONS.map((a) => (
+        <li key={a.id}>
+          <button
+            type="button"
+            onClick={() => runAction(a.message)}
+            className="inline-flex min-h-[2.25rem] items-center rounded-full border border-slate-200/90 bg-white px-3.5 py-1.5 text-sm font-medium text-brand-800 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition hover:border-slate-300 hover:bg-slate-50 active:bg-slate-100/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 sm:text-[0.8125rem]"
+          >
+            {a.label}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+
+  if (compact) {
     return (
-      <ul className="grid gap-3.5 sm:grid-cols-2 sm:gap-3" role="list">
-        {actions.map((a) => (
-          <li key={a.id}>
-            <button
-              type="button"
-              onClick={() => runAction(a.message)}
-              className="group flex h-full min-h-[4.75rem] w-full flex-col items-start rounded-2xl border border-slate-200/90 bg-white px-4 py-4 text-left shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition hover:border-slate-300 hover:bg-slate-50/80 active:bg-slate-100/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 sm:min-h-[4.25rem] sm:py-3"
-            >
-              <span className="text-base font-medium text-brand-900 sm:text-sm">{a.title}</span>
-              <span className="mt-1 line-clamp-2 text-sm leading-snug text-brand-muted sm:text-xs">
-                {a.subtitle}
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
+      <div className="w-full">
+        {pillRow}
+        <p className="mx-auto mt-3 max-w-md px-2 text-center text-[11px] leading-snug text-brand-muted">
+          {serial.trim() ? (
+            <>
+              Uses saved serial{" "}
+              <span className="font-mono text-brand-800">{serial.trim()}</span>.
+            </>
+          ) : (
+            <>
+              Tap a pill — the serial appears as{" "}
+              <span className="font-mono text-brand-800">{SERIAL_PLACEHOLDER}</span>{" "}
+              for you to fill in.
+            </>
+          )}
+        </p>
+      </div>
     );
   }
 
   return (
     <div className="w-full">
-      <p className="text-center text-[0.6875rem] font-medium uppercase tracking-wider text-brand-muted sm:text-xs">
-        Suggestions
-      </p>
-
-      {compact ? (
-        // Mobile/tablet: skip the dedicated serial-number text field so the
-        // welcome screen has a single input (the chat composer). Suggestion
-        // buttons fall back to the chat composer with a placeholder for the
-        // user to fill in.
-        serial.trim() ? (
-          <p className="mx-auto mt-3 max-w-md text-center text-xs text-brand-muted">
-            Suggestions will use saved serial{" "}
-            <span className="font-mono text-brand-800">{serial.trim()}</span>.
-          </p>
-        ) : (
-          <p className="mx-auto mt-3 max-w-md text-center text-xs text-brand-muted">
-            Tap a suggestion — the meter serial will appear as{" "}
-            <span className="font-mono text-brand-800">{SERIAL_PLACEHOLDER}</span>{" "}
-            for you to fill in.
-          </p>
-        )
-      ) : (
-        <div
-          className={[
-            "mx-auto mt-4 max-w-md rounded-2xl border bg-white px-4 py-4 shadow-sm transition-colors sm:py-3",
-            serialError
-              ? "border-amber-300 ring-2 ring-amber-100"
-              : "border-slate-200/90",
-          ].join(" ")}
+      {/* Desktop: slim serial input + pill row, no section headers or tips. */}
+      <div
+        className={[
+          "mx-auto flex max-w-md items-center gap-2 rounded-full border bg-white px-3 py-1.5 shadow-sm transition-colors",
+          serialError
+            ? "border-amber-300 ring-2 ring-amber-100"
+            : "border-slate-200/90",
+        ].join(" ")}
+      >
+        <label
+          htmlFor={serialId}
+          className="shrink-0 text-xs font-medium text-brand-muted"
         >
-          <label
-            htmlFor={serialId}
-            className="text-[0.8125rem] font-medium text-brand-muted sm:text-xs"
-          >
-            Meter serial for shortcuts
-          </label>
-          <input
-            id={serialId}
-            ref={serialInputRef}
-            type="text"
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="e.g. BB8100015261"
-            value={serial}
-            onChange={(e) => {
-              setSerial(e.target.value);
-              setSerialError(false);
-            }}
-            className="mt-2 min-h-[44px] w-full rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2.5 text-base text-brand-900 outline-none transition placeholder:text-brand-muted/45 focus:border-brand-500 focus:bg-white focus:ring-2 focus:ring-brand-500/15 sm:min-h-0 sm:text-sm"
-            inputMode="text"
-          />
-          {serialError ? (
-            <p className="mt-2 text-xs font-medium text-amber-800" role="status">
-              Add a serial to use a suggestion.
-            </p>
-          ) : (
-            <p className="mt-2 text-xs text-brand-muted">
-              We fill this into the message when you tap a card below.
-            </p>
-          )}
-        </div>
+          Serial
+        </label>
+        <input
+          id={serialId}
+          ref={serialInputRef}
+          type="text"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="e.g. BB8100015261"
+          value={serial}
+          onChange={(e) => {
+            setSerial(e.target.value);
+            setSerialError(false);
+          }}
+          className="min-w-0 flex-1 bg-transparent text-sm text-brand-900 outline-none placeholder:text-brand-muted/45"
+          inputMode="text"
+        />
+      </div>
+      {serialError && (
+        <p className="mt-1.5 text-center text-xs font-medium text-amber-800" role="status">
+          Add a serial to use a suggestion.
+        </p>
       )}
 
-      <div className="mt-6 space-y-7 sm:mt-8 sm:space-y-8">
-        <section aria-labelledby="welcome-status-flow">
-          <h3
-            id="welcome-status-flow"
-            className="mb-3 text-base font-semibold text-brand-900 sm:text-sm"
-          >
-            Status &amp; flow
-          </h3>
-          <ActionGrid actions={STATUS_ACTIONS} />
-        </section>
-
-        <section aria-labelledby="welcome-pipe">
-          <h3 id="welcome-pipe" className="mb-3 text-base font-semibold text-brand-900 sm:text-sm">
-            Pipe &amp; angle
-          </h3>
-          <ActionGrid actions={PIPE_ACTIONS} />
-        </section>
-      </div>
-
-      <p className="mt-6 px-1 text-center text-sm leading-relaxed text-brand-muted sm:mt-8 sm:px-0 sm:text-xs">
-        Tip: say &ldquo;last 6 hours&rdquo; or your timezone — time is resolved before flow analysis runs.
-      </p>
+      <div className="mt-4">{pillRow}</div>
     </div>
   );
 }
