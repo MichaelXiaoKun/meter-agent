@@ -192,9 +192,10 @@ export function useSpeechRecognition(): UseSpeechRecognitionResult {
     rec.continuous = !isIOSDevice();
     rec.interimResults = true;
     rec.maxAlternatives = 1;
-    rec.lang = lang
-      ?? (typeof navigator !== "undefined" && navigator.language)
-      ?? "en-US";
+    rec.lang =
+      lang ??
+      (typeof navigator !== "undefined" ? navigator.language : undefined) ??
+      "en-US";
 
     rec.onstart = () => {
       setError(null);
