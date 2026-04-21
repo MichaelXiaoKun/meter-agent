@@ -459,7 +459,7 @@ export default function ChatView({
    * appended to — rather than replacing — text the user typed manually.
    */
   function toggleVoiceInput() {
-    if (disabled || isProcessing || !speech.usable) return;
+    if (disabled || isProcessing || !speech.voiceApiAvailable || !speech.usable) return;
     if (speech.listening) {
       speech.stop();
       return;
@@ -467,7 +467,7 @@ export default function ChatView({
     const trimmedTail = input.length > 0 && !/\s$/.test(input) ? input + " " : input;
     speechBaselineRef.current = trimmedTail;
     lastAppliedFinalRef.current = "";
-    void speech.start();
+    speech.start();
   }
 
   /**
@@ -706,12 +706,14 @@ export default function ChatView({
             )}
           </div>
           <div className="flex items-center gap-2">
-            <MicButton
-              listening={speech.listening}
-              disabled={disabled || isProcessing || !speech.usable}
-              error={speech.blockReason ?? speech.error}
-              onToggle={toggleVoiceInput}
-            />
+            {speech.voiceApiAvailable && (
+              <MicButton
+                listening={speech.listening}
+                disabled={disabled || isProcessing || !speech.usable}
+                error={speech.blockReason ?? speech.error}
+                onToggle={toggleVoiceInput}
+              />
+            )}
             {sendButton}
           </div>
         </div>

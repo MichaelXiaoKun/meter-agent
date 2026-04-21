@@ -5,11 +5,15 @@
  * (vendor-prefixed ``webkitSpeechRecognition`` on WebKit-derived engines).
  * Exposes the bits a chat composer actually needs:
  *
- *   • ``usable`` — ``SpeechRecognition`` exists *and* the document is a
- *                  **secure context** (HTTPS / localhost). Plain
- *                  ``http://192.168…`` on a phone is *not* usable — the
- *                  browser blocks the mic. ``blockReason`` explains why.
-d *   • ``listening`` — currently capturing audio.
+ *   • ``voiceApiAvailable`` — ``SpeechRecognition`` / ``webkitSpeechRecognition``
+ *                  exists (e.g. Chrome, Edge, Safari). **False on Firefox**
+ *                  and similar — the composer hides the mic instead of a
+ *                  dead / error affordance.
+ *   • ``usable`` — ``voiceApiAvailable`` *and* the document is a **secure
+ *                  context** (HTTPS / localhost). ``blockReason`` explains
+ *                  when the API exists but the page is insecure (plain
+ *                  ``http://192.168…`` on a phone).
+ *   • ``listening`` — currently capturing audio.
  *   • ``interim``   — best-guess transcript for the *current* utterance.
  *                     Updates continuously while the user is speaking.
  *                     Empty between utterances.
@@ -87,29 +91,32 @@ function getRecognitionCtor(): SpeechRecognitionCtor | null {
  * Vite dev server as ``http://192.168.x.x:5173`` are *not* secure — the API
  * may exist but ``start()`` fails or never receives audio. We surface that
  * explicitly so it is not mistaken for a random bug.
+ *
+ * When the API is **absent** (Firefox, some embedded WebViews), we report
+ * ``voiceApiAvailable: false`` and **no** ``blockReason`` — the UI omits the
+ * mic rather than showing a permanent error state.
  */
-function computeVoiceUsable(): {
+function computeVoiceUiState(): {
+  voiceApiAvailable: boolean;
   usable: boolean;
   blockReason: string | null;
 } {
   if (typeof window === "undefined") {
-    return { usable: false, blockReason: null };
+    return { voiceApiAvailable: false, usable: false, blockReason: null };
   }
   const ctor = getRecognitionCtor();
   if (!ctor) {
-    return {
-      usable: false,
-      blockReason: "Voice input is not supported in this browser.",
-    };
+    return { voiceApiAvailable: false, usable: false, blockReason: null };
   }
   if (window.isSecureContext === false) {
     return {
+      voiceApiAvailable: true,
       usable: false,
       blockReason:
         "Voice needs HTTPS or localhost. A phone link like http://192.168… is not secure, so the browser blocks the mic.",
     };
   }
-  return { usable: true, blockReason: null };
+  return { voiceApiAvailable: true, usable: true, blockReason: null };
 }
 
 /** iPhone / iPad / iPod; includes iPadOS desktop UA + touch Mac. */
@@ -122,23 +129,26 @@ function isIOSDevice(): boolean {
 }
 
 export interface UseSpeechRecognitionResult {
-  /** ``SpeechRecognition`` exists *and* the page is a secure context. */
+  /** True when ``SpeechRecognition`` / ``webkitSpeechRecognition`` exists (hide mic entirely when false). */
+  voiceApiAvailable: boolean;
+  /** API exists *and* the page is a secure context (HTTPS / localhost). */
   usable: boolean;
-  /** Non-null when the mic cannot work until the user changes browser / URL. */
+  /** Non-null when the API exists but the page is not secure enough for the mic. */
   blockReason: string | null;
   listening: boolean;
   interim: string;
   finalText: string;
   error: string | null;
-  start: (lang?: string) => Promise<void>;
+  start: (lang?: string) => void;
   stop: () => void;
 }
 
 export function useSpeechRecognition(): UseSpeechRecognitionResult {
-  const initial = computeVoiceUsable();
+  const initial = computeVoiceUiState();
   const ctorRef = useRef<SpeechRecognitionCtor | null>(getRecognitionCtor());
   const recognitionRef = useRef<AnySpeechRecognition | null>(null);
 
+  const [voiceApiAvailable] = useState<boolean>(() => initial.voiceApiAvailable);
   const [usable] = useState<boolean>(() => initial.usable);
   const [blockReason] = useState<string | null>(() => initial.blockReason);
   const [listening, setListening] = useState<boolean>(false);
@@ -167,7 +177,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionResult {
     }
   }, []);
 
-  const start = useCallback(async (lang?: string) => {
+  const start = useCallback((lang?: string) => {
     const Ctor = ctorRef.current;
     if (!Ctor || !usable) return;
     if (typeof window !== "undefined" && window.isSecureContext === false) {
@@ -213,11 +223,11 @@ export function useSpeechRecognition(): UseSpeechRecognitionResult {
       const code = ev.error || "unknown";
       const friendly: Record<string, string> = {
         "not-allowed":
-          "Microphone or speech recognition was blocked — check site permissions in browser settings.",
+          "Microphone or speech recognition was blocked. Allow the mic for this site in browser settings; in Brave, try lowering Shields or use Chrome/Safari.",
         "service-not-allowed":
-          "Speech recognition is turned off or not allowed for this page.",
+          "Speech recognition is disabled in this browser or blocked by policy (site permissions, enterprise, or parental controls).",
         network:
-          "Speech recognition needs a network connection (cloud transcription).",
+          "Speech could not reach the cloud transcription service (Chrome uses Google). Check network, VPN, firewall, or regional blocking; Safari on Mac uses Apple instead.",
         "audio-capture": "No microphone was found or it could not be opened.",
       };
       setError(friendly[code] ?? code);
@@ -248,5 +258,15 @@ export function useSpeechRecognition(): UseSpeechRecognitionResult {
     }
   }, [usable]);
 
-  return { usable, blockReason, listening, interim, finalText, error, start, stop };
+  return {
+    voiceApiAvailable,
+    usable,
+    blockReason,
+    listening,
+    interim,
+    finalText,
+    error,
+    start,
+    stop,
+  };
 }

@@ -88,9 +88,9 @@ export default function MicButton({
       disabled={disabled}
       aria-pressed={listening}
       aria-label={
-        listening ? "Stop voice input" : error ? `Voice input error: ${error}` : "Start voice input"
+        listening ? "Stop voice input" : error ? error : "Start voice input"
       }
-      title={error ? `Voice input error: ${error}` : undefined}
+      title={error ?? undefined}
       className={[baseClass, stateClass, disabledClass, className ?? ""]
         .filter(Boolean)
         .join(" ")}

@@ -725,6 +725,12 @@ _FRONTEND_DIST = Path(
     )
 )
 
+# Allow the Web Speech API / getUserMedia mic pipeline on the SPA document.
+# Some platforms default to a restrictive Permissions-Policy; without
+# ``microphone=(self)`` the composer mic can fail on production (Railway)
+# even over HTTPS.
+_SPA_DOCUMENT_HEADERS = {"Permissions-Policy": "microphone=(self)"}
+
 
 def _mount_production_spa() -> None:
     """Serve React static files when dist/ exists (omit for API-only / local Vite dev)."""
@@ -738,7 +744,7 @@ def _mount_production_spa() -> None:
 
     @app.get("/")
     def _spa_index():
-        return FileResponse(index)
+        return FileResponse(index, headers=_SPA_DOCUMENT_HEADERS)
 
     @app.get("/{full_path:path}")
     def _spa_fallback(full_path: str):
@@ -747,8 +753,13 @@ def _mount_production_spa() -> None:
             raise HTTPException(404, detail="Not Found")
         candidate = _FRONTEND_DIST / full_path
         if candidate.is_file():
+            # Only attach document policy headers to HTML entrypoints — not to
+            # ``.js`` / ``.svg`` subresources (policy applies to the document
+            # from the main navigation response, i.e. ``/`` or SPA fallback).
+            if candidate.suffix.lower() in (".html", ".htm"):
+                return FileResponse(candidate, headers=_SPA_DOCUMENT_HEADERS)
             return FileResponse(candidate)
-        return FileResponse(index)
+        return FileResponse(index, headers=_SPA_DOCUMENT_HEADERS)
 
 
 _mount_production_spa()
