@@ -21,6 +21,23 @@ export interface Message {
   content: string | ContentBlock[];
 }
 
+/** One plot file from ``analyze_flow_data`` — matches ``plot_paths`` order. */
+export interface PlotSummary {
+  filename: string;
+  plot_type: string;
+  title: string;
+  plot_timezone: string;
+}
+
+/** Resolved URL + optional labels for :component:`PlotImage`. */
+export interface PlotAttachment {
+  src: string;
+  title?: string;
+  plotTimezone?: string;
+  /** From ``plot_summaries.plot_type`` — used to hide time-axis hint for non-temporal charts. */
+  plotType?: string;
+}
+
 export interface SSEEvent {
   type:
     | "text_delta"
@@ -38,6 +55,8 @@ export interface SSEEvent {
   input?: Record<string, unknown>;
   success?: boolean;
   plot_paths?: string[];
+  plot_summaries?: PlotSummary[];
+  plot_timezone?: string;
   message?: string;
   tokens?: number;
   pct?: number;

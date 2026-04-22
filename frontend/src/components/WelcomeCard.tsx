@@ -168,7 +168,7 @@ export default function WelcomeCard({ onCompose, compact = false }: WelcomeCardP
         />
       </div>
       {serialError && (
-        <p className="mt-1.5 text-center text-xs font-medium text-amber-800" role="status">
+        <p className="mt-1.5 text-center text-xs font-medium text-amber-800 dark:text-amber-200" role="status">
           Add a serial to use a suggestion.
         </p>
       )}

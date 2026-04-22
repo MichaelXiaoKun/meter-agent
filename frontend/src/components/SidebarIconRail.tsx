@@ -153,13 +153,13 @@ export default function SidebarIconRail({
         ref={menuRef}
         role="menu"
         aria-label="Account"
-        className="fixed z-[300] min-w-[11rem] rounded-xl border border-brand-border bg-white py-1 shadow-xl ring-1 ring-black/5 dark:ring-white/10 dark:shadow-[0_16px_48px_-12px_rgba(0,0,0,0.55)]"
+        className="fixed z-[300] min-w-[11rem] rounded-xl border border-brand-border bg-white py-1 shadow-xl ring-1 ring-black/5 dark:bg-brand-100 dark:ring-white/10 dark:shadow-[0_16px_48px_-12px_rgba(0,0,0,0.55)]"
         style={{ left: menu.x, top: menu.y }}
       >
         <button
           type="button"
           role="menuitem"
-          className="flex w-full px-3 py-2 text-left text-sm text-brand-900 hover:bg-brand-50"
+          className="flex w-full px-3 py-2 text-left text-sm text-brand-900 hover:bg-brand-50 dark:hover:bg-white/10"
           onClick={() => {
             closeMenu();
             onExpand();
@@ -185,7 +185,7 @@ export default function SidebarIconRail({
 
   return (
     <nav
-      className="flex h-full min-h-0 w-full flex-1 flex-col items-start gap-2.5 bg-gradient-to-b from-white/95 to-brand-100 pl-3 pr-2 pt-[max(0.75rem,env(safe-area-inset-top,0px))] pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] dark:from-white/[0.06] dark:to-brand-100"
+      className="flex h-full min-h-0 w-full flex-1 flex-col items-start gap-2.5 bg-gradient-to-b from-white/95 to-brand-100 pl-3 pr-2 pt-[max(0.75rem,env(safe-area-inset-top,0px))] pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] dark:bg-gradient-to-b dark:from-brand-50 dark:to-brand-50"
       aria-label="Conversations and account"
     >
       <button

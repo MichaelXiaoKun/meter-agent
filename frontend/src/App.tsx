@@ -3,7 +3,7 @@ import LoginPage from "./components/LoginPage";
 import Sidebar from "./components/Sidebar";
 import SidebarIconRail from "./components/SidebarIconRail";
 import ChatView from "./components/ChatView";
-import { readStoredModel, writeStoredModel } from "./components/ModelPicker";
+import { readStoredModel, writeStoredModel } from "./components/modelPickerStorage";
 import { useConversations } from "./hooks/useConversations";
 import { useChat } from "./hooks/useChat";
 import { useMediaQuery } from "./hooks/useMediaQuery";
@@ -33,6 +33,17 @@ const DEFAULT_TPM_INPUT_GUIDE = 50_000;
 const DEFAULT_MODEL_CONTEXT_WINDOW = 200_000;
 /** Default 0.5 × TPM guide when config omits max_input_tokens_target. */
 const DEFAULT_MAX_INPUT_TARGET = 25_000;
+
+/** Desktop shelf animation timings (module scope so shelf effect deps stay stable). */
+const SHELF_BODY_FADE_MS = 180;
+/** Matches ``Sidebar`` New chat shell ``transition-* duration-200``. */
+const SHELF_SHELL_MS = 200;
+const SHELF_STRIP_MS = Math.max(SHELF_BODY_FADE_MS, SHELF_SHELL_MS);
+/** Matches desktop shelf ``transition-[width] duration-200``. */
+const SHELF_WIDTH_MS = 200;
+const SHELF_SWAP_TAIL_MS = 50;
+const SHELF_SWAP_MS =
+  Math.max(SHELF_STRIP_MS, SHELF_WIDTH_MS) + SHELF_SWAP_TAIL_MS;
 
 export default function App() {
   const [token, setToken] = useLocalStorage("bb_token", "");
@@ -96,16 +107,6 @@ export default function App() {
    * After ``SHELF_STRIP_MS`` strip body DOM; after ``SHELF_SWAP_MS`` (width
    * transition + buffer) swap ``SidebarIconRail``.
    */
-  const SHELF_BODY_FADE_MS = 180;
-  /** Matches ``Sidebar`` New chat shell ``transition-* duration-200``. */
-  const SHELF_SHELL_MS = 200;
-  const SHELF_STRIP_MS = Math.max(SHELF_BODY_FADE_MS, SHELF_SHELL_MS);
-  /** Matches desktop shelf ``transition-[width] duration-200``. */
-  const SHELF_WIDTH_MS = 200;
-  const SHELF_SWAP_TAIL_MS = 50;
-  const SHELF_SWAP_MS =
-    Math.max(SHELF_STRIP_MS, SHELF_WIDTH_MS) + SHELF_SWAP_TAIL_MS;
-
   const [desktopShelfWide, setDesktopShelfWide] = useState(sidebarOpen);
   const [desktopShowFullSidebar, setDesktopShowFullSidebar] =
     useState(sidebarOpen);
@@ -321,7 +322,7 @@ export default function App() {
             onClick={() => setSidebarOpen(false)}
           />
           <div
-            className={`fixed inset-y-0 left-0 z-50 flex h-[100dvh] max-h-[100dvh] min-w-0 overflow-hidden border-r border-brand-border bg-gradient-to-b from-white/95 to-brand-100 shadow-2xl transition-transform duration-300 ease-out will-change-transform dark:from-white/[0.06] dark:to-brand-100 lg:hidden [width:min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))] max-w-[min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))] ${sidebarOpen
+            className={`fixed inset-y-0 left-0 z-50 flex h-[100dvh] max-h-[100dvh] min-w-0 overflow-hidden border-r border-brand-border bg-gradient-to-b from-white/95 to-brand-100 shadow-2xl transition-transform duration-300 ease-out will-change-transform dark:bg-gradient-to-b dark:from-brand-50 dark:to-brand-50 lg:hidden [width:min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))] max-w-[min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))] ${sidebarOpen
                 ? "translate-x-0"
                 : "pointer-events-none -translate-x-full"
               }`}
@@ -336,13 +337,13 @@ export default function App() {
       <div
         className={`relative z-[45] flex min-h-0 shrink-0 flex-col overflow-hidden transition-[width] duration-200 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] motion-reduce:transition-none motion-reduce:duration-0 ${isNarrow
             ? "w-0 min-w-0 border-r-0"
-            : `h-[100dvh] max-h-[100dvh] border-r border-brand-border bg-gradient-to-b from-white/95 to-brand-100 dark:from-white/[0.06] dark:to-brand-100 ${desktopShelfWide ? "w-72" : "w-14"}`
+            : `h-[100dvh] max-h-[100dvh] border-r border-brand-border bg-gradient-to-b from-white/95 to-brand-100 dark:bg-gradient-to-b dark:from-brand-50 dark:to-brand-50 ${desktopShelfWide ? "w-72" : "w-14"}`
           }`}
       >
         {!isNarrow && desktopShowFullSidebar ? (
           <Sidebar {...sidebarProps} />
         ) : !isNarrow && !desktopShowFullSidebar ? (
-          <div className="flex h-full min-h-0 min-w-0 w-full flex-1 flex-col bg-gradient-to-b from-white/95 to-brand-100 dark:from-white/[0.06] dark:to-brand-100">
+          <div className="flex h-full min-h-0 min-w-0 w-full flex-1 flex-col bg-gradient-to-b from-white/95 to-brand-100 dark:bg-gradient-to-b dark:from-brand-50 dark:to-brand-50">
             <SidebarIconRail
               onExpand={() => setSidebarOpen(true)}
               onNewConversation={handleNewConversation}

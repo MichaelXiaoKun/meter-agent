@@ -866,6 +866,12 @@ def run_turn(
                     }
                     if block.name == "analyze_flow_data":
                         event["plot_paths"] = result_dict.get("plot_paths", [])
+                        ptz = result_dict.get("plot_timezone")
+                        if ptz:
+                            event["plot_timezone"] = ptz
+                        sums = result_dict.get("plot_summaries")
+                        if sums:
+                            event["plot_summaries"] = sums
                         aj = result_dict.get("analysis_json_path")
                         if aj:
                             event["analysis_json_path"] = aj

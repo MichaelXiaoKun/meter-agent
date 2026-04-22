@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Message } from "../types";
+import type { Message, PlotAttachment } from "../types";
 import type { AgentStatus } from "../hooks/useChat";
-import MessageBubble, { extractPlotPaths } from "./MessageBubble";
+import MessageBubble from "./MessageBubble";
+import { extractPlotAttachments } from "./plotAttachments";
 import PlotImage from "./PlotImage";
 import StatusIndicator from "./StatusIndicator";
 import WelcomeCard from "./WelcomeCard";
@@ -12,10 +13,29 @@ import TurnActivityTimeline from "./TurnActivityTimeline";
 import { TokenBudgetPopover } from "./TokenBudget";
 import ModelPicker from "./ModelPicker";
 import MicButton from "./MicButton";
+import ThemeToggle from "./ThemeToggle";
+import { IconSidebarDock } from "./SidebarIconRail";
 import type { OrchestratorModelOption } from "../api";
 import type { TurnActivityStep } from "../turnActivity";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
+
+function SendArrowIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M12 19V5M5 12l7-7 7 7" />
+    </svg>
+  );
+}
 
 interface ChatViewProps {
   /**
@@ -29,7 +49,7 @@ interface ChatViewProps {
   messages: Message[];
   status: AgentStatus;
   streamingText: string;
-  pendingPlots: string[];
+  pendingPlots: PlotAttachment[];
   tokenUsage: { tokens: number; pct: number };
   /** True while fetching messages for the active conversation (empty transcript). */
   historyLoading: boolean;
@@ -536,36 +556,19 @@ export default function ChatView({
 
   // Pair plot paths with assistant messages: collect from tool_result rows,
   // attach to the next assistant message (same logic as the Streamlit app).
-  const plotsByIndex = new Map<number, string[]>();
+  const plotsByIndex = new Map<number, PlotAttachment[]>();
   {
-    let queued: string[] = [];
+    let queued: PlotAttachment[] = [];
     messages.forEach((msg, i) => {
-      const paths = extractPlotPaths(msg.content);
-      if (paths.length > 0) {
-        queued.push(...paths);
+      const next = extractPlotAttachments(msg.content);
+      if (next.length > 0) {
+        queued.push(...next);
       }
       if (msg.role === "assistant" && queued.length > 0) {
         plotsByIndex.set(i, [...queued]);
         queued = [];
       }
     });
-  }
-
-  function SendArrowIcon({ className }: { className?: string }) {
-    return (
-      <svg
-        className={className}
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden
-      >
-        <path d="M12 19V5M5 12l7-7 7 7" />
-      </svg>
-    );
   }
 
   const tokenBudgetProps = {
@@ -765,38 +768,35 @@ export default function ChatView({
             }`}
         >
           {narrowNav ? (
-            <div className="flex shrink-0 items-center">
-              <button
-                type="button"
-                onClick={narrowNav.onOpenSidebar}
-                className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-brand-border/80 bg-white text-brand-700 shadow-sm ring-1 ring-brand-border/40 transition-[border-color,box-shadow,background-color] hover:border-brand-400 hover:bg-brand-50 dark:bg-brand-100 dark:text-brand-muted dark:hover:bg-white/10"
-                title="Open conversations"
-                aria-label="Open conversations sidebar"
-              >
-                <img
-                  src="/api/logo"
-                  alt=""
-                  width={32}
-                  height={32}
-                  className="h-8 w-8 rounded-md object-cover"
-                />
-              </button>
+            <>
+              <div className="flex shrink-0 items-center">
+                <button
+                  type="button"
+                  onClick={narrowNav.onOpenSidebar}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-brand-border/80 bg-white text-brand-700 shadow-sm ring-1 ring-brand-border/40 transition-[border-color,box-shadow,background-color] hover:border-brand-400 hover:bg-brand-50 dark:bg-brand-100 dark:text-brand-muted dark:hover:bg-white/10"
+                  title="Open conversations"
+                  aria-label="Open conversations sidebar"
+                >
+                  <IconSidebarDock className="h-5 w-5 shrink-0" />
+                </button>
+              </div>
+              <div className="min-w-0 flex-1">
+                <h1 className="text-xl font-bold leading-none tracking-tight text-brand-900">
+                  bluebot Assistant
+                </h1>
+              </div>
+              <ThemeToggle size="md" className="shrink-0" />
+            </>
+          ) : (
+            <div className="min-w-0 flex-1">
+              <h1 className="text-lg font-bold tracking-tight text-brand-900 sm:text-[1.0625rem]">
+                bluebot Assistant
+              </h1>
+              <p className="hidden max-w-[40rem] text-sm leading-relaxed text-brand-muted lg:mt-0.5 lg:block lg:text-xs lg:leading-snug">
+                Flow analysis, meter health, and pipe configuration — ask with a serial number.
+              </p>
             </div>
-          ) : null}
-          <div className="min-w-0 flex-1">
-            <h1
-              className={
-                narrowNav
-                  ? "text-xl font-bold leading-none tracking-tight text-brand-900"
-                  : "text-lg font-bold tracking-tight text-brand-900 sm:text-[1.0625rem]"
-              }
-            >
-              bluebot Assistant
-            </h1>
-            <p className="hidden max-w-[40rem] text-sm leading-relaxed text-brand-muted lg:mt-0.5 lg:block lg:text-xs lg:leading-snug">
-              Flow analysis, meter health, and pipe configuration — ask with a serial number.
-            </p>
-          </div>
+          )}
         </div>
       </header>
 
@@ -885,7 +885,7 @@ export default function ChatView({
                 <MessageBubble
                   key={i}
                   message={msg}
-                  plotPaths={plotsByIndex.get(i)}
+                  plots={plotsByIndex.get(i)}
                 />
               ))}
 
@@ -898,8 +898,8 @@ export default function ChatView({
 
               {streamingText && (
                 <div className="flex justify-start">
-                  <div className="max-w-[75%] min-w-0 overflow-hidden rounded-2xl border border-brand-border bg-white px-4 py-3 text-brand-900">
-                    <div className="prose prose-sm max-w-none break-words prose-p:my-1 prose-a:break-words prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm dark:prose-invert dark:prose-headings:text-brand-100 [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full">
+                  <div className="max-w-[75%] min-w-0 overflow-hidden rounded-2xl border border-brand-border bg-white px-4 py-3 text-brand-900 dark:border-brand-border dark:bg-brand-50">
+                    <div className="prose prose-sm max-w-none break-words prose-p:my-1 prose-a:break-words prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm dark:prose-invert dark:prose-headings:text-brand-900 [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingText}</ReactMarkdown>
                     </div>
                   </div>
@@ -909,11 +909,14 @@ export default function ChatView({
               {pendingPlots.length > 0 && (
                 <div className="flex justify-start">
                   <div className="max-w-[75%] space-y-2">
-                    {pendingPlots.map((src) => (
+                    {pendingPlots.map((p) => (
                       <PlotImage
-                        key={src}
-                        src={src}
+                        key={p.src}
+                        src={p.src}
                         alt="Flow analysis plot"
+                        title={p.title}
+                        plotTimezone={p.plotTimezone}
+                        plotType={p.plotType}
                         className="w-full rounded-lg border border-brand-border shadow-sm"
                       />
                     ))}
@@ -967,7 +970,7 @@ export default function ChatView({
                   <button
                     type="button"
                     onClick={jumpToLatest}
-                    className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-brand-border bg-white/95 px-3 py-1.5 text-xs font-medium text-brand-700 shadow-md backdrop-blur transition-opacity hover:bg-white dark:border-brand-border dark:text-brand-muted dark:hover:bg-white/10 dark:hover:text-brand-900"
+                    className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-brand-border bg-white/95 px-3 py-1.5 text-xs font-medium text-brand-700 shadow-md backdrop-blur transition-opacity hover:bg-white dark:border-brand-border dark:bg-brand-50/95 dark:text-brand-muted dark:hover:bg-white/10 dark:hover:text-brand-900"
                     aria-label="Jump to latest message"
                   >
                     <svg

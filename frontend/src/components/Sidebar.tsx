@@ -105,7 +105,7 @@ export default function Sidebar({
   const showCollapseControl = !collapseShelfFading && !collapseShelfBody;
 
   return (
-    <aside className="flex h-full min-h-0 w-full min-w-0 max-w-full flex-col bg-gradient-to-b from-white/95 to-brand-100 dark:from-white/[0.06] dark:to-brand-100">
+    <aside className="flex h-full min-h-0 w-full min-w-0 max-w-full flex-col bg-gradient-to-b from-white/95 to-brand-100 dark:bg-gradient-to-b dark:from-brand-50 dark:to-brand-50">
       {/*
         ChatGPT-style layout (logo + dock, then pill “New chat”) with the
         existing brand palette — no slate/neutral takeover of the sidebar.
@@ -182,14 +182,14 @@ export default function Sidebar({
             <div className="mb-2 truncate text-xs text-brand-muted">
               Signed in as <span className="font-medium text-brand-900">{user}</span>
             </div>
-            <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="mb-2 hidden items-center justify-between gap-2 lg:flex">
               <span className="text-xs text-brand-muted">Appearance</span>
               <ThemeToggle size="sm" />
             </div>
             <button
               type="button"
               onClick={() => setKeyModalOpen(true)}
-              className="mb-2 w-full rounded-lg border border-brand-border bg-white px-3 py-1.5 text-left text-sm text-brand-900 transition-colors hover:border-brand-400 hover:bg-brand-50"
+              className="mb-2 w-full rounded-lg border border-brand-border bg-white px-3 py-1.5 text-left text-sm text-brand-900 transition-colors hover:border-brand-400 hover:bg-brand-50 dark:bg-brand-100/90 dark:hover:border-brand-border dark:hover:bg-white/10"
             >
               <span className="font-medium">Claude API key</span>
               <span className="mt-0.5 block text-xs font-normal text-brand-muted">
@@ -202,7 +202,7 @@ export default function Sidebar({
             </button>
             <button
               onClick={onLogout}
-              className="w-full rounded-lg border border-brand-border bg-white px-3 py-1.5 text-sm text-brand-muted transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 dark:hover:border-red-900/50 dark:hover:bg-red-950/35 dark:hover:text-red-400"
+              className="w-full rounded-lg border border-brand-border bg-white px-3 py-1.5 text-sm text-brand-muted transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 dark:bg-brand-100/90 dark:hover:border-red-900/50 dark:hover:bg-red-950/35 dark:hover:text-red-400"
             >
               Sign out
             </button>
@@ -221,7 +221,7 @@ export default function Sidebar({
           }}
         >
           <div
-            className="w-full max-w-md rounded-2xl border border-brand-border bg-white p-5 shadow-xl dark:shadow-[0_24px_64px_-24px_rgba(0,0,0,0.55)]"
+            className="w-full max-w-md rounded-2xl border border-brand-border bg-white p-5 shadow-xl dark:bg-brand-100 dark:shadow-[0_24px_64px_-24px_rgba(0,0,0,0.55)]"
             onClick={(e) => e.stopPropagation()}
           >
             <h2
@@ -358,7 +358,7 @@ function ConversationList({
         const isBusy = c.id === processingId;
         const menuOpen = openMenuId === c.id;
         const rowClass = isActive
-          ? "bg-white font-semibold text-brand-900 shadow-sm"
+          ? "bg-white font-semibold text-brand-900 shadow-sm dark:bg-white/10 dark:shadow-[0_1px_0_0_rgba(0,0,0,0.25)]"
           : "text-brand-900/80 hover:bg-white/60 dark:hover:bg-white/10";
 
         return (
@@ -411,7 +411,7 @@ function ConversationList({
               {menuOpen && (
                 <div
                   role="menu"
-                  className="absolute right-0 top-full z-50 mt-1 min-w-[11rem] rounded-lg border border-brand-border bg-white py-1 shadow-lg dark:shadow-[0_12px_40px_-12px_rgba(0,0,0,0.5)]"
+                  className="absolute right-0 top-full z-50 mt-1 min-w-[11rem] rounded-lg border border-brand-border bg-white py-1 shadow-lg dark:bg-brand-100 dark:shadow-[0_12px_40px_-12px_rgba(0,0,0,0.5)]"
                 >
                   <button
                     type="button"

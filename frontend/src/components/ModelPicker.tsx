@@ -8,7 +8,7 @@
  *
  * The available model list and the server default come from
  * ``/api/config`` (``OrchestratorConfig.available_models``). The chosen ID
- * is persisted in ``localStorage`` under :data:`STORAGE_KEY` so it survives
+ * is persisted in ``localStorage`` (see ``modelPickerStorage``) so it survives
  * page reloads; if the stored ID is no longer in the allowlist we fall back
  * to the server default so the UI never posts a forbidden model.
  */
@@ -16,43 +16,10 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { OrchestratorModelOption } from "../api";
 
-const STORAGE_KEY = "bb_orchestrator_model";
-
-/** Read the stored model ID, validating against the current allowlist. */
-export function readStoredModel(
-  models: OrchestratorModelOption[] | undefined,
-  defaultModel: string | undefined,
-): string | null {
-  if (!models || models.length === 0) return defaultModel ?? null;
-  const ids = new Set(models.map((m) => m.id));
-  try {
-    const raw =
-      typeof localStorage !== "undefined"
-        ? localStorage.getItem(STORAGE_KEY)
-        : null;
-    if (raw && ids.has(raw)) return raw;
-  } catch {
-    /* localStorage unavailable — fall through to default */
-  }
-  if (defaultModel && ids.has(defaultModel)) return defaultModel;
-  return models[0]?.id ?? null;
-}
-
-/** Persist a picked model; no-op if storage is unavailable. */
-export function writeStoredModel(modelId: string): void {
-  try {
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(STORAGE_KEY, modelId);
-    }
-  } catch {
-    /* ignore quota / private mode */
-  }
-}
-
 const TIER_BADGE_CLASS: Record<string, string> = {
-  fast: "bg-emerald-100 text-emerald-700",
-  balanced: "bg-amber-100 text-amber-700",
-  max: "bg-indigo-100 text-indigo-700",
+  fast: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/55 dark:text-emerald-200",
+  balanced: "bg-amber-100 text-amber-700 dark:bg-amber-950/55 dark:text-amber-200",
+  max: "bg-indigo-100 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-200",
   custom: "bg-slate-100 text-slate-600 dark:bg-brand-100 dark:text-brand-muted",
 };
 
@@ -160,7 +127,7 @@ export default function ModelPicker({
           "flex h-12 min-h-[48px] min-w-0 max-w-full items-center gap-1.5 rounded-full border px-3 text-sm font-medium text-brand-800 transition-colors dark:text-brand-muted dark:hover:text-brand-900",
           "sm:min-h-[44px] sm:h-11",
           open
-            ? "border-brand-500 bg-brand-50/90 shadow-inner ring-2 ring-brand-400/30 dark:bg-brand-100/80 dark:ring-brand-500/25"
+            ? "border-brand-500 bg-brand-50/90 shadow-inner ring-2 ring-brand-400/30 dark:border-brand-border dark:bg-brand-100 dark:shadow-inner dark:ring-1 dark:ring-white/12"
             : "border-brand-border bg-white hover:border-brand-400 hover:bg-brand-50/80 dark:bg-brand-100 dark:hover:bg-white/10",
           disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
         ].join(" ")}
@@ -183,7 +150,7 @@ export default function ModelPicker({
           role="listbox"
           aria-label="Claude model"
           className={[
-            "absolute rounded-2xl border border-brand-border bg-white p-1.5 shadow-[0_18px_56px_-18px_rgba(15,23,42,0.28)] dark:shadow-[0_18px_56px_-18px_rgba(0,0,0,0.55)]",
+            "absolute rounded-2xl border border-brand-border bg-white p-1.5 shadow-[0_18px_56px_-18px_rgba(15,23,42,0.28)] dark:border-brand-border dark:bg-brand-100 dark:shadow-[0_18px_56px_-18px_rgba(0,0,0,0.55)]",
             panelPositionClass,
           ].join(" ")}
         >
@@ -207,8 +174,8 @@ export default function ModelPicker({
                 className={[
                   "flex w-full flex-col gap-0.5 rounded-xl px-2.5 py-2 text-left transition-colors",
                   isSelected
-                    ? "bg-brand-50 ring-1 ring-brand-300"
-                    : "hover:bg-brand-50/60",
+                    ? "bg-brand-50 ring-1 ring-brand-300 dark:bg-white/[0.08] dark:ring-brand-border"
+                    : "hover:bg-brand-50/60 dark:hover:bg-white/10",
                 ].join(" ")}
               >
                 <div className="flex items-center justify-between gap-2">

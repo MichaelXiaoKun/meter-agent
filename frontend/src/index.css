@@ -38,20 +38,35 @@
 
 @theme {
   --color-brand-900: #1a2a4a;
+  --color-brand-800: #243654;
   --color-brand-700: #3a5f9a;
+  --color-brand-600: #3d5580;
   --color-brand-500: #4a80c0;
+  --color-brand-400: #6b9ad4;
+  --color-brand-300: #a8c4eb;
+  --color-brand-200: #d6e5fb;
   --color-brand-100: #f0f5ff;
   --color-brand-50: #f5f8ff;
   --color-brand-border: #dce7f8;
   --color-brand-muted: #5a6a88;
 }
 
-/* Class ``html.dark`` (see ``ThemeProvider`` / ``storage``) — same utility names, darker surfaces. */
+/*
+ * Class ``html.dark`` (see ``ThemeProvider`` / ``storage``) — same utility
+ * names: surfaces go dark, **text** tokens (800/900) flip to light values so
+ * ``text-brand-800`` / ``text-brand-900`` stay readable without sprinkling
+ * ``dark:text-*`` on every label.
+ */
 html.dark {
   color-scheme: dark;
   --color-brand-900: #e6edf7;
+  --color-brand-800: #cfd9ea;
   --color-brand-700: #78b0ff;
+  --color-brand-600: #8fa4c4;
   --color-brand-500: #5c9fe8;
+  --color-brand-400: #5a7aac;
+  --color-brand-300: #3a4f6e;
+  --color-brand-200: #243042;
   --color-brand-100: #1a2435;
   --color-brand-50: #0d121c;
   --color-brand-border: #2d3f58;
@@ -595,17 +610,23 @@ html.dark .welcome-bluebot-img {
     inset 0 0 0 2px rgba(74, 128, 192, 0.22);
 }
 
-/* Dark UI: ``brand-50`` is a dark surface token — eye highlights use lighter brand mixes. */
+/*
+ * Dark UI: semantic ``brand-900`` is a light text token — using it as the pupil
+ * wash made the vector eyes read as a dim gray blob. Use a dark iris + crisp
+ * specular so the face stays readable on ``brand-50`` / mascot art.
+ */
 html.dark .welcome-bluebot-eye {
   background:
     radial-gradient(circle at 38% 32%,
-      color-mix(in oklab, var(--color-brand-500) 42%, #ffffff) 0%,
-      color-mix(in oklab, var(--color-brand-500) 42%, #ffffff) 8%,
-      transparent 10%),
-    var(--color-brand-900);
+      #ffffff 0%,
+      #e8f1ff 10%,
+      transparent 14%),
+    radial-gradient(circle at 52% 58%,
+      #334867 0%,
+      #0d121c 72%);
   box-shadow:
-    inset 0 -1px 0 color-mix(in oklab, var(--color-brand-500) 22%, transparent),
-    inset 0 1px 0 color-mix(in oklab, var(--color-brand-700) 14%, transparent);
+    inset 0 -1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 1px 2px rgba(0, 0, 0, 0.42);
 }
 
 @media (prefers-reduced-motion: reduce) {
