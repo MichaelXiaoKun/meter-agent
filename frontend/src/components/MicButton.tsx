@@ -75,10 +75,10 @@ export default function MicButton({
   const baseClass =
     "relative flex h-12 w-12 min-h-[48px] min-w-[48px] shrink-0 items-center justify-center rounded-full border transition-colors sm:min-h-[44px] sm:min-w-[44px]";
   const stateClass = listening
-    ? "border-transparent bg-red-600 text-white shadow-[0_0_0_0_rgba(220,38,38,0.45)] mic-button-pulse"
+    ? "border-transparent bg-red-600 text-white shadow-[0_0_0_0_rgba(220,38,38,0.45)] mic-button-pulse dark:bg-red-500 dark:text-red-50"
     : error
-      ? "border-amber-300 bg-amber-100 text-amber-700"
-      : "border-slate-200 bg-white text-brand-800 hover:border-brand-400";
+      ? "border-amber-300 bg-amber-100 text-amber-800 hover:border-amber-400 hover:bg-amber-50 dark:border-amber-600/50 dark:bg-amber-950/55 dark:text-amber-100 dark:hover:border-amber-500/60 dark:hover:bg-amber-900/45"
+      : "border-brand-border bg-white text-brand-800 hover:border-brand-400 hover:bg-brand-50/80 dark:border-brand-border dark:bg-brand-100 dark:text-brand-muted dark:hover:border-brand-500/80 dark:hover:bg-white/10 dark:hover:text-brand-900";
   const disabledClass = disabled ? "opacity-50 cursor-not-allowed" : "";
 
   return (
@@ -102,7 +102,7 @@ export default function MicButton({
       )}
       {listening && (
         <span
-          className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-white"
+          className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-white shadow-[0_0_0_1px_rgba(127,29,29,0.25)] dark:bg-red-100 dark:shadow-[0_0_0_1px_rgba(254,202,202,0.35)]"
           aria-hidden
         />
       )}

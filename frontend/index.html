@@ -1,6 +1,18 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <script>
+      (function () {
+        try {
+          var k = "bb_theme"; /* keep in sync with src/theme/storage.ts */
+          var v = localStorage.getItem(k);
+          if (v === "dark") document.documentElement.classList.add("dark");
+          else if (v === "light") document.documentElement.classList.remove("dark");
+          else if (window.matchMedia("(prefers-color-scheme: dark)").matches)
+            document.documentElement.classList.add("dark");
+        } catch (e) {}
+      })();
+    </script>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta
@@ -25,7 +37,7 @@
     />
     <title>bluebot Assistant</title>
   </head>
-  <body class="bg-[#f5f8ff]">
+  <body class="min-h-[100dvh] bg-brand-50 text-brand-900 antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

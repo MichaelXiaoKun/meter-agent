@@ -1,4 +1,7 @@
 @import "tailwindcss";
+
+@custom-variant dark (&:where(html.dark, html.dark *));
+
 @plugin "@tailwindcss/typography";
 
 /* Mobile: avoid horizontal scroll; stable text size; dvh handled in layout */
@@ -35,12 +38,55 @@
 
 @theme {
   --color-brand-900: #1a2a4a;
+  --color-brand-800: #243654;
   --color-brand-700: #3a5f9a;
+  --color-brand-600: #3d5580;
   --color-brand-500: #4a80c0;
+  --color-brand-400: #6b9ad4;
+  --color-brand-300: #a8c4eb;
+  --color-brand-200: #d6e5fb;
   --color-brand-100: #f0f5ff;
   --color-brand-50: #f5f8ff;
   --color-brand-border: #dce7f8;
   --color-brand-muted: #5a6a88;
+}
+
+/*
+ * Class ``html.dark`` (see ``ThemeProvider`` / ``storage``) — same utility
+ * names: surfaces go dark, **text** tokens (800/900) flip to light values so
+ * ``text-brand-800`` / ``text-brand-900`` stay readable without sprinkling
+ * ``dark:text-*`` on every label.
+ */
+html.dark {
+  color-scheme: dark;
+  --color-brand-900: #e6edf7;
+  --color-brand-800: #cfd9ea;
+  --color-brand-700: #78b0ff;
+  --color-brand-600: #8fa4c4;
+  --color-brand-500: #5c9fe8;
+  --color-brand-400: #5a7aac;
+  --color-brand-300: #3a4f6e;
+  --color-brand-200: #243042;
+  --color-brand-100: #1a2435;
+  --color-brand-50: #0d121c;
+  --color-brand-border: #2d3f58;
+  --color-brand-muted: #92a3c4;
+}
+
+@layer components {
+
+  /* Map solid white panels onto dark ``brand-100`` (token swap above). */
+  html.dark :is(.bg-white) {
+    background-color: var(--color-brand-100);
+  }
+
+  html.dark :is(.bg-white\/90) {
+    background-color: color-mix(in oklab, var(--color-brand-100) 92%, transparent);
+  }
+
+  html.dark :is(.bg-white\/95) {
+    background-color: color-mix(in oklab, var(--color-brand-100) 96%, transparent);
+  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -132,17 +178,16 @@
 }
 
 /* ---------------------------------------------------------------------------
- * Welcome mascot — a tiny water meter holding a pipe above the heading.
+ * Welcome mascot — stylized flanged flow meter + transmitter (see component).
  *
- * Three nested transform layers so the animations compose cleanly:
+ * Nested transform layers so the animations compose cleanly:
  *
- *   .mascot-wrap  → one-shot pop-in (``mascot-enter``) on mount.
- *   .mascot-bob   → continuous ~3 s vertical bob (``mascot-bob``).
- *   .mascot-upper → periodic pipe-lift wave (``mascot-pipe-wave``) inside
- *                   the SVG; rotates the pipe + arms group only.
+ *   .mascot-wrap     → one-shot pop-in (``mascot-enter``) on mount.
+ *   .mascot-bob      → continuous ~3 s vertical bob (``mascot-bob``).
+ *   .mascot-display  → LCD stack dims briefly (``mascot-display-flicker``).
+ *   .mascot-upper    → occasional small housing nod (``mascot-pipe-wave``).
  *
- * Reduced-motion users still see the mascot; all three animations stop
- * and the element rests in its natural pose.
+ * Reduced-motion users still see the graphic; motion animations stop.
  * -------------------------------------------------------------------------- */
 @keyframes mascot-enter {
   0% {
@@ -174,27 +219,26 @@
 }
 
 /*
- * ``mascot-pipe-wave`` spends most of the cycle at rest (0° rotation),
- * then performs a quick "lift + lower" near the end of each loop. Feels
- * like an occasional proud flex rather than a continuous wag.
+ * ``mascot-pipe-wave`` — subtle transmitter housing nod (was a cartoon pipe
+ * lift; angles kept small so it still reads as industrial equipment).
  */
 @keyframes mascot-pipe-wave {
 
   0%,
-  68% {
+  72% {
     transform: rotate(0deg);
   }
 
-  76% {
-    transform: rotate(-7deg);
+  80% {
+    transform: rotate(-2.6deg);
   }
 
-  84% {
-    transform: rotate(5deg);
+  88% {
+    transform: rotate(1.9deg);
   }
 
-  92% {
-    transform: rotate(-2deg);
+  96% {
+    transform: rotate(-0.9deg);
   }
 
   100% {
@@ -215,14 +259,11 @@
 
 .mascot-upper {
   /*
-   * Rotate around the pipe's midpoint so lifting feels anchored at the
-   * character's chest. Coordinates are in the SVG's ``viewBox`` units
-   * (140×120) — ``transform-box: view-box`` is the modern default for
-   * SVG child elements but we set it explicitly to avoid surprises in
-   * older engines that defaulted to ``fill-box``.
+   * Pivot at the bottom centre of the transmitter housing where it meets
+   * the sensing tube (``viewBox`` 180×108 — see ``WelcomeMascot.tsx``).
    */
   transform-box: view-box;
-  transform-origin: 70px 44px;
+  transform-origin: 90px 50px;
   animation: mascot-pipe-wave 7s ease-in-out 1.4s infinite;
 }
 
@@ -231,12 +272,40 @@
   filter: drop-shadow(0 4px 12px rgba(74, 128, 192, 0.22));
 }
 
+/* LCD readout — brief dim like a display refresh (not a cartoon blink). */
+@keyframes mascot-display-flicker {
+
+  0%,
+  78%,
+  100% {
+    opacity: 1;
+  }
+
+  82%,
+  86% {
+    opacity: 0.52;
+  }
+
+  90% {
+    opacity: 1;
+  }
+}
+
+.mascot-display {
+  animation: mascot-display-flicker 3.6s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
 
   .mascot-wrap,
   .mascot-bob,
   .mascot-upper {
     animation: none;
+  }
+
+  .mascot-display {
+    animation: none;
+    opacity: 1;
   }
 }
 
@@ -351,11 +420,279 @@
   -webkit-user-drag: none;
 }
 
+/*
+ * Welcome bluebot — ``close-eye`` raster + synthetic blink. Sleep is toggled by
+ * ``.welcome-bluebot--sleeping`` (see ``WelcomeBluebotLogo`` idle timer), not a CSS loop.
+ */
+@keyframes welcome-bluebot-wise {
+
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+
+  38% {
+    transform: rotate(0.85deg);
+  }
+
+  62% {
+    transform: rotate(-0.55deg);
+  }
+}
+
+@keyframes welcome-bluebot-synthetic-blink {
+
+  0%,
+  4%,
+  70%,
+  100% {
+    transform: scaleY(1);
+  }
+
+  73%,
+  77% {
+    transform: scaleY(0.1);
+  }
+
+  81% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes welcome-bluebot-zzz-sleep-float {
+
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.58;
+  }
+
+  50% {
+    transform: translateY(-1.5px);
+    opacity: 0.74;
+  }
+}
+
+.welcome-bluebot-frames {
+  /*
+   * Calibrated to ``bluebot.jpg``: eyes sit in the outer horizontal thirds of
+   * the white face (wider gap), vertically near the middle of the rounded
+   * square (tail excluded). Tweak if ``welcome-bluebot-close.png`` crops differ.
+   */
+  --bb-eye-y: 46%;
+  --bb-eye-w: 10.5%;
+  --bb-eye-l: 38%;
+  --bb-eye-r: 60%;
+  container-type: inline-size;
+}
+
+.welcome-bluebot-wise-swing {
+  transform-origin: 50% 45%;
+  animation: welcome-bluebot-wise 6s ease-in-out infinite;
+}
+
+.welcome-bluebot-mood-surface {
+  transform-origin: 50% 52%;
+  transform: rotate(0deg) translate(0, 0);
+  filter: none;
+  transition:
+    transform 0.45s ease,
+    filter 0.45s ease;
+}
+
+.welcome-bluebot--sleeping .welcome-bluebot-mood-surface {
+  transform: rotate(2.4deg) translate(1.4px, 2.4px);
+  filter: brightness(0.92) saturate(0.86) sepia(0.07);
+}
+
+.welcome-bluebot-mood {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+.welcome-bluebot--sleeping .welcome-bluebot-mood--sleep {
+  opacity: 1;
+}
+
+.welcome-bluebot-zzz {
+  position: absolute;
+  line-height: 1;
+}
+
+.welcome-bluebot-zzz--sleep {
+  top: 6%;
+  right: 5%;
+  left: auto;
+  font-size: clamp(6px, 7.2cqi, 8.5px);
+  font-weight: 750;
+  letter-spacing: -0.07em;
+  color: color-mix(in oklab, var(--color-brand-900) 52%, transparent);
+  animation: welcome-bluebot-zzz-sleep-float 2.7s ease-in-out infinite;
+}
+
+.welcome-bluebot-eye-slot {
+  position: absolute;
+  top: var(--bb-eye-y);
+  width: var(--bb-eye-w);
+  aspect-ratio: 1 / 1;
+  /* ``top`` + ``left`` are the pupil *centers* (matches ``bluebot.jpg`` layout). */
+  transform: translate(-50%, -50%) scale(1);
+  transition: transform 0.4s ease;
+}
+
+.welcome-bluebot--sleeping .welcome-bluebot-eye-slot {
+  transform: translate(-50%, calc(-50% + 3px)) scale(0.9);
+}
+
+.welcome-bluebot-eye-slot--l {
+  left: var(--bb-eye-l);
+}
+
+.welcome-bluebot-eye-slot--r {
+  left: var(--bb-eye-r);
+}
+
+/* Closed-eye arcs (``⌣``) during sleep; open pupils use ``welcome-bluebot-eye``. */
+.welcome-bluebot-eye-line {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 88%;
+  height: 42%;
+  box-sizing: border-box;
+  transform: translate(-50%, -40%);
+  border: 2px solid transparent;
+  border-top-color: var(--color-brand-900);
+  border-radius: 50% 50% 0 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+.welcome-bluebot--sleeping .welcome-bluebot-eye-line {
+  opacity: 1;
+}
+
+.welcome-bluebot-eye {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 38% 32%,
+      color-mix(in oklab, var(--color-brand-50) 55%, transparent) 0%,
+      color-mix(in oklab, var(--color-brand-50) 55%, transparent) 8%,
+      transparent 10%),
+    var(--color-brand-900);
+  box-shadow:
+    inset 0 -1px 0 color-mix(in oklab, var(--color-brand-50) 18%, transparent),
+    inset 0 1px 0 color-mix(in oklab, var(--color-brand-50) 10%, transparent);
+  transform-origin: center center;
+  opacity: 1;
+  transition: opacity 0.35s ease;
+  animation: welcome-bluebot-synthetic-blink 5.6s ease-in-out infinite;
+}
+
+.welcome-bluebot--sleeping .welcome-bluebot-eye {
+  opacity: 0;
+}
+
+.welcome-bluebot-eye-slot--r .welcome-bluebot-eye {
+  animation-delay: 55ms;
+}
+
+html.dark .welcome-bluebot-img {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    inset 0 0 0 2px rgba(74, 128, 192, 0.22);
+}
+
+/*
+ * Dark UI: semantic ``brand-900`` is a light text token — using it as the pupil
+ * wash made the vector eyes read as a dim gray blob. Use a dark iris + crisp
+ * specular so the face stays readable on ``brand-50`` / mascot art.
+ */
+html.dark .welcome-bluebot-eye {
+  background:
+    radial-gradient(circle at 38% 32%,
+      #ffffff 0%,
+      #e8f1ff 10%,
+      transparent 14%),
+    radial-gradient(circle at 52% 58%,
+      #334867 0%,
+      #0d121c 72%);
+  box-shadow:
+    inset 0 -1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 1px 2px rgba(0, 0, 0, 0.42);
+}
+
 @media (prefers-reduced-motion: reduce) {
 
   .welcome-logo-wrap,
   .welcome-logo-bob,
   .welcome-logo-breathe {
+    animation: none;
+  }
+
+  .welcome-bluebot-frames,
+  .welcome-bluebot-wise-swing,
+  .welcome-bluebot-mood-surface,
+  .welcome-bluebot-eye,
+  .welcome-bluebot-eye-line,
+  .welcome-bluebot-eye-slot,
+  .welcome-bluebot-mood,
+  .welcome-bluebot-zzz {
+    animation: none;
+  }
+
+  .welcome-bluebot-wise-swing,
+  .welcome-bluebot-mood-surface {
+    transform: none;
+    filter: none;
+  }
+
+  .welcome-bluebot--sleeping .welcome-bluebot-mood-surface {
+    transform: rotate(2.4deg) translate(1.4px, 2.4px);
+    filter: brightness(0.92) saturate(0.86) sepia(0.07);
+  }
+
+  .welcome-bluebot-eye {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+
+  .welcome-bluebot--sleeping .welcome-bluebot-eye {
+    opacity: 0;
+  }
+
+  .welcome-bluebot-eye-line {
+    opacity: 0;
+  }
+
+  .welcome-bluebot--sleeping .welcome-bluebot-eye-line {
+    opacity: 1;
+  }
+
+  .welcome-bluebot-eye-slot {
+    transform: translate(-50%, -50%) scale(1);
+  }
+
+  .welcome-bluebot--sleeping .welcome-bluebot-eye-slot {
+    transform: translate(-50%, calc(-50% + 3px)) scale(0.9);
+  }
+
+  .welcome-bluebot-mood--sleep {
+    opacity: 0;
+  }
+
+  .welcome-bluebot--sleeping .welcome-bluebot-mood--sleep {
+    opacity: 1;
+  }
+
+  .welcome-bluebot-zzz--sleep {
     animation: none;
   }
 
@@ -377,11 +714,28 @@
   0% {
     box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.55);
   }
+
   70% {
     box-shadow: 0 0 0 10px rgba(220, 38, 38, 0);
   }
+
   100% {
     box-shadow: 0 0 0 0 rgba(220, 38, 38, 0);
+  }
+}
+
+/* Brighter pulse on dark UI so the ring reads against ``brand-100`` / page bg. */
+@keyframes mic-button-pulse-dark {
+  0% {
+    box-shadow: 0 0 0 0 rgba(252, 165, 165, 0.6);
+  }
+
+  70% {
+    box-shadow: 0 0 0 10px rgba(252, 165, 165, 0);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 rgba(252, 165, 165, 0);
   }
 }
 
@@ -389,9 +743,18 @@
   animation: mic-button-pulse 1.4s ease-out infinite;
 }
 
+html.dark .mic-button-pulse {
+  animation: mic-button-pulse-dark 1.4s ease-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .mic-button-pulse {
     animation: none;
     box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.4);
+  }
+
+  html.dark .mic-button-pulse {
+    animation: none;
+    box-shadow: 0 0 0 3px rgba(252, 165, 165, 0.5);
   }
 }

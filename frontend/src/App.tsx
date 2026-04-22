@@ -3,7 +3,7 @@ import LoginPage from "./components/LoginPage";
 import Sidebar from "./components/Sidebar";
 import SidebarIconRail from "./components/SidebarIconRail";
 import ChatView from "./components/ChatView";
-import { readStoredModel, writeStoredModel } from "./components/ModelPicker";
+import { readStoredModel, writeStoredModel } from "./components/modelPickerStorage";
 import { useConversations } from "./hooks/useConversations";
 import { useChat } from "./hooks/useChat";
 import { useMediaQuery } from "./hooks/useMediaQuery";
@@ -33,6 +33,17 @@ const DEFAULT_TPM_INPUT_GUIDE = 50_000;
 const DEFAULT_MODEL_CONTEXT_WINDOW = 200_000;
 /** Default 0.5 × TPM guide when config omits max_input_tokens_target. */
 const DEFAULT_MAX_INPUT_TARGET = 25_000;
+
+/** Desktop shelf animation timings (module scope so shelf effect deps stay stable). */
+const SHELF_BODY_FADE_MS = 180;
+/** Matches ``Sidebar`` New chat shell ``transition-* duration-200``. */
+const SHELF_SHELL_MS = 200;
+const SHELF_STRIP_MS = Math.max(SHELF_BODY_FADE_MS, SHELF_SHELL_MS);
+/** Matches desktop shelf ``transition-[width] duration-200``. */
+const SHELF_WIDTH_MS = 200;
+const SHELF_SWAP_TAIL_MS = 50;
+const SHELF_SWAP_MS =
+  Math.max(SHELF_STRIP_MS, SHELF_WIDTH_MS) + SHELF_SWAP_TAIL_MS;
 
 export default function App() {
   const [token, setToken] = useLocalStorage("bb_token", "");
@@ -83,6 +94,67 @@ export default function App() {
       /* ignore */
     }
   }, [sidebarOpen]);
+
+  const isNarrow = useMediaQuery("(max-width: 1023px)");
+
+  /**
+   * Desktop shelf: decouple **column width** from **which tree is mounted** so
+   * collapse can animate ``w-72 → w-14`` while ``Sidebar`` stays mounted and is
+   * clipped by ``overflow-hidden`` — no opacity cross-fade (ghosting).
+   *
+   * Collapse: **parallel** — list/footer fade + New chat shell shrink **and**
+   * column ``w-72 → w-14`` start together (``overflow-hidden`` clips content).
+   * After ``SHELF_STRIP_MS`` strip body DOM; after ``SHELF_SWAP_MS`` (width
+   * transition + buffer) swap ``SidebarIconRail``.
+   */
+  const [desktopShelfWide, setDesktopShelfWide] = useState(sidebarOpen);
+  const [desktopShowFullSidebar, setDesktopShowFullSidebar] =
+    useState(sidebarOpen);
+  const [collapseShelfBody, setCollapseShelfBody] = useState(false);
+  const [collapseShelfFading, setCollapseShelfFading] = useState(false);
+
+  useEffect(() => {
+    if (isNarrow) {
+      setDesktopShelfWide(sidebarOpen);
+      setDesktopShowFullSidebar(sidebarOpen);
+      setCollapseShelfBody(false);
+      setCollapseShelfFading(false);
+      return;
+    }
+    if (sidebarOpen) {
+      setCollapseShelfBody(false);
+      setCollapseShelfFading(false);
+      setDesktopShowFullSidebar(true);
+      const id = requestAnimationFrame(() => {
+        requestAnimationFrame(() => setDesktopShelfWide(true));
+      });
+      return () => cancelAnimationFrame(id);
+    }
+    const reduceMotion =
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion) {
+      setCollapseShelfFading(false);
+      setCollapseShelfBody(false);
+      setDesktopShelfWide(false);
+      setDesktopShowFullSidebar(false);
+      return;
+    }
+    setCollapseShelfFading(true);
+    setDesktopShelfWide(false);
+    const tStrip = window.setTimeout(() => {
+      setCollapseShelfBody(true);
+      setCollapseShelfFading(false);
+    }, SHELF_STRIP_MS);
+    const tSwap = window.setTimeout(() => {
+      setDesktopShowFullSidebar(false);
+      setCollapseShelfBody(false);
+    }, SHELF_SWAP_MS);
+    return () => {
+      window.clearTimeout(tStrip);
+      window.clearTimeout(tSwap);
+    };
+  }, [sidebarOpen, isNarrow]);
   const [activeConvId, _setActiveConvId] = useState<string | null>(
     () => localStorage.getItem("bb_active_conv") ?? null
   );
@@ -96,7 +168,6 @@ export default function App() {
   }, []);
 
   const isLoggedIn = !!token && !!user;
-  const isNarrow = useMediaQuery("(max-width: 1023px)");
 
   const handleSelectConversation = useCallback(
     (id: string) => {
@@ -137,7 +208,7 @@ export default function App() {
             );
           }
         })
-        .catch(() => {});
+        .catch(() => { });
     };
     load();
     const id = window.setInterval(load, 2000);
@@ -224,10 +295,12 @@ export default function App() {
     onAnthropicApiKeyChange: setAnthropicApiKey,
     anthropicServerConfigured,
     onCollapse: () => setSidebarOpen(false),
-  } as const;
+    collapseShelfBody,
+    collapseShelfFading,
+  };
 
   return (
-    <div className="relative flex h-[100dvh] max-h-[100dvh] min-h-0 overflow-hidden overflow-x-hidden bg-brand-50">
+    <div className="relative flex h-[100dvh] max-h-[100dvh] min-h-0 overflow-hidden overflow-x-hidden bg-brand-50 text-brand-900">
       {/*
         Mobile drawer — kept in the DOM while ``isNarrow`` is true so the
         slide-in/out is a real CSS transition instead of a mount pop.
@@ -239,22 +312,20 @@ export default function App() {
         <>
           <button
             type="button"
-            className={`fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-[1px] transition-opacity duration-300 ease-out lg:hidden ${
-              sidebarOpen
+            className={`fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-[1px] transition-opacity duration-300 ease-out dark:bg-black/60 lg:hidden ${sidebarOpen
                 ? "opacity-100"
                 : "pointer-events-none opacity-0"
-            }`}
+              }`}
             aria-label="Close sidebar"
             aria-hidden={!sidebarOpen}
             tabIndex={sidebarOpen ? 0 : -1}
             onClick={() => setSidebarOpen(false)}
           />
           <div
-            className={`fixed inset-y-0 left-0 z-50 flex h-[100dvh] max-h-[100dvh] min-w-0 overflow-hidden border-r border-brand-border bg-brand-100 shadow-2xl transition-transform duration-300 ease-out will-change-transform lg:hidden [width:min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))] max-w-[min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))] ${
-              sidebarOpen
+            className={`fixed inset-y-0 left-0 z-50 flex h-[100dvh] max-h-[100dvh] min-w-0 overflow-hidden border-r border-brand-border bg-gradient-to-b from-white/95 to-brand-100 shadow-2xl transition-transform duration-300 ease-out will-change-transform dark:bg-gradient-to-b dark:from-brand-50 dark:to-brand-50 lg:hidden [width:min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))] max-w-[min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))] ${sidebarOpen
                 ? "translate-x-0"
                 : "pointer-events-none -translate-x-full"
-            }`}
+              }`}
             aria-hidden={!sidebarOpen}
           >
             <div className="h-full min-h-0 min-w-0 flex-1 overflow-hidden [&>aside]:max-w-full [&>aside]:min-w-0 [&>aside]:w-full">
@@ -264,21 +335,22 @@ export default function App() {
         </>
       )}
       <div
-        className={`relative z-[45] flex shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${
-          isNarrow
+        className={`relative z-[45] flex min-h-0 shrink-0 flex-col overflow-hidden transition-[width] duration-200 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] motion-reduce:transition-none motion-reduce:duration-0 ${isNarrow
             ? "w-0 min-w-0 border-r-0"
-            : sidebarOpen
-              ? "w-72 border-r border-brand-border bg-brand-100"
-              : "w-14 border-r border-brand-border/35 bg-brand-50"
-        }`}
+            : `h-[100dvh] max-h-[100dvh] border-r border-brand-border bg-gradient-to-b from-white/95 to-brand-100 dark:bg-gradient-to-b dark:from-brand-50 dark:to-brand-50 ${desktopShelfWide ? "w-72" : "w-14"}`
+          }`}
       >
-        {!isNarrow && sidebarOpen ? (
+        {!isNarrow && desktopShowFullSidebar ? (
           <Sidebar {...sidebarProps} />
-        ) : !isNarrow && !sidebarOpen ? (
-          <SidebarIconRail
-            onExpand={() => setSidebarOpen(true)}
-            onNewConversation={handleNewConversation}
-          />
+        ) : !isNarrow && !desktopShowFullSidebar ? (
+          <div className="flex h-full min-h-0 min-w-0 w-full flex-1 flex-col bg-gradient-to-b from-white/95 to-brand-100 dark:bg-gradient-to-b dark:from-brand-50 dark:to-brand-50">
+            <SidebarIconRail
+              onExpand={() => setSidebarOpen(true)}
+              onNewConversation={handleNewConversation}
+              user={user}
+              onLogout={handleLogout}
+            />
+          </div>
         ) : null}
       </div>
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -306,8 +378,8 @@ export default function App() {
           narrowNav={
             isNarrow
               ? {
-                  onOpenSidebar: () => setSidebarOpen(true),
-                }
+                onOpenSidebar: () => setSidebarOpen(true),
+              }
               : undefined
           }
         />

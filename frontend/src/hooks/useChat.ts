@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
-import type { Message, SSEEvent } from "../types";
+import type { Message, PlotAttachment, PlotSummary, SSEEvent } from "../types";
 import * as api from "../api";
 import { reduceTurnActivity, type TurnActivityStep } from "../turnActivity";
 
@@ -87,7 +87,7 @@ export function useChat(
   const [serverProcessing, setServerProcessing] = useState(false);
   const [streamStatus, setStreamStatus] = useState<AgentStatus>(IDLE);
   const [streamText, setStreamText] = useState("");
-  const [streamPlots, setStreamPlots] = useState<string[]>([]);
+  const [streamPlots, setStreamPlots] = useState<PlotAttachment[]>([]);
   const [streamTokenUsage, setStreamTokenUsage] = useState(() =>
     readStoredTokenUsage(activeConvId)
   );
@@ -103,7 +103,7 @@ export function useChat(
   // rebinding sendMessage. Each send reads the latest value at fetch time.
   const modelRef = useRef<string | null>(model ?? null);
   const accumulatedRef = useRef("");
-  const plotsRef = useRef<string[]>([]);
+  const plotsRef = useRef<PlotAttachment[]>([]);
   /** Only clear the thread when switching to a different conversation — not on remount (Strict Mode) or re-fetch. */
   const prevLoadedConvIdRef = useRef<string | null>(null);
   /** UUID for this POST — must match every SSE event.turn_id (set before fetch). */
@@ -344,17 +344,33 @@ export function useChat(
                   message: event.message ?? "Working…",
                 });
                 break;
-              case "tool_result":
+              case "tool_result": {
                 setStreamStatus({
                   kind: "tool_result",
                   tool: event.tool ?? "",
                   success: event.success ?? false,
                 });
-                if (event.plot_paths?.length) {
-                  plotsRef.current = [...plotsRef.current, ...event.plot_paths];
+                const paths = event.plot_paths;
+                if (paths?.length) {
+                  const summaries = event.plot_summaries as PlotSummary[] | undefined;
+                  const fallbackTz = event.plot_timezone;
+                  const merged: PlotAttachment[] = paths.map((raw, i) => {
+                    const filename = raw.split("/").pop() ?? raw;
+                    const src = raw.startsWith("/api/") ? raw : `/api/plots/${filename}`;
+                    const s =
+                      summaries?.find((x) => x.filename === filename) ?? summaries?.[i];
+                    return {
+                      src,
+                      title: s?.title,
+                      plotTimezone: s?.plot_timezone ?? fallbackTz,
+                      plotType: s?.plot_type,
+                    };
+                  });
+                  plotsRef.current = [...plotsRef.current, ...merged];
                   setStreamPlots([...plotsRef.current]);
                 }
                 break;
+              }
               case "token_usage": {
                 const inputTokens = event.tokens ?? 0;
                 setStreamTokenUsage({

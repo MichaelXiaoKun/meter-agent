@@ -6,11 +6,25 @@ interface ImageViewerProps {
   onClose: () => void;
 }
 
+function plotBasename(src: string): string {
+  try {
+    const u = new URL(src, window.location.origin);
+    const seg = u.pathname.split("/").filter(Boolean).pop();
+    return seg && /\.png$/i.test(seg) ? seg : "plot.png";
+  } catch {
+    const seg = src.split("/").pop();
+    return seg && /\.png$/i.test(seg) ? seg : "plot.png";
+  }
+}
+
 export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
   const [scale, setScale] = useState(1);
   const [translate, setTranslate] = useState({ x: 0, y: 0 });
-  const dragging = useRef(false);
+  /** Ref: synchronous drag check for move; state: transition on <img> (no ref read during render). */
+  const draggingRef = useRef(false);
+  const [dragging, setDragging] = useState(false);
   const lastPos = useRef({ x: 0, y: 0 });
+  const [imgError, setImgError] = useState(false);
 
   const resetView = useCallback(() => {
     setScale(1);
@@ -28,6 +42,26 @@ export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, resetView]);
 
+  async function handleDownload() {
+    const name = plotBasename(src);
+    try {
+      const res = await fetch(src);
+      if (!res.ok) throw new Error(String(res.status));
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      window.open(src, "_blank", "noopener,noreferrer");
+    }
+  }
+
   function handleWheel(e: React.WheelEvent) {
     e.stopPropagation();
     const delta = e.deltaY > 0 ? -0.15 : 0.15;
@@ -36,13 +70,14 @@ export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
 
   function handlePointerDown(e: React.PointerEvent) {
     if (e.button !== 0) return;
-    dragging.current = true;
+    draggingRef.current = true;
+    setDragging(true);
     lastPos.current = { x: e.clientX, y: e.clientY };
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   }
 
   function handlePointerMove(e: React.PointerEvent) {
-    if (!dragging.current) return;
+    if (!draggingRef.current) return;
     const dx = e.clientX - lastPos.current.x;
     const dy = e.clientY - lastPos.current.y;
     lastPos.current = { x: e.clientX, y: e.clientY };
@@ -50,7 +85,8 @@ export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
   }
 
   function handlePointerUp() {
-    dragging.current = false;
+    draggingRef.current = false;
+    setDragging(false);
   }
 
   return (
@@ -60,38 +96,51 @@ export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
     >
       {/* Toolbar */}
       <div
-        className="absolute top-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-xl bg-white/95 px-2 py-1.5 shadow-lg"
+        className="absolute top-4 left-1/2 z-10 flex max-w-[calc(100vw-1rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-1 rounded-xl border border-brand-border/60 bg-white/95 px-2 py-1.5 shadow-lg backdrop-blur-sm dark:border-brand-border dark:bg-brand-100/95"
         onClick={(e) => e.stopPropagation()}
       >
         <button
+          type="button"
           onClick={() => setScale((s) => Math.max(s - 0.25, 0.25))}
-          className="rounded-lg px-2.5 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100"
+          className="rounded-lg px-2.5 py-1 text-sm font-medium text-brand-800 hover:bg-brand-50 dark:text-brand-muted dark:hover:bg-white/10"
           title="Zoom out (-)"
         >
           &minus;
         </button>
-        <span className="min-w-[3.5rem] text-center text-xs text-gray-500">
+        <span className="min-w-[3.5rem] text-center text-xs text-brand-muted">
           {Math.round(scale * 100)}%
         </span>
         <button
+          type="button"
           onClick={() => setScale((s) => Math.min(s + 0.25, 5))}
-          className="rounded-lg px-2.5 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100"
+          className="rounded-lg px-2.5 py-1 text-sm font-medium text-brand-800 hover:bg-brand-50 dark:text-brand-muted dark:hover:bg-white/10"
           title="Zoom in (+)"
         >
           +
         </button>
-        <div className="mx-1 h-4 w-px bg-gray-200" />
+        <div className="mx-1 h-4 w-px bg-brand-border dark:bg-brand-border/80" />
         <button
+          type="button"
           onClick={resetView}
-          className="rounded-lg px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100"
+          className="rounded-lg px-2.5 py-1 text-xs font-medium text-brand-800 hover:bg-brand-50 dark:text-brand-muted dark:hover:bg-white/10"
           title="Reset (0)"
         >
           Reset
         </button>
-        <div className="mx-1 h-4 w-px bg-gray-200" />
+        <div className="mx-1 h-4 w-px bg-brand-border dark:bg-brand-border/80" />
         <button
+          type="button"
+          onClick={() => void handleDownload()}
+          className="rounded-lg px-2.5 py-1 text-xs font-medium text-brand-800 hover:bg-brand-50 dark:text-brand-muted dark:hover:bg-white/10"
+          title="Download PNG"
+        >
+          Save
+        </button>
+        <div className="mx-1 h-4 w-px bg-brand-border dark:bg-brand-border/80" />
+        <button
+          type="button"
           onClick={onClose}
-          className="rounded-lg px-2.5 py-1 text-sm font-medium text-gray-700 hover:bg-gray-100"
+          className="rounded-lg px-2.5 py-1 text-sm font-medium text-brand-800 hover:bg-brand-50 dark:text-brand-muted dark:hover:bg-white/10"
           title="Close (Esc)"
         >
           &times;
@@ -99,26 +148,45 @@ export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
       </div>
 
       {/* Image */}
-      <div
-        className="cursor-grab select-none active:cursor-grabbing"
-        onClick={(e) => e.stopPropagation()}
-        onWheel={handleWheel}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-      >
-        <img
-          src={src}
-          alt={alt ?? "Plot"}
-          draggable={false}
-          className="max-h-[85vh] max-w-[90vw] rounded-lg shadow-2xl"
-          style={{
-            transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale})`,
-            transformOrigin: "center center",
-            transition: dragging.current ? "none" : "transform 0.15s ease-out",
-          }}
-        />
-      </div>
+      {imgError ? (
+        <div
+          className="mx-4 max-w-md rounded-xl border border-brand-border bg-brand-50 px-4 py-6 text-center text-sm text-brand-muted dark:border-brand-border dark:bg-brand-100"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <p className="text-brand-900">Could not load this image in the viewer.</p>
+          <p className="mt-2 text-xs">The file may have been removed from the server.</p>
+          <button
+            type="button"
+            onClick={onClose}
+            className="mt-4 rounded-lg border border-brand-border bg-white px-3 py-1.5 text-sm font-medium text-brand-800 dark:bg-brand-100 dark:text-brand-muted"
+          >
+            Close
+          </button>
+        </div>
+      ) : (
+        <div
+          className="cursor-grab select-none active:cursor-grabbing"
+          onClick={(e) => e.stopPropagation()}
+          onWheel={handleWheel}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+        >
+          <img
+            src={src}
+            alt={alt ?? "Plot"}
+            draggable={false}
+            className="max-h-[85vh] max-w-[90vw] rounded-lg shadow-2xl"
+            style={{
+              transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale})`,
+              transformOrigin: "center center",
+              transition: dragging ? "none" : "transform 0.15s ease-out",
+            }}
+            onError={() => setImgError(true)}
+          />
+        </div>
+      )}
     </div>
   );
 }

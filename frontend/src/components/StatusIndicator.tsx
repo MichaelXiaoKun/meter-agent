@@ -68,8 +68,8 @@ export default function StatusIndicator({ status }: StatusIndicatorProps) {
     <div
       className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${
         variant === "error"
-          ? "bg-red-50 text-red-700"
-          : "bg-brand-100 text-brand-muted"
+          ? "border border-red-200/80 bg-red-50 text-red-700 dark:border-red-900/45 dark:bg-red-950/35 dark:text-red-200"
+          : "bg-brand-100 text-brand-muted dark:bg-brand-100/80 dark:text-brand-muted"
       }`}
     >
       {variant === "info" && (

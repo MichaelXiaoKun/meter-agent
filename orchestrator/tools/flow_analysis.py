@@ -28,6 +28,46 @@ _ANALYSIS_JSON_MARKER = "__BLUEBOT_ANALYSIS_JSON__"
 
 _TRUNCATION_NOTE = "\n\n…*(Report truncated for length; increase `BLUEBOT_FLOW_REPORT_MAX_CHARS` if needed.)*"
 
+# Human-readable titles — keep in sync with ``frontend/src/plotLabels.ts`` for UX parity.
+_PLOT_TYPE_TITLES: dict[str, str] = {
+    "time_series": "Flow rate (time series)",
+    "flow_duration_curve": "Flow duration curve",
+    "peaks_annotated": "Demand peaks",
+    "signal_quality": "Signal quality",
+}
+
+
+def _plot_summaries(plot_paths: list[str], plot_tz: str) -> list[dict]:
+    """
+    Per-file metadata for the React UI (captions / alt text). Order matches
+    ``plot_paths`` so the client can zip arrays without guessing.
+    """
+    out: list[dict] = []
+    for p in plot_paths:
+        name = os.path.basename(p)
+        if not name.lower().endswith(".png"):
+            continue
+        stem = name[:-4]
+        parts = stem.split("_")
+        if len(parts) >= 3:
+            plot_type = parts[-1]
+            title = _PLOT_TYPE_TITLES.get(
+                plot_type,
+                plot_type.replace("_", " ").title(),
+            )
+        else:
+            plot_type = "unknown"
+            title = "Analysis plot"
+        out.append(
+            {
+                "filename": name,
+                "plot_type": plot_type,
+                "title": title,
+                "plot_timezone": plot_tz,
+            }
+        )
+    return out
+
 
 def _flow_report_max_chars() -> int:
     raw = os.environ.get("BLUEBOT_FLOW_REPORT_MAX_CHARS", "10000")
@@ -209,6 +249,7 @@ def analyze_flow_data(
             "report":            str | None,   # Markdown (may be truncated — see report_truncated)
             "report_truncated":  bool,         # True if report was shortened for token/length limits
             "plot_paths":        list[str],     # absolute PNG paths embedded in the report
+            "plot_summaries":  list[dict],   # one entry per plot_paths item (filename, title, tz, type)
             "analysis_json_path": str | None, # absolute path to analysis_*.json (verified_facts bundle)
             "display_range": str,          # wall times for start/end (user TZ when set)
             "plot_timezone": str,          # IANA zone the plot x-axes were rendered in
@@ -244,11 +285,13 @@ def analyze_flow_data(
         report, truncated = _maybe_truncate_report(raw_report)
         if truncated:
             plot_paths = _collect_plot_paths(report, stderr, _AGENT_DIR)
+        summaries = _plot_summaries(plot_paths, plot_tz)
         return {
             "success": True,
             "report": report,
             "report_truncated": truncated,
             "plot_paths": plot_paths,
+            "plot_summaries": summaries,
             "analysis_json_path": _collect_analysis_json_path(stderr),
             "display_range": display_range,
             "plot_timezone": plot_tz,
@@ -259,6 +302,7 @@ def analyze_flow_data(
         "report": None,
         "report_truncated": False,
         "plot_paths": [],
+        "plot_summaries": [],
         "analysis_json_path": None,
         "display_range": display_range,
         "plot_timezone": plot_tz,
