@@ -12,6 +12,7 @@ function isAbortOrUnload(err: unknown): boolean {
 
 export type AgentStatus =
   | { kind: "idle" }
+  | { kind: "connecting" }
   | { kind: "thinking" }
   | { kind: "queued"; message: string }
   | { kind: "streaming" }
@@ -254,11 +255,18 @@ export function useChat(
         return next;
       });
 
-      setStreamStatus({ kind: "thinking" });
+      setStreamStatus({ kind: "connecting" });
       setStreamText("");
       setStreamPlots([]);
       setAssistantError(null);
-      setTurnActivity([]);
+      setTurnActivity([
+        {
+          seq: 0,
+          kind: "connecting",
+          title: "Sending your message",
+          detail: undefined,
+        },
+      ]);
       streamOpenedForTurnRef.current = false;
       accumulatedRef.current = "";
       plotsRef.current = [];
@@ -324,6 +332,9 @@ export function useChat(
                   message: event.message ?? "Waiting for a free slot…",
                 });
                 break;
+              case "intent_route":
+                setStreamStatus({ kind: "thinking" });
+                break;
               case "thinking":
                 accumulatedRef.current = "";
                 setStreamStatus({ kind: "thinking" });
@@ -377,6 +388,10 @@ export function useChat(
                   tokens: inputTokens,
                   pct: event.pct ?? 0,
                 });
+                // First server event is often this — move off "Sending…" immediately.
+                setStreamStatus((s) =>
+                  s.kind === "connecting" ? { kind: "thinking" } : s
+                );
                 break;
               }
               case "compressing":

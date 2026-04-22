@@ -48,6 +48,7 @@ export interface SSEEvent {
     | "token_usage"
     | "compressing"
     | "queued"
+    | "intent_route"
     | "done"
     | "error";
   text?: string;
@@ -61,6 +62,13 @@ export interface SSEEvent {
   tokens?: number;
   pct?: number;
   error?: string;
+  /** When ``type`` is ``intent_route`` — cheap routing pass before the main model call. */
+  intent?: string;
+  source?: string;
+  tools?: string[];
+  rate_limit_wait_seconds?: number;
+  attempt?: number;
+  model?: string;
   /** Present on events from orchestrator — same id for one user message / chat POST. */
   turn_id?: string;
   /** Monotonic per turn — drop duplicates or stale ordering bugs. */

@@ -215,7 +215,7 @@ export default function App() {
     return () => window.clearInterval(id);
   }, []);
 
-  const { conversations, refresh, create, remove, rename } = useConversations(user);
+  const { conversations, refresh, create, remove, removeMany, rename } = useConversations(user);
   const {
     messages,
     status,
@@ -267,6 +267,16 @@ export default function App() {
     }
   }
 
+  async function handleDeleteConversations(ids: string[]) {
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    const remaining = conversations.filter((c) => !idSet.has(c.id));
+    if (activeConvId && idSet.has(activeConvId)) {
+      setActiveConvId(remaining[0]?.id ?? null);
+    }
+    await removeMany(ids);
+  }
+
   async function handleSend(text: string) {
     let convId = activeConvId;
     if (!convId && user) {
@@ -289,6 +299,7 @@ export default function App() {
     onSelectConversation: handleSelectConversation,
     onNewConversation: handleNewConversation,
     onDeleteConversation: handleDeleteConversation,
+    onDeleteConversations: handleDeleteConversations,
     onRenameConversation: rename,
     onLogout: handleLogout,
     anthropicApiKey,

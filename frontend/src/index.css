@@ -758,3 +758,25 @@ html.dark .mic-button-pulse {
     box-shadow: 0 0 0 3px rgba(252, 165, 165, 0.5);
   }
 }
+
+/* Turn activity line — subtle “working” emphasis (mainstream agent style) */
+@keyframes agent-activity-breathe {
+  0%,
+  100% {
+    opacity: 0.72;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.agent-activity-line-active {
+  animation: agent-activity-breathe 2.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-activity-line-active {
+    animation: none;
+    opacity: 1;
+  }
+}

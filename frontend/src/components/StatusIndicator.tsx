@@ -1,23 +1,5 @@
 import type { AgentStatus } from "../hooks/useChat";
-
-const TOOL_LABELS: Record<string, string> = {
-  resolve_time_range: "Resolving time range",
-  check_meter_status: "Checking meter status",
-  get_meter_profile: "Fetching meter profile",
-  analyze_flow_data: "Analyzing flow data",
-  configure_meter_pipe: "Configuring meter pipe",
-  set_transducer_angle_only: "Setting transducer angle (SSA only)",
-};
-
-/** Short label after a tool finishes (before the next model turn streams). */
-const TOOL_RESULT_DONE: Record<string, string> = {
-  resolve_time_range: "Time range ready",
-  check_meter_status: "Meter status received",
-  get_meter_profile: "Meter profile received",
-  analyze_flow_data: "Flow analysis complete",
-  configure_meter_pipe: "Pipe configuration updated",
-  set_transducer_angle_only: "Angle update sent",
-};
+import { toolDoneLine, toolNowLine } from "../turnActivity";
 
 interface StatusIndicatorProps {
   status: AgentStatus;
@@ -35,30 +17,29 @@ export default function StatusIndicator({ status }: StatusIndicatorProps) {
     case "queued":
       label = status.message;
       break;
+    case "connecting":
+      label = "Sending your message…";
+      break;
     case "thinking":
-      label = "Preparing reply...";
+      label = "Thinking…";
       break;
     case "streaming":
-      label = "Generating reply...";
+      label = "Writing the reply…";
       break;
     case "tool_call":
-      label = `${TOOL_LABELS[status.tool] ?? status.tool}...`;
+      label = toolNowLine(status.tool);
       break;
     case "tool_progress":
       label = status.message;
       break;
     case "tool_result":
-      if (status.success) {
-        label =
-          TOOL_RESULT_DONE[status.tool] ??
-          `${status.tool.replace(/_/g, " ")} complete`;
-      } else {
-        label = `${TOOL_LABELS[status.tool] ?? status.tool} failed`;
+      label = toolDoneLine(status.tool, status.success);
+      if (!status.success) {
         variant = "error";
       }
       break;
     case "compressing":
-      label = "Compressing conversation history...";
+      label = "Tightening context…";
       break;
     default:
       return null;
@@ -66,17 +47,18 @@ export default function StatusIndicator({ status }: StatusIndicatorProps) {
 
   return (
     <div
-      className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${
+      className={`flex items-center gap-2 pl-0.5 text-left text-sm ${
         variant === "error"
-          ? "border border-red-200/80 bg-red-50 text-red-700 dark:border-red-900/45 dark:bg-red-950/35 dark:text-red-200"
-          : "bg-brand-100 text-brand-muted dark:bg-brand-100/80 dark:text-brand-muted"
+          ? "text-red-600/90 dark:text-red-400/90"
+          : "text-neutral-500 dark:text-neutral-400"
       }`}
     >
       {variant === "info" && (
         <svg
-          className="h-4 w-4 animate-spin text-brand-500"
+          className="h-3.5 w-3.5 shrink-0 animate-spin text-neutral-400 dark:text-neutral-500"
           fill="none"
           viewBox="0 0 24 24"
+          aria-hidden
         >
           <circle
             className="opacity-25"
@@ -93,7 +75,7 @@ export default function StatusIndicator({ status }: StatusIndicatorProps) {
           />
         </svg>
       )}
-      {label}
+      <span className="min-w-0 leading-relaxed">{label}</span>
     </div>
   );
 }
