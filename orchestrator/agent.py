@@ -5,6 +5,9 @@ Maintains full conversation history across turns and delegates to sub-agents
 via tools: resolve_time_range, check_meter_status, analyze_flow_data, configure_meter_pipe,
 set_transducer_angle_only.
 
+Optional per-turn tool subset: ``ORCHESTRATOR_INTENT_ROUTER`` = off | rules (default) | haiku
+— see ``_resolve_routed_tools`` and SSE event type ``intent_route``.
+
 Usage (from an outer chat loop):
     messages = []
     reply, replaced = run_turn(messages, token="...")   # modifies messages in place
@@ -13,6 +16,7 @@ Usage (from an outer chat loop):
 
 import json
 import os
+import re
 import threading
 import time
 
@@ -54,6 +58,185 @@ TOOLS = [
     _PIPE_CONFIGURATION_DEF,
     _SET_TRANSDUCER_ANGLE_DEF,
 ]
+
+# ---------------------------------------------------------------------------
+# Intent routing: optional cheap pass (rules or Haiku) to expose only a tool
+# subset to the main orchestrator — cuts spurious analyze_flow_data / config calls.
+# ORCHESTRATOR_INTENT_ROUTER:  off  — full TOOLS (legacy behaviour)
+#                         rules  — keyword / regex heuristics (default)
+#                          haiku — Haiku JSON classify, then rules on failure
+# ---------------------------------------------------------------------------
+
+_INTENT_LABELS = frozenset({"status", "flow", "config", "general"})
+
+# Tool *names* (must match each TOOL_DEFINITION["name"]).
+_BASE_READ_TOOLS: frozenset[str] = frozenset(
+    {
+        "resolve_time_range",
+        "check_meter_status",
+        "get_meter_profile",
+        "list_meters_for_account",
+    }
+)
+
+_TOOL_NAMES_BY_INTENT: dict[str, frozenset[str]] = {
+    # Read-only / account discovery; no flow analysis, no pipe writes.
+    "status": _BASE_READ_TOOLS,
+    "general": _BASE_READ_TOOLS,
+    # Historical flow + plots (expensive subprocess).
+    "flow": _BASE_READ_TOOLS | frozenset({"analyze_flow_data"}),
+    # Pipe / angle changes (mutations).
+    "config": _BASE_READ_TOOLS
+    | frozenset(
+        {
+            "configure_meter_pipe",
+            "set_transducer_angle_only",
+        }
+    ),
+}
+
+
+def _intent_router_mode() -> str:
+    raw = (os.environ.get("ORCHESTRATOR_INTENT_ROUTER") or "rules").strip().lower()
+    if raw in ("0", "false", "no", "off", "none", "disabled"):
+        return "off"
+    if raw in ("haiku", "model", "llm"):
+        return "haiku"
+    return "rules"
+
+
+def _last_user_text_for_routing(messages: list) -> str:
+    """Most recent user message text (this turn's user utterance is usually last)."""
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if isinstance(content, str):
+            return content.strip()[:12_000]
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(str(block.get("text", "")))
+                elif hasattr(block, "text"):
+                    parts.append(str(getattr(block, "text", "") or ""))
+            return " ".join(parts).strip()[:12_000]
+    return ""
+
+
+def _route_intent_rules(user_text: str) -> str:
+    if not (user_text or "").strip():
+        return "general"
+    t = user_text.lower()
+    # Order: more specific "what kind of work" first.
+    if re.search(
+        r"\b(flow|rate|trend|chart|graph|plot|time series|historical|analy[sz]e|"
+        r"last \d+|past \d+|yesterday|today|this week|this month|"
+        r"demand|duration curve|how much (water|flow)|usage over|peaks?|data for)\b",
+        t,
+    ):
+        return "flow"
+    if re.search(
+        r"\b(config|pipe|material|diameter|transducer|angle|install|"
+        r"pvc|hdpe|copper|npt|bspt|bs en|astm|sch \d+|schedule)\b",
+        t,
+    ):
+        return "config"
+    if re.search(
+        r"\b(online|offline|status|signal|quality|battery|wifi|lora|lorawan|"
+        r"health|is my meter|meter is|list meters?|serial)\b",
+        t,
+    ) or re.search(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", t, re.I):
+        return "status"
+    return "general"
+
+
+def _parse_haiku_intent_json(text: str) -> str | None:
+    for m in re.finditer(r"\{[^{}]*\}", text):
+        try:
+            o = json.loads(m.group(0))
+        except json.JSONDecodeError:
+            continue
+        v = str(o.get("intent", "")).lower().strip()
+        if v in _INTENT_LABELS:
+            return v
+    return None
+
+
+def _route_intent_haiku(
+    client: anthropic.Anthropic,
+    user_text: str,
+) -> str:
+    if not (user_text or "").strip():
+        return "general"
+    system = (
+        "You classify one user message for a bluebot ultrasonic flow meter assistant. "
+        "Reply with ONLY valid JSON, no markdown: {\"intent\":\"<one word>\"}.\n"
+        "intent must be exactly one of: status, flow, config, general.\n"
+        "- status: online/offline, signal, battery, health, list meters by email, device metadata\n"
+        "- flow: flow history, rates over time, charts, plots, time ranges, analysis\n"
+        "- config: pipe material, size, standard, transducer angle, physical install\n"
+        "- general: how-to, unclear, or small talk\n"
+    )
+    try:
+        est = min(4000, max(400, len(user_text) // 2 + 400))
+        wait_for_sliding_tpm_headroom(est, _TPM_INPUT_GUIDE_TOKENS)
+        resp = client.messages.create(
+            model=_CHEAP_MODEL,
+            max_tokens=120,
+            system=system,
+            messages=[{"role": "user", "content": user_text[:8000]}],
+        )
+        record_input_tokens_from_usage(getattr(resp, "usage", None))
+        raw = resp.content[0].text if resp.content else ""
+    except Exception:
+        return _route_intent_rules(user_text)
+    parsed = _parse_haiku_intent_json(raw)
+    if parsed:
+        return parsed
+    return _route_intent_rules(user_text)
+
+
+def _tools_for_intent_label(label: str) -> list:
+    """Return a non-empty subset of TOOLS; fallback to full list if something is off."""
+    names = _TOOL_NAMES_BY_INTENT.get(label) or _TOOL_NAMES_BY_INTENT["general"]
+    out = [t for t in TOOLS if t.get("name") in names]
+    return out if out else list(TOOLS)
+
+
+def _resolve_routed_tools(
+    client: anthropic.Anthropic,
+    messages: list,
+    *,
+    emit,
+) -> tuple[list, str, str]:
+    """
+    Returns (tools_for_api, intent_label, source) where source is
+    off | rules | haiku.
+    """
+    mode = _intent_router_mode()
+    if mode == "off":
+        return (list(TOOLS), "full", "off")
+    user_text = _last_user_text_for_routing(messages)
+    if mode == "haiku":
+        label = _route_intent_haiku(client, user_text)
+        src = "haiku"
+    else:
+        label = _route_intent_rules(user_text)
+        src = "rules"
+    tools = _tools_for_intent_label(label)
+    if emit:
+        emit(
+            {
+                "type": "intent_route",
+                "intent": label,
+                "source": src,
+                "tools": [t.get("name") for t in tools if t.get("name") is not None],
+            }
+        )
+    return (tools, label, src)
+
 
 # Cheapest tier (Haiku). Override main chat with ORCHESTRATOR_MODEL (e.g. claude-sonnet-4-6).
 _CHEAP_MODEL = "claude-haiku-4-5"
@@ -325,6 +508,7 @@ def _count_tokens(
     messages: list,
     *,
     model: str | None = None,
+    tools: list | None = None,
 ) -> int:
     """Return the input token count for the current conversation state.
 
@@ -332,11 +516,14 @@ def _count_tokens(
     the model that will actually handle this turn. Different Claude tiers
     can tokenise slightly differently, but more importantly this keeps the
     UI's ``token_usage`` events honest when the user switches model.
+    *tools* should match the list passed to ``messages.stream`` (intent routing
+    may pass a subset of ``TOOLS``).
     """
+    tool_list = tools if tools is not None else TOOLS
     response = client.messages.count_tokens(
         model=model or _MODEL,
         system=_SYSTEM_PROMPT,
-        tools=TOOLS,
+        tools=tool_list,
         messages=messages,
     )
     return response.input_tokens
@@ -506,6 +693,9 @@ def _compress_until_under_input_budget(
     client: anthropic.Anthropic,
     messages: list,
     max_input_tokens: int,
+    *,
+    model: str | None = None,
+    tools: list | None = None,
 ) -> bool:
     """
     Repeatedly summarize older turns until _count_tokens <= max_input_tokens or no progress.
@@ -513,7 +703,7 @@ def _compress_until_under_input_budget(
     """
     changed = False
     for _ in range(24):
-        ntok = _count_tokens(client, messages)
+        ntok = _count_tokens(client, messages, model=model, tools=tools)
         record_input_tokens(ntok)
         if ntok <= max_input_tokens:
             return changed
@@ -524,14 +714,14 @@ def _compress_until_under_input_budget(
             if _try_compress_history_inplace(client, messages, keep_recent=kr):
                 changed = True
                 round_progress = True
-                after = _count_tokens(client, messages)
+                after = _count_tokens(client, messages, model=model, tools=tools)
                 record_input_tokens(after)
                 if after <= max_input_tokens:
                     return changed
         if not round_progress:
             break
 
-    final_ntok = _count_tokens(client, messages)
+    final_ntok = _count_tokens(client, messages, model=model, tools=tools)
     record_input_tokens(final_ntok)
     if final_ntok > max_input_tokens:
         if _collapse_entire_thread_to_summary(client, messages):
@@ -595,6 +785,19 @@ def _run_analyze_flow_with_progress(
     if not result_holder:
         return json.dumps({"error": "analyze_flow_data produced no result"}, default=str)
     return json.dumps(result_holder[0], default=str)
+
+
+def _sse_tool_succeeded(result_dict: dict) -> bool:
+    """
+    Derive UX success for SSE ``tool_result`` events.
+    Prefer an explicit ``success`` bool when present (all current tools set it);
+    otherwise treat only missing/empty ``error`` as ok (legacy payload).
+    """
+    s = result_dict.get("success")
+    if isinstance(s, bool):
+        return s
+    err = result_dict.get("error")
+    return err is None or err == ""
 
 
 def _dispatch(
@@ -699,6 +902,8 @@ def run_turn(
                     Fired before and after each tool call with:
                       {"type": "token_usage",  "tokens": int, "pct": float}  — before each API call
                       {"type": "compressing",  "tokens": int, "pct": float}  — when compression fires
+                      {"type": "intent_route",  "intent": str, "source": str, "tools": list}
+                          — when ORCHESTRATOR_INTENT_ROUTER is not off (rules/haiku pass)
                       {"type": "tool_call",    "tool": str, "input": dict}
                       {"type": "tool_result",  "tool": str, "success": bool}
                       {"type": "tool_progress", "tool": str, "message": str}  — long tools (flow analysis)
@@ -719,9 +924,12 @@ def run_turn(
     active_model = resolve_orchestrator_model(model)
     client = anthropic.Anthropic(api_key=_anthropic_key)
     history_replaced = False
+    active_tools, _, _ = _resolve_routed_tools(client, messages, emit=_emit)
 
     while True:
-        token_count = _count_tokens(client, messages, model=active_model)
+        token_count = _count_tokens(
+            client, messages, model=active_model, tools=active_tools
+        )
         pct = token_count / _MODEL_CONTEXT_WINDOW
         _emit({"type": "token_usage", "tokens": token_count, "pct": pct, "model": active_model})
 
@@ -738,10 +946,13 @@ def run_turn(
                 }
             )
             if _compress_until_under_input_budget(
-                client, messages, _MAX_INPUT_TOKENS_TARGET
+                client, messages, _MAX_INPUT_TOKENS_TARGET,
+                model=active_model, tools=active_tools,
             ):
                 history_replaced = True
-            token_count = _count_tokens(client, messages, model=active_model)
+            token_count = _count_tokens(
+                client, messages, model=active_model, tools=active_tools
+            )
             pct = token_count / _MODEL_CONTEXT_WINDOW
             _emit({"type": "token_usage", "tokens": token_count, "pct": pct, "model": active_model})
             if token_count > _MAX_INPUT_TOKENS_TARGET:
@@ -770,7 +981,7 @@ def run_turn(
                     model=active_model,
                     max_tokens=4096,
                     system=_SYSTEM_PROMPT,
-                    tools=TOOLS,
+                    tools=active_tools,
                     messages=api_messages,
                 ) as stream:
                     for text_delta in stream.text_stream:
@@ -792,10 +1003,13 @@ def run_turn(
                     }
                 )
                 if _compress_until_under_input_budget(
-                    client, messages, _MAX_INPUT_TOKENS_TARGET
+                    client, messages, _MAX_INPUT_TOKENS_TARGET,
+                    model=active_model, tools=active_tools,
                 ):
                     history_replaced = True
-                token_count = _count_tokens(client, messages, model=active_model)
+                token_count = _count_tokens(
+                    client, messages, model=active_model, tools=active_tools
+                )
                 pct = token_count / _MODEL_CONTEXT_WINDOW
                 _emit({"type": "token_usage", "tokens": token_count, "pct": pct, "model": active_model})
                 if token_count > _MAX_INPUT_TOKENS_TARGET:
@@ -859,11 +1073,16 @@ def run_turn(
                             anthropic_api_key=_anthropic_key,
                         )
                     result_dict = json.loads(result_json)
+                    ok = _sse_tool_succeeded(result_dict)
                     event: dict = {
                         "type": "tool_result",
                         "tool": block.name,
-                        "success": result_dict.get("error") is None,
+                        "success": ok,
                     }
+                    if not ok:
+                        emsg = result_dict.get("error")
+                        if emsg not in (None, ""):
+                            event["message"] = str(emsg)[:500]
                     if block.name == "analyze_flow_data":
                         event["plot_paths"] = result_dict.get("plot_paths", [])
                         ptz = result_dict.get("plot_timezone")

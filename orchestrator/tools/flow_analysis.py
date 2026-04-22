@@ -6,10 +6,14 @@ if present, otherwise falls back to the current Python interpreter.
 """
 
 import json
+import logging
+import math
 import os
 import re
 import subprocess
 import sys
+
+logger = logging.getLogger(__name__)
 
 from processors.time_range import display_tz_name_for_user, format_unix_range_display
 from subprocess_env import tool_subprocess_env
@@ -50,7 +54,9 @@ def _plot_summaries(plot_paths: list[str], plot_tz: str) -> list[dict]:
         stem = name[:-4]
         parts = stem.split("_")
         if len(parts) >= 3:
-            plot_type = parts[-1]
+            # Filenames are ``{serial}_{unix_start}_{plot_type}``; plot_type may
+            # contain underscores (e.g. ``time_series``).
+            plot_type = "_".join(parts[2:])
             title = _PLOT_TYPE_TITLES.get(
                 plot_type,
                 plot_type.replace("_", " ").title(),
@@ -229,10 +235,33 @@ def _normalize_network_type(value: str | None) -> str | None:
     return v if v in _ALLOWED_NETWORK_TYPES else None
 
 
+def _coerce_unix_seconds(field: str, value: object) -> int:
+    """
+    Tool APIs sometimes deliver JSON numbers as strings. ``datetime.fromtimestamp`` and
+    the data-processing CLI require real ints; reject bools (``True`` is an ``int`` in Python).
+    """
+    if isinstance(value, bool):
+        raise TypeError(f"{field} must be a Unix timestamp in seconds, not a boolean")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{field} must be a finite number")
+        return int(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            raise ValueError(f"{field} is empty")
+        return int(float(s))
+    raise TypeError(
+        f"{field} must be a number (Unix seconds, UTC); got {type(value).__name__!r}"
+    )
+
+
 def analyze_flow_data(
     serial_number: str,
-    start: int,
-    end: int,
+    start: int | str | float,
+    end: int | str | float,
     token: str,
     *,
     display_timezone: str | None = None,
@@ -256,6 +285,43 @@ def analyze_flow_data(
             "error":         str | None,
         }
     """
+    try:
+        start = _coerce_unix_seconds("start", start)
+        end = _coerce_unix_seconds("end", end)
+    except (TypeError, ValueError) as e:
+        err = str(e)
+        tz_name = display_tz_name_for_user(display_timezone)
+        plot_tz = _resolve_plot_tz_name(
+            meter_timezone=meter_timezone, display_timezone=tz_name
+        )
+        return {
+            "success": False,
+            "report": None,
+            "report_truncated": False,
+            "plot_paths": [],
+            "plot_summaries": [],
+            "analysis_json_path": None,
+            "display_range": "",
+            "plot_timezone": plot_tz,
+            "error": err,
+        }
+    if start > end:
+        err = f"start ({start}) must be <= end ({end})"
+        tz_name = display_tz_name_for_user(display_timezone)
+        plot_tz = _resolve_plot_tz_name(
+            meter_timezone=meter_timezone, display_timezone=tz_name
+        )
+        return {
+            "success": False,
+            "report": None,
+            "report_truncated": False,
+            "plot_paths": [],
+            "plot_summaries": [],
+            "analysis_json_path": None,
+            "display_range": "",
+            "plot_timezone": plot_tz,
+            "error": err,
+        }
     tz_name = display_tz_name_for_user(display_timezone)
     display_range = format_unix_range_display(start, end, tz_name=tz_name)
     plot_tz = _resolve_plot_tz_name(
@@ -266,6 +332,12 @@ def analyze_flow_data(
     if nt:
         env["BLUEBOT_METER_NETWORK_TYPE"] = nt
     env["BLUEBOT_PLOT_TZ"] = plot_tz
+    logger.info(
+        "analyze_flow_data subprocess start serial=%r start=%s end=%s",
+        serial_number,
+        start,
+        end,
+    )
     result = subprocess.run(
         [
             _PYTHON, "main.py",
@@ -286,6 +358,12 @@ def analyze_flow_data(
         if truncated:
             plot_paths = _collect_plot_paths(report, stderr, _AGENT_DIR)
         summaries = _plot_summaries(plot_paths, plot_tz)
+        logger.info(
+            "analyze_flow_data ok serial=%r returncode=0 plots=%s report_truncated=%s",
+            serial_number,
+            len(plot_paths),
+            truncated,
+        )
         return {
             "success": True,
             "report": report,
@@ -297,6 +375,30 @@ def analyze_flow_data(
             "plot_timezone": plot_tz,
             "error": None,
         }
+    err_text = result.stderr.strip() or f"Process exited with code {result.returncode}"
+    # Subprocess stderr was only in the tool JSON; surface it in server logs for ops debugging.
+    _tail = err_text if len(err_text) <= 8000 else f"{err_text[:8000]}\n…[stderr truncated for log]"
+    logger.error(
+        "analyze_flow_data failed serial=%r start=%s end=%s returncode=%s python=%s cwd=%s\n%s",
+        serial_number,
+        start,
+        end,
+        result.returncode,
+        _PYTHON,
+        _AGENT_DIR,
+        _tail,
+    )
+    # Uvicorn/reload can swallow or split app loggers; mirror to uvicorn.error + raw stderr.
+    logging.getLogger("uvicorn.error").error(
+        "BBOT analyze_flow_data failed serial=%r returncode=%s",
+        serial_number,
+        result.returncode,
+    )
+    print(
+        f"BBOT_FLOW_FAIL serial={serial_number!r} returncode={result.returncode} start={start} end={end}\n{_tail}",
+        file=sys.stderr,
+        flush=True,
+    )
     return {
         "success": False,
         "report": None,
@@ -306,5 +408,5 @@ def analyze_flow_data(
         "analysis_json_path": None,
         "display_range": display_range,
         "plot_timezone": plot_tz,
-        "error": result.stderr.strip() or f"Process exited with code {result.returncode}",
+        "error": err_text,
     }

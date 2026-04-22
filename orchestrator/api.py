@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import socket
+import sys
 import threading
 import time
 import uuid
@@ -109,6 +110,31 @@ logger.info(
     "ORCHESTRATOR_MAX_CONCURRENT_TURNS=%s (max parallel chat turns per process)",
     configured_max_slots(),
 )
+
+
+def _ensure_flow_tool_stderr_logging() -> None:
+    """
+    Uvicorn’s console often shows only ``INFO: 127.0.0.1 "GET ..."`` access lines.
+    Bind ``tools.flow_analysis`` to stderr so ``analyze_flow_data`` failures are
+    always visible when subprocess returncode != 0.
+    """
+    lg = logging.getLogger("tools.flow_analysis")
+    if getattr(lg, "_bluebot_stderr_handler", None) is not None:
+        return
+    h = logging.StreamHandler(sys.stderr)
+    h.setLevel(logging.DEBUG)
+    h.setFormatter(
+        logging.Formatter("%(levelname)s [tools.flow_analysis] %(message)s")
+    )
+    lg.addHandler(h)
+    lg.setLevel(logging.INFO)
+    lg.propagate = False
+    lg._bluebot_stderr_handler = h  # type: ignore[attr-defined]
+    # One short line (avoid terminal wrap/truncate looking like a typo).
+    lg.info("bluebot flow_analysis: stderr log handler ready")
+
+
+_ensure_flow_tool_stderr_logging()
 
 
 def _sse_error_message(exc: BaseException) -> str:

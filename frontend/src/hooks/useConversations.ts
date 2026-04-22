@@ -54,6 +54,17 @@ export function useConversations(userId: string) {
     [userId, refresh]
   );
 
+  const removeMany = useCallback(
+    async (convIds: string[]) => {
+      if (!userId || convIds.length === 0) return;
+      for (const id of convIds) {
+        await api.deleteConversation(id, userId);
+      }
+      await refresh();
+    },
+    [userId, refresh]
+  );
+
   const rename = useCallback(
     async (convId: string, title: string) => {
       await api.updateTitle(convId, title);
@@ -62,5 +73,5 @@ export function useConversations(userId: string) {
     [refresh]
   );
 
-  return { conversations, loading, refresh, create, remove, rename };
+  return { conversations, loading, refresh, create, remove, removeMany, rename };
 }

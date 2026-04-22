@@ -6,9 +6,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ThemeToggle from "./ThemeToggle";
 
-/** Matches expanded ``Sidebar`` new-chat icon tile so open ↔ rail feels continuous. */
+/** Account tile and similar chips — bordered ``h-9 w-9`` (pen uses ``RAIL_NEW_CHAT_PEN_CLASS``). */
 export const SHELF_NEW_CHAT_TILE_CLASS =
   "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-brand-border/80 bg-white text-brand-700 shadow-sm ring-1 ring-brand-border/40 transition-colors hover:border-brand-500 hover:bg-brand-50 hover:text-brand-900 dark:bg-brand-100 dark:text-brand-muted dark:hover:border-brand-border dark:hover:bg-white/10 dark:hover:text-brand-900";
+
+/** New-chat pen: same size/placement as tile, no frame until hover (matches expanded narrow New chat). */
+const RAIL_NEW_CHAT_PEN_CLASS =
+  "group flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-transparent bg-transparent text-brand-700 shadow-none ring-1 ring-transparent transition-[color,background-color,border-color,box-shadow,ring-color] duration-200 ease-out hover:border-brand-500 hover:bg-brand-50 hover:shadow-sm hover:ring-brand-border/40 hover:text-brand-900 dark:text-brand-muted dark:hover:bg-brand-100 dark:hover:text-brand-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 focus-visible:ring-offset-brand-50 dark:focus-visible:ring-offset-brand-100";
 
 /** Rounded rectangle with a left rail — dock / hide (expanded) or open-panel hint (rail hover). */
 export function IconSidebarDock({ className }: { className?: string }) {
@@ -185,7 +189,7 @@ export default function SidebarIconRail({
 
   return (
     <nav
-      className="flex h-full min-h-0 w-full flex-1 flex-col items-start gap-2.5 bg-gradient-to-b from-white/95 to-brand-100 pl-3 pr-2 pt-[max(0.75rem,env(safe-area-inset-top,0px))] pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] dark:bg-gradient-to-b dark:from-brand-50 dark:to-brand-50"
+      className="flex h-full min-h-0 w-full flex-1 flex-col items-start gap-2.5 bg-gradient-to-b from-white/95 to-brand-100 px-2.5 pt-[max(0.75rem,env(safe-area-inset-top,0px))] pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] dark:bg-gradient-to-b dark:from-brand-50 dark:to-brand-50"
       aria-label="Conversations and account"
     >
       <button
@@ -213,11 +217,11 @@ export default function SidebarIconRail({
       <button
         type="button"
         onClick={onNewConversation}
-        className={SHELF_NEW_CHAT_TILE_CLASS}
+        className={RAIL_NEW_CHAT_PEN_CLASS}
         title="New chat"
         aria-label="New chat"
       >
-        <IconPencilWriting className="h-5 w-5" />
+        <IconPencilWriting className="h-5 w-5 shrink-0" />
       </button>
 
       <div className="mt-auto flex w-full flex-col items-start gap-2.5">
