@@ -3,7 +3,7 @@ import type { SSEEvent } from "./types";
 
 /**
  * One line per tool: present-continuous (running) and past (done), kept parallel for alignment.
- * Public for StatusIndicator to stay in sync with the timeline.
+ * Public for compact labels shared with the activity timeline.
  */
 export const TOOL_LIFECYCLE: Record<string, { now: string; done: string }> = {
   resolve_time_range: { now: "Resolving the time range…", done: "Resolved the time range" },
@@ -15,16 +15,66 @@ export const TOOL_LIFECYCLE: Record<string, { now: string; done: string }> = {
   set_transducer_angle_only: { now: "Setting the transducer angle…", done: "Set the transducer angle" },
 };
 
+function narrowStr(v: unknown): string {
+  if (typeof v !== "string") return "";
+  return v.trim();
+}
+
+function truncStr(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max - 1)}…`;
+}
+
 /** User-visible line while a tool is running (fallback for unknown tool names from the server). */
-export function toolNowLine(name: string): string {
+export function toolNowLine(
+  name: string,
+  input?: Record<string, unknown>
+): string {
   const t = name.trim() || "tool";
+  const inp = input && typeof input === "object" ? input : undefined;
+  if (inp) {
+    if (t === "resolve_time_range") {
+      const d = narrowStr(inp.description);
+      if (d) return `Resolving the time range (${truncStr(d, 56)})…`;
+    }
+    if (t === "check_meter_status") {
+      const sn = narrowStr(inp.serial_number);
+      if (sn) return `Checking the meter ${sn}…`;
+    }
+    if (t === "get_meter_profile") {
+      const sn = narrowStr(inp.serial_number);
+      if (sn) return `Reading the meter profile for ${sn}…`;
+    }
+    if (t === "list_meters_for_account") {
+      const em = narrowStr(inp.email);
+      if (em) return `Listing meters for ${truncStr(em, 40)}…`;
+    }
+    if (t === "analyze_flow_data") {
+      const sn = narrowStr(inp.serial_number);
+      if (sn) return `Analyzing flow data for meter ${sn}…`;
+    }
+    if (t === "configure_meter_pipe") {
+      const sn = narrowStr(inp.serial_number);
+      if (sn) return `Configuring the pipe for meter ${sn}…`;
+    }
+    if (t === "set_transducer_angle_only") {
+      const sn = narrowStr(inp.serial_number);
+      if (sn) return `Setting the transducer angle for meter ${sn}…`;
+    }
+  }
   if (TOOL_LIFECYCLE[t]) return TOOL_LIFECYCLE[t].now;
   const n = t.replace(/_/g, " ");
   return n ? `Running ${n}…` : "Running a tool…";
 }
 
-export function toolDoneLine(name: string, ok: boolean): string {
+export function toolDoneLine(
+  name: string,
+  ok: boolean,
+  opts?: { activity?: string }
+): string {
   if (!ok) return "Tool run failed";
+  const act = opts?.activity?.trim();
+  if (act) return act;
   const t = name.trim() || "tool";
   if (TOOL_LIFECYCLE[t]) return TOOL_LIFECYCLE[t].done;
   return `Finished ${t.replace(/_/g, " ")}`;
@@ -43,25 +93,51 @@ function intentScopingTitle(intent: string | undefined): string {
   return INTENT_SCOPING_TITLE[intent] ?? `Scoping: ${intent}`;
 }
 
+/**
+ * Normalize long-running tool progress lines that only change elapsed seconds,
+ * e.g. "… (4s)" vs "… (8s)" or "… 24s" vs "… 28s", so we replace instead of stacking.
+ */
+function normProgressStemForMerge(s: string): string {
+  const t = s.trim();
+  if (/\(\d+s\)\s*$/iu.test(t)) return t.replace(/\(\d+s\)\s*$/iu, "(SEC)");
+  if (/\u2026\s*\d+s\s*$/u.test(t)) return t.replace(/\u2026\s*\d+s\s*$/u, "\u2026 SEC");
+  return t;
+}
+
+function mergeProgressLines(prev: string[], line: string): string[] {
+  const last = prev.length > 0 ? prev[prev.length - 1] : "";
+  if (last && normProgressStemForMerge(last) === normProgressStemForMerge(line)) {
+    return [...prev.slice(0, -1), line];
+  }
+  return [...prev, line];
+}
+
 export interface TurnActivityStep {
   seq: number;
   kind:
-    | "connecting"
-    | "queued"
-    | "intent_route"
-    | "thinking"
-    | "context"
-    | "compressing"
-    | "tool"
-    | "stream"
-    | "done"
-    | "error";
+  | "connecting"
+  | "queued"
+  | "intent_route"
+  | "thinking"
+  | "context"
+  | "compressing"
+  | "tool"
+  | "stream"
+  | "done"
+  | "error";
   title: string;
   detail?: string;
   tool?: string;
   /** Set when kind === "tool" */
   phase?: "running" | "done";
   ok?: boolean;
+  /** Latest tool_use ``input`` (for running titles and replay). */
+  toolInput?: Record<string, unknown>;
+  /**
+   * Sub-agent / long-tool heartbeats: each ``tool_progress`` appends a line so
+   * the timeline can show stages between the main tool title and completion.
+   */
+  progressLines?: string[];
 }
 
 /**
@@ -134,13 +210,38 @@ export function reduceTurnActivity(
       return push({ kind: "compressing", title: "Tightening context", detail: undefined });
     case "tool_call": {
       const tool = event.tool ?? "";
-      return push({
-        kind: "tool",
-        tool,
-        phase: "running",
-        title: toolNowLine(tool),
-        detail: undefined,
-      });
+      // Same-turn retry: drop trailing failed rows for this tool so the timeline does not
+      // show "Tool run failed" immediately before a successful second attempt.
+      let trimmed = base;
+      while (trimmed.length > 0) {
+        const last = trimmed[trimmed.length - 1];
+        if (
+          last?.kind === "tool" &&
+          last.tool === tool &&
+          last.phase === "done" &&
+          last.ok === false
+        ) {
+          trimmed = trimmed.slice(0, -1);
+          continue;
+        }
+        break;
+      }
+      const toolInput =
+        event.input && typeof event.input === "object"
+          ? (event.input as Record<string, unknown>)
+          : undefined;
+      return [
+        ...trimmed,
+        {
+          seq,
+          kind: "tool" as const,
+          tool,
+          phase: "running" as const,
+          title: toolNowLine(tool, toolInput),
+          detail: undefined,
+          toolInput,
+        },
+      ];
     }
     case "tool_progress": {
       const tool = event.tool ?? "";
@@ -150,13 +251,17 @@ export function reduceTurnActivity(
       for (let k = i - 1; k >= 0; k -= 1) {
         const s = base[k];
         if (s?.kind === "tool" && s.tool === tool && s.phase === "running") {
+          const line = msg.length > 200 ? `${msg.slice(0, 197).trimEnd()}…` : msg;
+          const nextLines = mergeProgressLines(s.progressLines ?? [], line);
+          const short = line.length > 72 ? `${line.slice(0, 69).trimEnd()}…` : line;
           return [
             ...base.slice(0, k),
             {
               ...s,
               seq,
               title: s.title,
-              detail: msg.length > 72 ? `${msg.slice(0, 69).trimEnd()}…` : msg,
+              progressLines: nextLines,
+              detail: short,
             },
           ];
         }
@@ -178,8 +283,15 @@ export function reduceTurnActivity(
               kind: "tool" as const,
               tool,
               phase: "done" as const,
-              title: toolDoneLine(tool, ok),
+              title: toolDoneLine(tool, ok, {
+                activity:
+                  typeof event.tool_activity === "string"
+                    ? event.tool_activity
+                    : undefined,
+              }),
               ok,
+              progressLines: s.progressLines,
+              toolInput: s.toolInput,
               detail: ok
                 ? undefined
                 : event.message
@@ -194,13 +306,19 @@ export function reduceTurnActivity(
         tool,
         phase: "done",
         ok,
-        title: toolDoneLine(tool, ok),
+        title: toolDoneLine(tool, ok, {
+          activity:
+            typeof event.tool_activity === "string"
+              ? event.tool_activity
+              : undefined,
+        }),
         ...(!ok && event.message
           ? { detail: String(event.message) }
           : {}),
       });
     }
-    case "text_delta": {
+    case "text_delta":
+    case "text_stream": {
       if (streamOpened.current) {
         return prev;
       }
@@ -214,4 +332,61 @@ export function reduceTurnActivity(
     default:
       return prev;
   }
+}
+
+/**
+ * Rebuild timeline steps from persisted event log (``turn_activity`` block).
+ * Used when loading conversation history.
+ */
+export function rebuildStepsFromStoredEvents(
+  events: Array<Record<string, unknown>>
+): TurnActivityStep[] {
+  const ref = { current: false } as { current: boolean };
+  let acc: TurnActivityStep[] = [];
+  for (const raw of events) {
+    acc = reduceTurnActivity(
+      acc,
+      raw as unknown as SSEEvent,
+      ref
+    );
+  }
+  return acc;
+}
+
+const THOUGHT_FOR_PREFIX = "Thought for ";
+
+export function formatThoughtForSeconds(elapsedSec: number): string {
+  if (!Number.isFinite(elapsedSec) || elapsedSec < 0) return "Thinking";
+  if (elapsedSec < 0.1) {
+    return `${THOUGHT_FOR_PREFIX}0.1s`;
+  }
+  const t =
+    elapsedSec < 10
+      ? (Math.round(elapsedSec * 10) / 10).toString()
+      : String(Math.max(1, Math.round(elapsedSec)));
+  return `${THOUGHT_FOR_PREFIX}${t}s`;
+}
+
+/**
+ * When the first token or tool work arrives, replace the in-flight ``Thinking`` row
+ * with a ``Thought for Ns`` line (client-measured, ChatGPT-style).
+ */
+export function applyThinkingElapsed(
+  steps: TurnActivityStep[],
+  elapsedSec: number
+): TurnActivityStep[] {
+  if (!Number.isFinite(elapsedSec) || elapsedSec < 0) return steps;
+  let i = -1;
+  for (let k = steps.length - 1; k >= 0; k -= 1) {
+    const s = steps[k];
+    if (s?.kind === "thinking" && s.title === "Thinking") {
+      i = k;
+      break;
+    }
+  }
+  if (i < 0) return steps;
+  const current = steps[i]!;
+  const title = formatThoughtForSeconds(elapsedSec);
+  if (current.title === title) return steps;
+  return [...steps.slice(0, i), { ...current, title }, ...steps.slice(i + 1)];
 }

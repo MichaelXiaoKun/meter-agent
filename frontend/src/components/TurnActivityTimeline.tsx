@@ -15,6 +15,7 @@ function isResponding(
   if (!active || !isLast) return false;
   if (step.kind === "done" || step.kind === "error") return false;
   if (step.kind === "tool" && step.phase === "done") return false;
+  if (step.kind === "thinking" && /^Thought for\b/u.test(step.title)) return false;
   return true;
 }
 
@@ -33,6 +34,7 @@ const COMPACT_MAIN: Record<TurnActivityStep["kind"], string> = {
 
 function mainLineText(step: TurnActivityStep, compact: boolean): string {
   if (!compact) return step.title;
+  if (step.kind === "thinking") return step.title;
   if (step.kind === "tool" && step.title) {
     return step.title.replace(/…\s*$/u, "").trim() || COMPACT_MAIN.tool;
   }
@@ -40,7 +42,15 @@ function mainLineText(step: TurnActivityStep, compact: boolean): string {
 }
 
 function bodyLineText(step: TurnActivityStep, compact: boolean): string | undefined {
-  if (!compact) return step.detail;
+  if (!compact) {
+    if (step.kind === "tool" && step.progressLines && step.progressLines.length > 0) {
+      // Staged list replaces ``detail`` — except a failed tool still shows the error in ``detail``.
+      if (!(step.phase === "done" && !step.ok)) {
+        return undefined;
+      }
+    }
+    return step.detail;
+  }
   switch (step.kind) {
     case "connecting":
       return;
@@ -56,7 +66,21 @@ function bodyLineText(step: TurnActivityStep, compact: boolean): string | undefi
       return "Shorter thread";
     case "tool":
       if (step.phase === "running") {
+        if (step.progressLines && step.progressLines.length > 0) {
+          if (compact) {
+            return (
+              step.progressLines[step.progressLines.length - 1]?.trim() || undefined
+            );
+          }
+          return undefined;
+        }
         return step.detail?.trim() || undefined;
+      }
+      if (step.phase === "done" && step.ok && step.progressLines?.length) {
+        if (compact) {
+          return `${step.progressLines.length} update(s)`;
+        }
+        return undefined;
       }
       return;
     case "stream":
@@ -104,6 +128,12 @@ function StepRow({
           : "text-neutral-500/95 dark:text-neutral-500",
   ];
 
+  const toolProgressList =
+    step.kind === "tool" &&
+    step.progressLines &&
+    step.progressLines.length > 0 &&
+    !compact;
+
   const rail = responding ? (
     <span
       className="mt-1.5 block h-3.5 w-0.5 shrink-0 justify-self-end rounded-full bg-neutral-400/90 dark:bg-neutral-500"
@@ -134,16 +164,35 @@ function StepRow({
         isLast ? "pb-0" : "pb-3.5",
       ].join(" ")}
     >
-      <div className="grid w-full min-w-0 grid-cols-[0.5rem_1fr] items-start gap-x-2 gap-y-0">
+      {/*
+        Keep title → staged lines → body in a single right-hand column. Flattening
+        more cells into the 2-col grid can let auto-placement order the <ul> above
+        the <p> (progress looked “above” the first status line).
+      */}
+      <div className="grid w-full min-w-0 grid-cols-[0.5rem_1fr] items-start gap-x-2">
         {rail}
-        <p className={mainCls.join(" ")}>{main}</p>
-        {body ? (
-          <>
-            <span className="min-w-0" aria-hidden />
+        <div className="min-w-0">
+          <p className={mainCls.join(" ")}>{main}</p>
+          {toolProgressList ? (
+            <ul
+              className="mt-1.5 max-w-2xl space-y-1.5 border-l-2 border-brand-500/25 py-0.5 pl-2.5 dark:border-brand-500/20"
+            >
+              {step.progressLines!.map((line, j) => (
+                <li
+                  key={j}
+                  className="list-none text-left text-xs leading-relaxed text-neutral-500 dark:text-neutral-400"
+                >
+                  {line}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {body ? (
             <p
               className={[
                 "min-w-0 max-w-2xl whitespace-pre-wrap text-left leading-relaxed",
                 compact ? "text-[11px] mt-0.5" : "text-xs mt-0.5",
+                toolProgressList && !isError ? "mt-1.5" : "",
                 isError
                   ? "text-red-600/80 dark:text-red-400/85"
                   : "text-neutral-400 dark:text-neutral-500",
@@ -151,8 +200,8 @@ function StepRow({
             >
               {body}
             </p>
-          </>
-        ) : null}
+          ) : null}
+        </div>
       </div>
     </div>
   );

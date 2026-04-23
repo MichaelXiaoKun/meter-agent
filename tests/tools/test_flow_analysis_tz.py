@@ -585,3 +585,28 @@ class TestAnalyzeFlowDataIntegration:
                 network_type="WIFI",
             )
         assert cap.get("BLUEBOT_METER_NETWORK_TYPE") == "wifi"
+
+
+class TestAnalyzeFlowInputsErrorPayload:
+    def test_missing_start(self, flow_analysis_mod):
+        r = flow_analysis_mod.analyze_flow_inputs_error_payload(
+            {"serial_number": "BB1", "end": 100},
+            display_timezone=None,
+        )
+        assert r is not None
+        assert r["success"] is False
+        assert "start" in r["error"].lower()
+
+    def test_complete_returns_none(self, flow_analysis_mod):
+        assert (
+            flow_analysis_mod.analyze_flow_inputs_error_payload(
+                {"serial_number": "BB1", "start": 1, "end": 2},
+                display_timezone=None,
+            )
+            is None
+        )
+
+    def test_non_dict(self, flow_analysis_mod):
+        r = flow_analysis_mod.analyze_flow_inputs_error_payload(None)
+        assert r is not None
+        assert r["success"] is False

@@ -11,31 +11,48 @@ function isAbortOrUnload(err: unknown): boolean {
 export function useConversations(userId: string) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(false);
+  /**
+   * True after the first list load for the current user finishes (success or
+   * error). Used to sync ``activeConvId`` without clearing an idle selection
+   * while the first fetch is still in flight.
+   */
+  const [listLoaded, setListLoaded] = useState(false);
 
-  const refresh = useCallback(async () => {
-    if (!userId) return;
+  const refresh = useCallback(async (): Promise<Conversation[] | undefined> => {
+    if (!userId) return undefined;
     setLoading(true);
     try {
       const list = await api.listConversations(userId);
       setConversations(list);
+      return list;
     } catch (err) {
       if (!isAbortOrUnload(err))
         console.error("Failed to load conversations:", err);
     } finally {
       setLoading(false);
     }
+    return undefined;
   }, [userId]);
 
   useEffect(() => {
-    if (!userId) return;
+    if (!userId) {
+      setListLoaded(false);
+      return;
+    }
+    setListLoaded(false);
     const ac = new AbortController();
     api.listConversations(userId, ac.signal)
       .then(setConversations)
       .catch((err) => {
         if (!isAbortOrUnload(err))
           console.error("Failed to load conversations:", err);
+      })
+      .finally(() => {
+        if (!ac.signal.aborted) setListLoaded(true);
       });
-    return () => ac.abort();
+    return () => {
+      ac.abort();
+    };
   }, [userId]);
 
   const create = useCallback(async () => {
@@ -46,21 +63,21 @@ export function useConversations(userId: string) {
   }, [userId, refresh]);
 
   const remove = useCallback(
-    async (convId: string) => {
-      if (!userId) return;
+    async (convId: string): Promise<Conversation[] | undefined> => {
+      if (!userId) return undefined;
       await api.deleteConversation(convId, userId);
-      await refresh();
+      return (await refresh()) ?? undefined;
     },
     [userId, refresh]
   );
 
   const removeMany = useCallback(
-    async (convIds: string[]) => {
-      if (!userId || convIds.length === 0) return;
+    async (convIds: string[]): Promise<Conversation[] | undefined> => {
+      if (!userId || convIds.length === 0) return undefined;
       for (const id of convIds) {
         await api.deleteConversation(id, userId);
       }
-      await refresh();
+      return (await refresh()) ?? undefined;
     },
     [userId, refresh]
   );
@@ -73,5 +90,14 @@ export function useConversations(userId: string) {
     [refresh]
   );
 
-  return { conversations, loading, refresh, create, remove, removeMany, rename };
+  return {
+    conversations,
+    loading,
+    listLoaded,
+    refresh,
+    create,
+    remove,
+    removeMany,
+    rename,
+  };
 }

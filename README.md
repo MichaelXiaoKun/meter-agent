@@ -1,8 +1,23 @@
 # bluebot meter agent
 
-Conversational assistant for bluebot ultrasonic flow meters: orchestrator (Claude + tools), React web UI, and subprocess agents for flow analysis, meter status, and pipe configuration.
+Conversational assistant for bluebot ultrasonic flow meters: a **FastAPI** orchestrator (Claude + tools), a **React / Vite** web UI, and **subprocess** specialists for flow analysis, live meter status, and pipe configuration. In-process tools also cover device profile (management API, Wi‑Fi vs LoRaWAN) and **listing meters by account email** (`list_meters_for_account`). Optional **intent routing** trims the tool set each turn; see `ORCHESTRATOR_INTENT_ROUTER` under [Optional but common](#optional-but-common).
 
 This document covers **running the stack locally** and **configuring environment variables**. For line-by-line variable comments, see [`.env.example`](.env.example).
+
+---
+
+## Repository layout
+
+| Path | Role |
+|------|------|
+| [`orchestrator/`](orchestrator/) | FastAPI app (`api.py`), orchestrator agent (`agent.py`), in-process tools, conversation store |
+| [`frontend/`](frontend/) | React + TypeScript SPA; `npm run dev` proxies `/api` to the API |
+| [`data-processing-agent/`](data-processing-agent/) | Flow history fetch, processors, plots; invoked by `analyze_flow_data` |
+| [`meter-status-agent/`](meter-status-agent/) | Subprocess for `check_meter_status` |
+| [`pipe-configuration-agent/`](pipe-configuration-agent/) | Subprocess for pipe / angle MQTT flows |
+| [`tests/`](tests/) | Pytest: processors, tool clients, system prompt (no real subprocess / external APIs) |
+
+Root [`package.json`](package.json) exists for **semantic-release** in CI only; runtime is Python + the frontend build inside Docker.
 
 ---
 
@@ -86,6 +101,7 @@ Copy [`.env.example`](.env.example) to `.env` and set values. Below is a concise
 | Variable | Purpose |
 |----------|---------|
 | `ORCHESTRATOR_MODEL` | Main chat model (default Haiku). |
+| `ORCHESTRATOR_INTENT_ROUTER` | Optional per-turn tool subset for the main model: `off` (all tools), `rules` (default, heuristics), or `haiku` (cheap classify, then rules). See [`orchestrator/agent.py`](orchestrator/agent.py) (`_resolve_routed_tools`). |
 | `ORCHESTRATOR_TPM_GUIDE_TOKENS` / `ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET` | Token budget and compression targets (see `.env.example`). |
 | `CORS_ORIGINS` | Comma-separated origins allowed for the API (defaults include `http://localhost:5173`). Set if you use another dev port or a deployed UI. |
 | `FRONTEND_DIST` | Path to built SPA; production Docker serves `frontend/dist`. Omit in dev (Vite proxies). |
@@ -339,11 +355,12 @@ Coverage today:
   management API HTTP contract (mocked with `respx`: 200 / 401 / 404 /
   empty-array responses, admin header + bearer token propagation, base
   URL env override).
-- `orchestrator/agent.py` system prompt — rule 12 guardrails against
+- `orchestrator/agent.py` system prompt — **rule 13** ("User-facing language") guardrails against
   leaking internal tool names, env vars, `sub-agent` / `subprocess`
   jargon, or absolute filesystem paths into user-facing replies; also
-  pins the "refuse briefly + offer an alternative" contract. Read as
-  text (no orchestrator imports) so these tests run in any interpreter.
+  pins the "refuse briefly + offer an alternative" contract. (Rule 12 is
+  `list_meters_for_account`.) Tests read the prompt as
+  text (no orchestrator imports) so they run in any interpreter.
 
 ---
 
