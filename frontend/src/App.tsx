@@ -229,7 +229,8 @@ export default function App() {
   const {
     messages,
     status,
-    streamingText,
+    streamingLead,
+    streamingTail,
     tokenUsage,
     historyLoading,
     pendingPlots,
@@ -406,7 +407,8 @@ export default function App() {
           conversationId={activeConvId}
           messages={messages}
           status={status}
-          streamingText={streamingText}
+          streamingLead={streamingLead}
+          streamingTail={streamingTail}
           pendingPlots={pendingPlots}
           tokenUsage={tokenUsage}
           historyLoading={historyLoading}

@@ -140,6 +140,57 @@ export interface TurnActivityStep {
   progressLines?: string[];
 }
 
+/** Shown while the model is thinking, before we swap in ``Thought for …``. */
+export const IN_FLIGHT_THINKING_TITLE = "Reasoning";
+
+/** True for the live thinking row (not yet replaced by ``Thought for …``). */
+export function isInflightThinkingStep(step: TurnActivityStep): boolean {
+  return step.kind === "thinking" && !/^Thought for\b/u.test(step.title ?? "");
+}
+
+/**
+ * Peel trailing ``done`` / ``error`` off the activity strip whenever there is
+ * reply body (live or persisted) so markdown sits directly under
+ * ``Generating the reply`` and completion lines render underneath the bubble.
+ */
+export function splitTurnActivityAroundStreamBody(
+  steps: TurnActivityStep[],
+  hasStreamBody: boolean
+): { above: TurnActivityStep[]; below: TurnActivityStep[] } {
+  if (!hasStreamBody) {
+    return { above: steps, below: [] };
+  }
+  const above = [...steps];
+  const belowFromEnd: TurnActivityStep[] = [];
+  while (above.length > 0) {
+    const k = above[above.length - 1]!.kind;
+    if (k === "done" || k === "error") {
+      belowFromEnd.push(above.pop()!);
+    } else {
+      break;
+    }
+  }
+  belowFromEnd.reverse();
+  return { above, below: belowFromEnd };
+}
+
+/**
+ * Split at the first ``tool`` row so pre-tool narration (``streamLead``) can sit
+ * between “reasoning / context / early stream” and tool + sub-agent work.
+ */
+export function splitActivityAtFirstTool(
+  steps: TurnActivityStep[]
+): { beforeTools: TurnActivityStep[]; fromFirstTool: TurnActivityStep[] } {
+  const i = steps.findIndex((s) => s.kind === "tool");
+  if (i < 0) {
+    return { beforeTools: steps, fromFirstTool: [] };
+  }
+  return {
+    beforeTools: steps.slice(0, i),
+    fromFirstTool: steps.slice(i),
+  };
+}
+
 /**
  * After the first SSE event, drop the client-only “connecting” step so the
  * timeline shows server-driven stages.
@@ -194,10 +245,14 @@ export function reduceTurnActivity(
       if (last?.kind === "thinking" && hasRate) {
         return [
           ...base.slice(0, -1),
-          { ...last, seq, title: "Thinking", detail: undefined },
+          { ...last, seq, title: IN_FLIGHT_THINKING_TITLE, detail: undefined },
         ];
       }
-      return push({ kind: "thinking", title: "Thinking", detail: undefined });
+      return push({
+        kind: "thinking",
+        title: IN_FLIGHT_THINKING_TITLE,
+        detail: undefined,
+      });
     }
     case "token_usage": {
       const pct = Math.round((event.pct ?? 0) * 100);
@@ -205,8 +260,8 @@ export function reduceTurnActivity(
       const row: TurnActivityStep = {
         seq,
         kind: "context",
-        title: "Context",
-        detail: `About ${pct}% of the model window in use`,
+        title: "Context usage",
+        detail: `About ${pct}% of the conversation context is in use`,
       };
       return [...p0.filter((p) => p.kind !== "context"), row];
     }
@@ -327,12 +382,12 @@ export function reduceTurnActivity(
         return prev;
       }
       streamOpened.current = true;
-      return push({ kind: "stream", title: "Writing the reply", detail: undefined });
+      return push({ kind: "stream", title: "Generating the reply", detail: undefined });
     }
     case "error":
       return push({ kind: "error", title: "Something went wrong", detail: event.error });
     case "done":
-      return push({ kind: "done", title: "Done", detail: "Reply ready" });
+      return push({ kind: "done", title: "Complete", detail: undefined });
     default:
       return prev;
   }
@@ -357,7 +412,7 @@ export function rebuildStepsFromStoredEvents(
 const THOUGHT_FOR_PREFIX = "Thought for ";
 
 export function formatThoughtForSeconds(elapsedSec: number): string {
-  if (!Number.isFinite(elapsedSec) || elapsedSec < 0) return "Thinking";
+  if (!Number.isFinite(elapsedSec) || elapsedSec < 0) return IN_FLIGHT_THINKING_TITLE;
   if (elapsedSec < 0.1) {
     return `${THOUGHT_FOR_PREFIX}0.1s`;
   }
@@ -369,7 +424,7 @@ export function formatThoughtForSeconds(elapsedSec: number): string {
 }
 
 /**
- * When the first token or tool work arrives, replace the in-flight ``Thinking`` row
+ * When the first token or tool work arrives, replace the in-flight reasoning row
  * with a ``Thought for Ns`` line (client-measured, ChatGPT-style).
  */
 export function applyThinkingElapsed(
@@ -380,7 +435,7 @@ export function applyThinkingElapsed(
   let i = -1;
   for (let k = steps.length - 1; k >= 0; k -= 1) {
     const s = steps[k];
-    if (s?.kind === "thinking" && s.title === "Thinking") {
+    if (s && isInflightThinkingStep(s)) {
       i = k;
       break;
     }

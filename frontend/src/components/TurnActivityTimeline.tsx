@@ -5,6 +5,12 @@ interface TurnActivityTimelineProps {
   steps: TurnActivityStep[];
   /** True while the chat POST is still in flight */
   active: boolean;
+  /**
+   * When false, the outer wrapper is a plain div (no ``aria-live``) — use for
+   * continuation rows rendered below streamed markdown so the live region
+   * stays a single logical strip.
+   */
+  announce?: boolean;
 }
 
 function isResponding(
@@ -23,11 +29,11 @@ const COMPACT_MAIN: Record<TurnActivityStep["kind"], string> = {
   connecting: "Sending",
   intent_route: "Scope",
   queued: "Queued",
-  thinking: "Thinking",
-  context: "Context",
+  thinking: "Reasoning",
+  context: "Usage",
   compressing: "Tighten",
   tool: "Tool",
-  stream: "Writing",
+  stream: "Generating",
   done: "Done",
   error: "Error",
 };
@@ -210,21 +216,31 @@ function StepRow({
 export default function TurnActivityTimeline({
   steps,
   active,
+  announce = true,
 }: TurnActivityTimelineProps) {
   const compact = useMediaQuery("(max-width: 640px)");
+  // Hide intent_route ("Scoping: …") — implementation detail, not user-facing work.
   const safeSteps = steps.filter(
     (s): s is TurnActivityStep =>
-      s != null && typeof s.kind === "string"
+      s != null &&
+      typeof s.kind === "string" &&
+      s.kind !== "intent_route"
   );
   if (safeSteps.length === 0) return null;
   const lastIdx = safeSteps.length - 1;
 
+  const liveProps = announce
+    ? ({
+        role: "status" as const,
+        "aria-live": "polite" as const,
+        "aria-relevant": "additions text" as const,
+      } as const)
+    : {};
+
   return (
     <div
       className="flex w-full max-w-2xl justify-start text-left"
-      role="status"
-      aria-live="polite"
-      aria-relevant="additions text"
+      {...liveProps}
     >
       <div className="w-full min-w-0 pl-0">
         <div className="flex flex-col">
