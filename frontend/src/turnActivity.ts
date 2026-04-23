@@ -145,10 +145,14 @@ export interface TurnActivityStep {
  * timeline shows server-driven stages.
  */
 function withoutConnecting(prev: TurnActivityStep[]): TurnActivityStep[] {
-  if (prev.length === 1 && prev[0].kind === "connecting") {
+  const first = prev[0];
+  if (prev.length === 1 && first != null && first.kind === "connecting") {
     return [];
   }
-  return prev;
+  return prev.filter(
+    (p): p is TurnActivityStep =>
+      p != null && typeof (p as TurnActivityStep).kind === "string"
+  );
 }
 
 /**
@@ -344,11 +348,8 @@ export function rebuildStepsFromStoredEvents(
   const ref = { current: false } as { current: boolean };
   let acc: TurnActivityStep[] = [];
   for (const raw of events) {
-    acc = reduceTurnActivity(
-      acc,
-      raw as unknown as SSEEvent,
-      ref
-    );
+    if (raw == null || typeof raw !== "object") continue;
+    acc = reduceTurnActivity(acc, raw as unknown as SSEEvent, ref);
   }
   return acc;
 }

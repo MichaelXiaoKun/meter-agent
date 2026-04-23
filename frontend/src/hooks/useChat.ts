@@ -347,7 +347,10 @@ export function useChat(
               if (canCloseThinking) {
                 const t0 = thinkingSegmentStartMsRef.current;
                 const hasOpen = next.some(
-                  (s) => s.kind === "thinking" && s.title === "Thinking"
+                  (step) =>
+                    step != null &&
+                    step.kind === "thinking" &&
+                    step.title === "Thinking"
                 );
                 if (hasOpen) {
                   const elapsedSec =
@@ -429,8 +432,10 @@ export function useChat(
                   pct: event.pct ?? 0,
                 });
                 // First server event is often this — move off "Sending…" immediately.
-                setStreamStatus((s) =>
-                  s.kind === "connecting" ? { kind: "thinking" } : s
+                setStreamStatus((prev) =>
+                  prev == null || prev.kind === "connecting"
+                    ? { kind: "thinking" }
+                    : prev
                 );
                 break;
               }
@@ -521,7 +526,7 @@ export function useChat(
     !!processingConvId && activeConvId === processingConvId;
 
   const status: AgentStatus = isViewingProcessing
-    ? streamStatus
+    ? (streamStatus ?? IDLE)
     : assistantError
       ? { kind: "error", error: assistantError }
       : IDLE;
