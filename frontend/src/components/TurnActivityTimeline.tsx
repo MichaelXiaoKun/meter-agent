@@ -212,8 +212,12 @@ export default function TurnActivityTimeline({
   active,
 }: TurnActivityTimelineProps) {
   const compact = useMediaQuery("(max-width: 640px)");
-  if (steps.length === 0) return null;
-  const lastIdx = steps.length - 1;
+  const safeSteps = steps.filter(
+    (s): s is TurnActivityStep =>
+      s != null && typeof s.kind === "string"
+  );
+  if (safeSteps.length === 0) return null;
+  const lastIdx = safeSteps.length - 1;
 
   return (
     <div
@@ -224,7 +228,7 @@ export default function TurnActivityTimeline({
     >
       <div className="w-full min-w-0 pl-0">
         <div className="flex flex-col">
-          {steps.map((step, i) => (
+          {safeSteps.map((step, i) => (
             <StepRow
               key={`${step.seq}-${step.kind}-${i}`}
               step={step}
