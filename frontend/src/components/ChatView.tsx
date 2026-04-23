@@ -6,7 +6,6 @@ import type { AgentStatus } from "../hooks/useChat";
 import MessageBubble from "./MessageBubble";
 import { extractPlotAttachments } from "./plotAttachments";
 import PlotImage from "./PlotImage";
-import StatusIndicator from "./StatusIndicator";
 import WelcomeCard from "./WelcomeCard";
 import WelcomeBluebotLogo from "./WelcomeBluebotLogo";
 import TurnActivityTimeline from "./TurnActivityTimeline";
@@ -509,8 +508,8 @@ export default function ChatView({
     }
     const interimSuffix = speech.interim
       ? (speechBaselineRef.current && !/\s$/.test(speechBaselineRef.current)
-          ? " "
-          : "") + speech.interim
+        ? " "
+        : "") + speech.interim
       : "";
     setInput(speechBaselineRef.current + interimSuffix);
   }, [speech.listening, speech.interim, speech.finalText]);
@@ -899,7 +898,7 @@ export default function ChatView({
               {streamingText && (
                 <div className="flex justify-start">
                   <div className="max-w-[75%] min-w-0 overflow-hidden rounded-2xl border border-brand-border bg-white px-4 py-3 text-brand-900 dark:border-brand-border dark:bg-brand-50">
-                    <div className="prose prose-sm max-w-none break-words prose-p:my-1 prose-a:break-words prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm dark:prose-invert dark:prose-headings:text-brand-900 [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full">
+                    <div className="prose prose-sm max-w-none min-w-0 break-words prose-p:my-1 prose-a:break-words prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm dark:prose-invert dark:prose-headings:text-brand-900 [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingText}</ReactMarkdown>
                     </div>
                   </div>
@@ -923,8 +922,6 @@ export default function ChatView({
                   </div>
                 </div>
               )}
-
-              <StatusIndicator status={status} />
 
               {serverProcessing && status.kind === "idle" && (
                 <div className="flex items-center gap-2 rounded-lg bg-brand-100 px-3 py-2 text-sm text-brand-muted dark:bg-brand-100/70">

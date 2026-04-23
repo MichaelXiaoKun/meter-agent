@@ -167,10 +167,18 @@ export default function App() {
     }
   }, []);
 
+  /**
+   * When true, the user used “New chat” and we should show the welcome
+   * composer without auto-selecting the first conversation in the list.
+   * Cleared on sidebar pick, first send (creates a conv), or list reconcile.
+   */
+  const [userChoseWelcome, setUserChoseWelcome] = useState(false);
+
   const isLoggedIn = !!token && !!user;
 
   const handleSelectConversation = useCallback(
     (id: string) => {
+      setUserChoseWelcome(false);
       setActiveConvId(id);
       if (isNarrow) setSidebarOpen(false);
     },
@@ -215,7 +223,9 @@ export default function App() {
     return () => window.clearInterval(id);
   }, []);
 
-  const { conversations, refresh, create, remove, rename } = useConversations(user);
+  const { conversations, listLoaded, refresh, create, remove, removeMany, rename } =
+    useConversations(user);
+
   const {
     messages,
     status,
@@ -232,12 +242,26 @@ export default function App() {
     clearAssistantError,
   } = useChat(activeConvId, token, anthropicApiKey, selectedModel);
 
-  // Auto-select: only when there's no persisted active conversation
+  // Keep the selected chat in sync with the server list. If the user is on
+  // the welcome screen after “New chat” (``userChoseWelcome``), do not
+  // auto-pick a conversation. Otherwise restore a missing id to the first row.
   useEffect(() => {
-    if (!activeConvId && conversations.length > 0) {
-      setActiveConvId(conversations[0].id);
+    if (!listLoaded) return;
+    if (conversations.length === 0) {
+      if (activeConvId !== null) setActiveConvId(null);
+      setUserChoseWelcome(false);
+      return;
     }
-  }, [conversations, activeConvId, setActiveConvId]);
+    if (activeConvId == null) {
+      if (userChoseWelcome) return;
+      setActiveConvId(conversations[0]!.id);
+      return;
+    }
+    if (!conversations.some((c) => c.id === activeConvId)) {
+      setUserChoseWelcome(false);
+      setActiveConvId(conversations[0]!.id);
+    }
+  }, [conversations, activeConvId, setActiveConvId, listLoaded, userChoseWelcome]);
 
   function handleLogin(accessToken: string, username: string) {
     setToken(accessToken);
@@ -248,22 +272,42 @@ export default function App() {
     cancel();
     setToken("");
     setUser("");
+    setUserChoseWelcome(false);
     setActiveConvId(null);
     localStorage.removeItem("bb_active_conv");
     setAnthropicApiKey("");
   }
 
-  async function handleNewConversation() {
+  function handleNewConversation() {
     if (!user) return;
-    const id = await create();
-    if (id) setActiveConvId(id);
+    cancel();
+    setUserChoseWelcome(true);
+    setActiveConvId(null);
+    if (isNarrow) setSidebarOpen(false);
   }
 
   async function handleDeleteConversation(id: string) {
-    await remove(id);
-    if (id === activeConvId) {
-      const remaining = conversations.filter((c) => c.id !== id);
-      setActiveConvId(remaining.length > 0 ? remaining[0].id : null);
+    if (id === activeConvId || id === processingConvId) {
+      cancel();
+    }
+    const wasActive = id === activeConvId;
+    const list = await remove(id);
+    if (!wasActive) return;
+    setUserChoseWelcome(false);
+    setActiveConvId(list && list.length > 0 ? list[0]!.id : null);
+  }
+
+  async function handleDeleteConversations(ids: string[]) {
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    const hadActive = activeConvId != null && idSet.has(activeConvId);
+    if (hadActive || (processingConvId && idSet.has(processingConvId))) {
+      cancel();
+    }
+    const list = await removeMany(ids);
+    if (hadActive) {
+      setUserChoseWelcome(false);
+      setActiveConvId(list && list.length > 0 ? list[0]!.id : null);
     }
   }
 
@@ -271,7 +315,10 @@ export default function App() {
     let convId = activeConvId;
     if (!convId && user) {
       convId = await create();
-      if (convId) setActiveConvId(convId);
+      if (convId) {
+        setUserChoseWelcome(false);
+        setActiveConvId(convId);
+      }
     }
     if (!convId) return;
     sendMessage(text, convId).then(() => refresh());
@@ -289,6 +336,7 @@ export default function App() {
     onSelectConversation: handleSelectConversation,
     onNewConversation: handleNewConversation,
     onDeleteConversation: handleDeleteConversation,
+    onDeleteConversations: handleDeleteConversations,
     onRenameConversation: rename,
     onLogout: handleLogout,
     anthropicApiKey,

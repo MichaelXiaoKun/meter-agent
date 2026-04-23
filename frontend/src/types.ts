@@ -14,6 +14,9 @@ export interface ContentBlock {
   input?: Record<string, unknown>;
   tool_use_id?: string;
   content?: string;
+  /** Persisted turn timeline for replay in history. */
+  v?: number;
+  events?: Array<Record<string, unknown>>;
 }
 
 export interface Message {
@@ -41,6 +44,7 @@ export interface PlotAttachment {
 export interface SSEEvent {
   type:
     | "text_delta"
+    | "text_stream"
     | "tool_call"
     | "tool_result"
     | "tool_progress"
@@ -48,12 +52,15 @@ export interface SSEEvent {
     | "token_usage"
     | "compressing"
     | "queued"
+    | "intent_route"
     | "done"
     | "error";
   text?: string;
   tool?: string;
   input?: Record<string, unknown>;
   success?: boolean;
+  /** Success-only: full activity timeline title from the server. */
+  tool_activity?: string;
   plot_paths?: string[];
   plot_summaries?: PlotSummary[];
   plot_timezone?: string;
@@ -61,6 +68,13 @@ export interface SSEEvent {
   tokens?: number;
   pct?: number;
   error?: string;
+  /** When ``type`` is ``intent_route`` — cheap routing pass before the main model call. */
+  intent?: string;
+  source?: string;
+  tools?: string[];
+  rate_limit_wait_seconds?: number;
+  attempt?: number;
+  model?: string;
   /** Present on events from orchestrator — same id for one user message / chat POST. */
   turn_id?: string;
   /** Monotonic per turn — drop duplicates or stale ordering bugs. */

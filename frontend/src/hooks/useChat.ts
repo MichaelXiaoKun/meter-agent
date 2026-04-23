@@ -2,7 +2,11 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { MutableRefObject } from "react";
 import type { Message, PlotAttachment, PlotSummary, SSEEvent } from "../types";
 import * as api from "../api";
-import { reduceTurnActivity, type TurnActivityStep } from "../turnActivity";
+import {
+  applyThinkingElapsed,
+  reduceTurnActivity,
+  type TurnActivityStep,
+} from "../turnActivity";
 
 function isAbortOrUnload(err: unknown): boolean {
   if (err instanceof DOMException && err.name === "AbortError") return true;
@@ -12,6 +16,7 @@ function isAbortOrUnload(err: unknown): boolean {
 
 export type AgentStatus =
   | { kind: "idle" }
+  | { kind: "connecting" }
   | { kind: "thinking" }
   | { kind: "queued"; message: string }
   | { kind: "streaming" }
@@ -110,6 +115,8 @@ export function useChat(
   const sseExpectedTurnIdRef = useRef<string | null>(null);
   const sseLastSeqRef = useRef<number>(0);
   const streamOpenedForTurnRef = useRef(false);
+  /** First ``thinking`` in a segment; cleared when we show ``Thought for Ns``. */
+  const thinkingSegmentStartMsRef = useRef<number | null>(null);
 
   useEffect(() => {
     activeConvRef.current = activeConvId;
@@ -254,12 +261,20 @@ export function useChat(
         return next;
       });
 
-      setStreamStatus({ kind: "thinking" });
+      setStreamStatus({ kind: "connecting" });
       setStreamText("");
       setStreamPlots([]);
       setAssistantError(null);
-      setTurnActivity([]);
+      setTurnActivity([
+        {
+          seq: 0,
+          kind: "connecting",
+          title: "Sending your message",
+          detail: undefined,
+        },
+      ]);
       streamOpenedForTurnRef.current = false;
+      thinkingSegmentStartMsRef.current = null;
       accumulatedRef.current = "";
       plotsRef.current = [];
       sseLastSeqRef.current = 0;
@@ -314,15 +329,54 @@ export function useChat(
             if (!shouldApplySseEvent(event, sseExpectedTurnIdRef, sseLastSeqRef)) {
               return;
             }
-            setTurnActivity((prev) =>
-              reduceTurnActivity(prev, event, streamOpenedForTurnRef)
-            );
+            if (event.type === "thinking") {
+              // Always reset: a new `thinking` SSE (e.g. after rate-limit) starts a fresh window.
+              thinkingSegmentStartMsRef.current = Date.now();
+            }
+            setTurnActivity((prev) => {
+              let next = reduceTurnActivity(prev, event, streamOpenedForTurnRef);
+              // Do not end the segment on `compressing` — it can fire after `thinking` during
+              // retries and would clear the timer before the first token/tool. ChatGPT-style
+              // "Thought for" closes on first user-visible work only.
+              const canCloseThinking =
+                event.type === "text_delta" ||
+                event.type === "text_stream" ||
+                event.type === "tool_call" ||
+                event.type === "error" ||
+                event.type === "done";
+              if (canCloseThinking) {
+                const t0 = thinkingSegmentStartMsRef.current;
+                const hasOpen = next.some(
+                  (step) =>
+                    step != null &&
+                    step.kind === "thinking" &&
+                    step.title === "Thinking"
+                );
+                if (hasOpen) {
+                  const elapsedSec =
+                    t0 != null
+                      ? (Date.now() - t0) / 1000
+                      : 0.1;
+                  next = applyThinkingElapsed(
+                    next,
+                    t0 != null ? Math.max(0.05, elapsedSec) : 0.1
+                  );
+                  if (t0 != null) {
+                    thinkingSegmentStartMsRef.current = null;
+                  }
+                }
+              }
+              return next;
+            });
             switch (event.type) {
               case "queued":
                 setStreamStatus({
                   kind: "queued",
                   message: event.message ?? "Waiting for a free slot…",
                 });
+                break;
+              case "intent_route":
+                setStreamStatus({ kind: "thinking" });
                 break;
               case "thinking":
                 accumulatedRef.current = "";
@@ -377,6 +431,12 @@ export function useChat(
                   tokens: inputTokens,
                   pct: event.pct ?? 0,
                 });
+                // First server event is often this — move off "Sending…" immediately.
+                setStreamStatus((prev) =>
+                  prev == null || prev.kind === "connecting"
+                    ? { kind: "thinking" }
+                    : prev
+                );
                 break;
               }
               case "compressing":
@@ -466,7 +526,7 @@ export function useChat(
     !!processingConvId && activeConvId === processingConvId;
 
   const status: AgentStatus = isViewingProcessing
-    ? streamStatus
+    ? (streamStatus ?? IDLE)
     : assistantError
       ? { kind: "error", error: assistantError }
       : IDLE;

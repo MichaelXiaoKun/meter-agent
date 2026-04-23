@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import socket
+import sys
 import threading
 import time
 import uuid
@@ -109,6 +110,31 @@ logger.info(
     "ORCHESTRATOR_MAX_CONCURRENT_TURNS=%s (max parallel chat turns per process)",
     configured_max_slots(),
 )
+
+
+def _ensure_flow_tool_stderr_logging() -> None:
+    """
+    Uvicorn’s console often shows only ``INFO: 127.0.0.1 "GET ..."`` access lines.
+    Bind ``tools.flow_analysis`` to stderr so ``analyze_flow_data`` failures are
+    always visible when subprocess returncode != 0.
+    """
+    lg = logging.getLogger("tools.flow_analysis")
+    if getattr(lg, "_bluebot_stderr_handler", None) is not None:
+        return
+    h = logging.StreamHandler(sys.stderr)
+    h.setLevel(logging.DEBUG)
+    h.setFormatter(
+        logging.Formatter("%(levelname)s [tools.flow_analysis] %(message)s")
+    )
+    lg.addHandler(h)
+    lg.setLevel(logging.INFO)
+    lg.propagate = False
+    lg._bluebot_stderr_handler = h  # type: ignore[attr-defined]
+    # One short line (avoid terminal wrap/truncate looking like a typo).
+    lg.info("bluebot flow_analysis: stderr log handler ready")
+
+
+_ensure_flow_tool_stderr_logging()
 
 
 def _sse_error_message(exc: BaseException) -> str:
@@ -482,6 +508,64 @@ async def chat_init(
                 sess["events"].append({**event, "turn_id": turn_id, "seq": seq})
             session_cond.notify_all()
 
+    _TURN_PERSIST_KEYS = frozenset(
+        {
+            "type",
+            "seq",
+            "turn_id",
+            "tool",
+            "input",
+            "success",
+            "message",
+            "tool_activity",
+            "tokens",
+            "pct",
+            "model",
+            "intent",
+            "source",
+            "tools",
+            "rate_limit_wait_seconds",
+            "attempt",
+            "text",  # unused on slim; kept for forward compat
+        }
+    )
+
+    def _slim_turn_events_persisted(raw: list[dict], tid: str) -> list[dict]:
+        """
+        Coalesce token spam (text_delta) into a single text_stream marker for
+        the UI to replay; drop oversized plot payloads (filenames only).
+        """
+        out: list[dict] = []
+        for ev in raw:
+            t = ev.get("type")
+            if t == "text_delta":
+                if not out or out[-1].get("type") != "text_stream":
+                    out.append(
+                        {
+                            "type": "text_stream",
+                            "turn_id": tid,
+                            "seq": ev.get("seq", 0),
+                        }
+                    )
+                continue
+            s = {k: ev[k] for k in _TURN_PERSIST_KEYS if k in ev}
+            s["type"] = t
+            s.setdefault("turn_id", tid)
+            s.setdefault("seq", ev.get("seq", 0))
+            if t == "tool_result" and "plot_paths" in ev and ev.get("plot_paths"):
+                s["plot_paths"] = [str(p).split("/")[-1] for p in (ev.get("plot_paths") or [])[:8]]
+            out.append(s)
+        return out
+
+    captured_events: list[dict] = []
+
+    def _emit_event_with_capture(event: dict) -> None:
+        _emit_event(event)
+        with _streams_lock:
+            sess = _streams.get(stream_id)
+            if sess and sess.get("events"):
+                captured_events.append(dict(sess["events"][-1]))
+
     def _mark_done() -> None:
         with session_cond:
             with _streams_lock:
@@ -505,14 +589,31 @@ async def chat_init(
             )
             _active_conversations.add(conv_id)
             try:
+                from message_sanitize import append_turn_activity_block
+
                 _, history_replaced = run_turn(
                     messages,
                     token,
-                    on_event=_emit_event,
+                    on_event=_emit_event_with_capture,
                     client_timezone=body.client_timezone,
                     anthropic_api_key=user_anthropic_key,
                     model=body.model,
                 )
+                slim = _slim_turn_events_persisted(captured_events, turn_id)
+                if slim:
+                    slim.append(
+                        {
+                            "type": "done",
+                            "turn_id": turn_id,
+                            "seq": len(slim) + 1,
+                        }
+                    )
+                if (
+                    messages
+                    and messages[-1].get("role") == "assistant"
+                    and slim
+                ):
+                    append_turn_activity_block(messages[-1], slim)
                 if history_replaced:
                     # In-place summarization (e.g. 429) — DB must match compressed thread.
                     store.replace_conversation_messages(conv_id, messages)

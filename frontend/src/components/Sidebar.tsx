@@ -1,7 +1,49 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useConversationListPrefs } from "../hooks/useConversationListPrefs";
 import type { Conversation } from "../types";
+import ConversationList from "./ConversationList";
 import { IconPencilWriting, IconSidebarDock } from "./SidebarIconRail";
 import ThemeToggle from "./ThemeToggle";
+
+/** Multi-select: checklist affordance. */
+function IconListMultiselect({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="3" y="4" width="5" height="5" rx="1" />
+      <line x1="12" y1="6.5" x2="20" y2="6.5" />
+      <rect x="3" y="10" width="5" height="5" rx="1" />
+      <line x1="12" y1="12.5" x2="20" y2="12.5" />
+      <rect x="3" y="16" width="5" height="5" rx="1" />
+      <line x1="12" y1="18.5" x2="20" y2="18.5" />
+    </svg>
+  );
+}
+
+function IconCheck({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.25"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M6 12l4 4 8-9" />
+    </svg>
+  );
+}
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -11,6 +53,8 @@ interface SidebarProps {
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;
   onDeleteConversation: (id: string) => void;
+  /** Delete many in one round-trip (list refresh once at end). */
+  onDeleteConversations: (ids: string[]) => void | Promise<void>;
   onRenameConversation: (id: string, title: string) => void | Promise<void>;
   onLogout: () => void;
   /** Stored only in this browser; sent as X-Anthropic-Key on chat requests. */
@@ -30,17 +74,6 @@ interface SidebarProps {
   collapseShelfFading?: boolean;
 }
 
-function relativeDate(ts: number): string {
-  const now = new Date();
-  const d = new Date(ts * 1000);
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const convDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const diff = (today.getTime() - convDay.getTime()) / 86_400_000;
-  if (diff === 0) return "Today";
-  if (diff === 1) return "Yesterday";
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
 export default function Sidebar({
   conversations,
   activeId,
@@ -49,6 +82,7 @@ export default function Sidebar({
   onSelectConversation,
   onNewConversation,
   onDeleteConversation,
+  onDeleteConversations,
   onRenameConversation,
   onLogout,
   anthropicApiKey,
@@ -58,21 +92,52 @@ export default function Sidebar({
   collapseShelfBody = false,
   collapseShelfFading = false,
 }: SidebarProps) {
-  const [keyModalOpen, setKeyModalOpen] = useState(false);
-  const [keyDraft, setKeyDraft] = useState(anthropicApiKey);
-  /** Full “New chat” shell grows from rail-sized icon capsule (desktop expand / mount). */
-  const [newChatShellOpen, setNewChatShellOpen] = useState(() =>
-    typeof window !== "undefined" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-      ? true
-      : false,
+  const { pins, readMap, togglePin, markRead } = useConversationListPrefs(
+    user,
+    conversations
   );
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [keyModalOpen, setKeyModalOpen] = useState(false);
 
+  useEffect(() => {
+    if (!selectMode) setSelectedIds([]);
+  }, [selectMode]);
+
+  useEffect(() => {
+    const valid = new Set(conversations.map((c) => c.id));
+    setSelectedIds((s) => s.filter((id) => valid.has(id)));
+  }, [conversations]);
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  };
+  const [keyDraft, setKeyDraft] = useState(anthropicApiKey);
+  /** Full “New chat” shell: wide when the list strip is already visible (no flash on first paint). */
+  const [newChatShellOpen, setNewChatShellOpen] = useState(() => {
+    if (typeof window === "undefined") {
+      return !collapseShelfBody;
+    }
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return true;
+    }
+    return !collapseShelfBody;
+  });
+  /**
+   * Only play the “New chat” width expand animation when the shelf list **was
+   * stripped** (``collapseShelfBody``) and is now open again. On first paint
+   * with the shelf already open (page refresh, desktop wide bar), do **not** run
+   * the false → rAF → true sequence, which produced a visible “grow from icon”.
+   */
+  const prevBodyStripped = useRef(collapseShelfBody);
   useLayoutEffect(() => {
     if (collapseShelfBody) {
       setNewChatShellOpen(false);
+      prevBodyStripped.current = true;
       return;
     }
+    const wasStripped = prevBodyStripped.current;
+    prevBodyStripped.current = false;
     const reduce =
       typeof window !== "undefined" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -80,11 +145,14 @@ export default function Sidebar({
       setNewChatShellOpen(true);
       return;
     }
-    setNewChatShellOpen(false);
-    const id = requestAnimationFrame(() => {
-      requestAnimationFrame(() => setNewChatShellOpen(true));
-    });
-    return () => cancelAnimationFrame(id);
+    if (wasStripped) {
+      setNewChatShellOpen(false);
+      const id = requestAnimationFrame(() => {
+        requestAnimationFrame(() => setNewChatShellOpen(true));
+      });
+      return () => cancelAnimationFrame(id);
+    }
+    setNewChatShellOpen(true);
   }, [collapseShelfBody]);
 
   /** Collapse: shrink the New chat shell in lockstep with list/footer fade (same DOM as expand). */
@@ -112,7 +180,7 @@ export default function Sidebar({
         Shelf surface matches narrow rail (same gradient) so open ↔ collapsed
         reads as one continuous brightness.
       */}
-      <header className="shrink-0 border-b border-brand-border/80 bg-transparent px-3 pb-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] shadow-[0_1px_0_0_rgba(15,23,42,0.04)] dark:shadow-[0_1px_0_0_rgba(0,0,0,0.35)]">
+      <header className="shrink-0 bg-transparent px-2.5 pb-1.5 pt-[max(0.75rem,env(safe-area-inset-top,0px))]">
         <div
           className={`flex items-center gap-2 ${showCollapseControl ? "justify-between" : "justify-start"}`}
         >
@@ -142,9 +210,9 @@ export default function Sidebar({
           onClick={onNewConversation}
           title="New chat"
           aria-label="New chat"
-          className={`group mt-2.5 self-start box-border flex min-w-0 items-center overflow-hidden rounded-xl border border-brand-border/80 bg-white text-left text-[0.9375rem] font-normal text-brand-900 shadow-sm ring-1 ring-brand-border/40 transition-[width,height,max-width,min-height,gap,padding] duration-200 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] motion-reduce:transition-none motion-reduce:duration-0 hover:border-brand-500 hover:bg-brand-50 dark:bg-brand-100 ${showWideNewChatShell
-              ? "h-auto min-h-9 w-full max-w-full gap-2.5 px-2.5 py-1"
-              : "h-9 w-9 max-w-9 shrink-0 justify-center gap-0 px-0 py-0"
+          className={`group mt-2.5 self-start box-border flex min-w-0 items-center overflow-hidden rounded-xl border border-transparent bg-transparent text-left text-[0.9375rem] font-normal text-brand-900 shadow-none ring-1 ring-transparent transition-[width,height,max-width,min-height,gap,padding,background-color,border-color,box-shadow,ring-color] duration-200 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] motion-reduce:transition-none motion-reduce:duration-0 hover:border-brand-500 hover:bg-brand-50 hover:shadow-sm hover:ring-brand-border/40 dark:hover:bg-brand-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 focus-visible:ring-offset-brand-50 dark:focus-visible:ring-offset-brand-100 ${showWideNewChatShell
+            ? "h-auto min-h-9 w-full max-w-full gap-1 py-1 pl-0 pr-2"
+            : "h-9 w-9 max-w-9 shrink-0 justify-center gap-0 px-0 py-0"
             }`}
         >
           <span
@@ -154,8 +222,8 @@ export default function Sidebar({
           </span>
           <span
             className={`truncate text-[0.9375rem] ease-out motion-reduce:transition-none ${showWideNewChatShell && !collapseShelfFading
-                ? "max-w-[min(11rem,calc(100%-2.75rem))] opacity-100 transition-[max-width,opacity] duration-200 delay-50 motion-reduce:delay-0"
-                : "pointer-events-none max-w-0 overflow-hidden opacity-0 transition-[max-width,opacity] duration-200 ease-out motion-reduce:duration-0"
+              ? "max-w-[min(11rem,calc(100%-2.5rem))] opacity-100 transition-[max-width,opacity] duration-200 delay-50 motion-reduce:delay-0"
+              : "pointer-events-none max-w-0 overflow-hidden opacity-0 transition-[max-width,opacity] duration-200 ease-out motion-reduce:duration-0"
               }`}
           >
             New chat
@@ -167,18 +235,77 @@ export default function Sidebar({
         <div
           className={`flex min-h-0 flex-1 flex-col transition-opacity duration-200 ease-out motion-reduce:transition-none motion-reduce:duration-0 ${collapseShelfFading ? "pointer-events-none opacity-0" : "opacity-100"}`}
         >
-          {/* Conversation list */}
+          <div className="flex shrink-0 items-center justify-between gap-2 pb-1.5 pt-1 pl-2.5 pr-2">
+            <button
+              type="button"
+              onClick={() => setSelectMode((m) => !m)}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-transparent text-brand-muted transition-[color,background-color,border-color,box-shadow] hover:border-brand-border/80 hover:bg-white hover:text-brand-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 dark:hover:bg-white/10 dark:hover:text-brand-900"
+              title={selectMode ? "Done selecting" : "Select conversations to delete"}
+              aria-label={selectMode ? "Done selecting conversations" : "Select multiple conversations"}
+            >
+              {selectMode ? (
+                <IconCheck className="h-5 w-5" />
+              ) : (
+                <IconListMultiselect className="h-5 w-5" />
+              )}
+            </button>
+            {selectMode && selectedIds.length > 0 && (
+              <span className="text-xs tabular-nums text-brand-muted">
+                {selectedIds.length} selected
+              </span>
+            )}
+          </div>
+          {/* Conversation list (grouped, pins, virtualized) */}
           <ConversationList
             conversations={conversations}
             activeId={activeId}
             processingId={processingId}
+            pins={pins}
+            readMap={readMap}
+            selectionMode={selectMode}
+            selectedIds={selectedIds}
+            onToggleSelect={toggleSelect}
+            onExitSelectMode={() => {
+              setSelectMode(false);
+              setSelectedIds([]);
+            }}
             onSelect={onSelectConversation}
             onDelete={onDeleteConversation}
             onRename={onRenameConversation}
+            onTogglePin={togglePin}
+            onMarkRead={markRead}
           />
 
+          {selectMode && (
+            <div className="shrink-0 space-y-1.5 px-2.5 py-2">
+              <button
+                type="button"
+                disabled={selectedIds.length === 0}
+                onClick={async () => {
+                  if (selectedIds.length === 0) return;
+                  if (
+                    !window.confirm(
+                      `Delete ${selectedIds.length} conversation(s)? This cannot be undone.`
+                    )
+                  ) {
+                    return;
+                  }
+                  const snapshot = [...selectedIds];
+                  setSelectMode(false);
+                  setSelectedIds([]);
+                  await onDeleteConversations(snapshot);
+                }}
+                className="w-full rounded-lg bg-red-600 py-1.5 text-sm font-medium text-white shadow-sm transition-opacity hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {selectedIds.length > 0
+                  ? `Delete ${selectedIds.length} conversation${selectedIds.length === 1 ? "" : "s"}`
+                  : "Delete selected"}
+              </button>
+            </div>
+          )}
+
           {/* Account section */}
-          <div className="shrink-0 border-t border-brand-border px-4 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] pt-3">
+          <div className="shrink-0 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] pt-3">
             <div className="mb-2 truncate text-xs text-brand-muted">
               Signed in as <span className="font-medium text-brand-900">{user}</span>
             </div>
@@ -299,156 +426,3 @@ export default function Sidebar({
   );
 }
 
-/* ------------------------------------------------------------------ */
-
-function IconDotsHorizontal({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      fill="currentColor"
-      viewBox="0 0 24 24"
-      aria-hidden
-    >
-      <circle cx="6" cy="12" r="1.5" />
-      <circle cx="12" cy="12" r="1.5" />
-      <circle cx="18" cy="12" r="1.5" />
-    </svg>
-  );
-}
-
-function ConversationList({
-  conversations,
-  activeId,
-  processingId,
-  onSelect,
-  onDelete,
-  onRename,
-}: {
-  conversations: Conversation[];
-  activeId: string | null;
-  processingId: string | null;
-  onSelect: (id: string) => void;
-  onDelete: (id: string) => void;
-  onRename: (id: string, title: string) => void | Promise<void>;
-}) {
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!openMenuId) return;
-    function handleMousedown(e: MouseEvent) {
-      const t = e.target as HTMLElement;
-      if (t.closest(`[data-conv-menu-root="${openMenuId}"]`)) return;
-      setOpenMenuId(null);
-    }
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpenMenuId(null);
-    }
-    window.addEventListener("mousedown", handleMousedown);
-    window.addEventListener("keydown", handleKey);
-    return () => {
-      window.removeEventListener("mousedown", handleMousedown);
-      window.removeEventListener("keydown", handleKey);
-    };
-  }, [openMenuId]);
-
-  return (
-    <div className="relative flex-1 overflow-y-auto px-2">
-      {conversations.map((c) => {
-        const isActive = c.id === activeId;
-        const isBusy = c.id === processingId;
-        const menuOpen = openMenuId === c.id;
-        const rowClass = isActive
-          ? "bg-white font-semibold text-brand-900 shadow-sm dark:bg-white/10 dark:shadow-[0_1px_0_0_rgba(0,0,0,0.25)]"
-          : "text-brand-900/80 hover:bg-white/60 dark:hover:bg-white/10";
-
-        return (
-          <div
-            key={c.id}
-            className={`group relative mb-0.5 flex rounded-lg ${rowClass}`}
-          >
-            <button
-              type="button"
-              onClick={() => {
-                setOpenMenuId(null);
-                onSelect(c.id);
-              }}
-              className="min-w-0 flex-1 rounded-lg px-3 py-2 text-left text-sm transition-colors"
-            >
-              <div
-                className="flex items-center gap-1.5 truncate"
-                title={c.title || "New conversation"}
-              >
-                {isBusy && (
-                  <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-brand-500" />
-                )}
-                <span className="truncate">{c.title || "New conversation"}</span>
-              </div>
-              <div className="text-xs text-brand-muted">
-                {relativeDate(c.updated_at)}
-              </div>
-            </button>
-
-            <div
-              className={`relative flex shrink-0 items-start pt-1 pr-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 ${menuOpen ? "sm:opacity-100" : ""}`}
-              data-conv-menu-root={c.id}
-            >
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setOpenMenuId((id) => (id === c.id ? null : c.id));
-                }}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-brand-muted transition-colors hover:bg-white/80 hover:text-brand-900 dark:text-brand-muted/90 dark:hover:bg-white/10 dark:hover:text-brand-900"
-                title="Conversation actions"
-                aria-expanded={menuOpen}
-                aria-haspopup="menu"
-                aria-label="Conversation actions"
-              >
-                <IconDotsHorizontal className="h-5 w-5" />
-              </button>
-
-              {menuOpen && (
-                <div
-                  role="menu"
-                  className="absolute right-0 top-full z-50 mt-1 min-w-[11rem] rounded-lg border border-brand-border bg-white py-1 shadow-lg dark:bg-brand-100 dark:shadow-[0_12px_40px_-12px_rgba(0,0,0,0.5)]"
-                >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="flex w-full items-center px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
-                    onClick={() => {
-                      setOpenMenuId(null);
-                      if (!window.confirm("Delete this conversation?")) return;
-                      onDelete(c.id);
-                    }}
-                  >
-                    Delete chat
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="flex w-full items-center px-3 py-2 text-left text-sm text-brand-900 hover:bg-brand-50 dark:hover:bg-white/10"
-                    onClick={() => {
-                      setOpenMenuId(null);
-                      const current = c.title || "New conversation";
-                      const next = window.prompt("Rename conversation", current);
-                      if (next === null) return;
-                      const trimmed = next.trim();
-                      if (!trimmed || trimmed === current) return;
-                      void Promise.resolve(onRename(c.id, trimmed)).catch(() => {
-                        /* errors surfaced by global / fetch handling if any */
-                      });
-                    }}
-                  >
-                    Rename title
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
