@@ -2,7 +2,12 @@ import { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message, ContentBlock, PlotAttachment } from "../types";
-import { rebuildStepsFromStoredEvents, type TurnActivityStep } from "../turnActivity";
+import {
+  rebuildStepsFromStoredEvents,
+  splitActivityAtFirstTool,
+  splitTurnActivityAroundStreamBody,
+  type TurnActivityStep,
+} from "../turnActivity";
 import PlotImage from "./PlotImage";
 import TurnActivityTimeline from "./TurnActivityTimeline";
 
@@ -17,6 +22,31 @@ function extractText(content: string | ContentBlock[]): string {
 function isToolResultRow(content: string | ContentBlock[]): boolean {
   if (typeof content === "string") return false;
   return content.length > 0 && content[0]?.type === "tool_result";
+}
+
+function hasTurnActivityBlock(content: string | ContentBlock[]): boolean {
+  if (typeof content === "string") return false;
+  return content.some(
+    (b) => b.type === "turn_activity" && Array.isArray((b as ContentBlock).events)
+  );
+}
+
+function hasToolUseBlock(content: string | ContentBlock[]): boolean {
+  if (typeof content === "string") return false;
+  return content.some((b) => b.type === "tool_use");
+}
+
+/** True if a later assistant in this turn (before the next real user) carries ``turn_activity``. */
+function preambleFoldedIntoLaterAssistant(
+  transcript: Message[],
+  messageIndex: number
+): boolean {
+  for (let j = messageIndex + 1; j < transcript.length; j++) {
+    const m = transcript[j];
+    if (m.role === "user" && !isToolResultRow(m.content)) return false;
+    if (m.role === "assistant" && hasTurnActivityBlock(m.content)) return true;
+  }
+  return false;
 }
 
 function turnActivityFromMessage(
@@ -50,14 +80,79 @@ function stripMarkdownPngImages(text: string): string {
     .trim();
 }
 
+function contentBlocks(content: string | ContentBlock[]): ContentBlock[] {
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  return Array.isArray(content) ? content : [];
+}
+
+/** Assistant ``text`` blocks strictly before the first ``tool_use`` in that message. */
+function assistantTextBeforeFirstTool(content: string | ContentBlock[]): string {
+  const parts: string[] = [];
+  for (const b of contentBlocks(content)) {
+    if (!b || typeof b !== "object") continue;
+    if (b.type === "text" && b.text) parts.push(b.text);
+    if (b.type === "tool_use") break;
+  }
+  return parts.join("");
+}
+
+/**
+ * Preamble streamed before any tool in this user turn — it is stored on earlier
+ * assistant rows while ``turn_activity`` is attached to the final assistant message.
+ */
+function extractPreToolMarkdownBeforeMessage(
+  transcript: Message[],
+  assistantIndex: number
+): string {
+  if (assistantIndex <= 0) return "";
+  let userIdx = -1;
+  for (let j = assistantIndex - 1; j >= 0; j--) {
+    const m = transcript[j];
+    if (m?.role === "user" && !isToolResultRow(m.content)) {
+      userIdx = j;
+      break;
+    }
+  }
+  if (userIdx < 0) return "";
+  const chunks: string[] = [];
+  for (let j = userIdx + 1; j < assistantIndex; j++) {
+    const m = transcript[j];
+    if (!m) continue;
+    if (m.role === "user" && isToolResultRow(m.content)) continue;
+    if (m.role !== "assistant") continue;
+    chunks.push(assistantTextBeforeFirstTool(m.content));
+  }
+  return chunks.join("");
+}
+
 interface MessageBubbleProps {
   message: Message;
   /** Plots to show after this assistant message (from prior ``tool_result`` rows). */
   plots?: PlotAttachment[];
+  /** Same-conversation messages (server order) — enables pre-tool / tool / post-tool layout. */
+  transcript?: Message[];
+  messageIndex?: number;
 }
 
-export default function MessageBubble({ message, plots }: MessageBubbleProps) {
+export default function MessageBubble({
+  message,
+  plots,
+  transcript,
+  messageIndex,
+}: MessageBubbleProps) {
   if (isToolResultRow(message.content)) return null;
+
+  // Preamble for this tool turn is replayed on the final assistant row (with ``turn_activity``).
+  if (
+    message.role === "assistant" &&
+    transcript != null &&
+    messageIndex != null &&
+    hasToolUseBlock(message.content) &&
+    !hasTurnActivityBlock(message.content) &&
+    preambleFoldedIntoLaterAssistant(transcript, messageIndex)
+  ) {
+    return null;
+  }
 
   const historyTurnActivity = useMemo(
     () =>
@@ -91,6 +186,38 @@ export default function MessageBubble({ message, plots }: MessageBubbleProps) {
   // Assistant: only show the markdown/plot card when there is content inside it
   // (turn-only timeline with no text needs no empty card).
   const showAssistantBubble = isUser || Boolean(trimmed) || hasPlots;
+
+  const hasBodyForActivitySplit =
+    message.role === "assistant" && (Boolean(trimmed) || hasPlots);
+  const { above: activityAboveBody, below: activityBelowBody } = useMemo(
+    () =>
+      splitTurnActivityAroundStreamBody(
+        historyTurnActivity ?? [],
+        hasBodyForActivitySplit
+      ),
+    [historyTurnActivity, hasBodyForActivitySplit]
+  );
+
+  const { beforeTools: historyBeforeTools, fromFirstTool: historyFromFirstTool } =
+    useMemo(
+      () => splitActivityAtFirstTool(activityAboveBody),
+      [activityAboveBody]
+    );
+
+  const preToolRaw = useMemo(() => {
+    if (message.role !== "assistant" || transcript == null || messageIndex == null) {
+      return "";
+    }
+    return extractPreToolMarkdownBeforeMessage(transcript, messageIndex);
+  }, [message.role, transcript, messageIndex]);
+
+  const preToolDisplay = useMemo(() => {
+    const t = preToolRaw.trim();
+    if (!t) return "";
+    return rewritePlotPaths(preToolRaw);
+  }, [preToolRaw]);
+
+  const showPostBubble = Boolean(trimmed) || hasPlots;
 
   const assistantMarkdownBlock =
     !isUser && text ? (
@@ -145,19 +272,53 @@ export default function MessageBubble({ message, plots }: MessageBubbleProps) {
   }
 
   if (hasHistoryActivity) {
+    // Match live ChatView: pre-tool strip → first reply → tool strip → post-tool reply → done.
+    const proseCard =
+      "max-w-[min(92%,28rem)] min-w-0 overflow-hidden rounded-2xl border border-brand-border bg-white px-4 py-3.5 text-brand-900 dark:border-brand-border dark:bg-brand-50 sm:max-w-[75%] sm:py-3";
+    const proseInner =
+      "prose prose-base max-w-none min-w-0 break-words prose-p:my-2 prose-p:leading-relaxed prose-headings:text-brand-900 prose-a:break-words prose-a:text-brand-500 prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm dark:prose-invert dark:prose-headings:text-brand-900 [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full sm:prose-sm sm:prose-p:my-1";
+    const mdComponents = {
+      img: ({ src, alt }: { src?: string; alt?: string }) => (
+        <PlotImage
+          src={src ?? ""}
+          alt={alt ?? undefined}
+          className="w-full rounded-lg shadow-sm"
+        />
+      ),
+    };
     return (
       <div className="flex flex-col gap-2 items-start">
-        <TurnActivityTimeline
-          steps={historyTurnActivity ?? []}
-          active={false}
-        />
-        {showAssistantBubble ? (
+        {historyBeforeTools.length > 0 ? (
+          <TurnActivityTimeline steps={historyBeforeTools} active={false} />
+        ) : null}
+        {preToolDisplay.trim() ? (
           <div className="flex w-full justify-start">
-            <div className="max-w-[min(92%,28rem)] min-w-0 overflow-hidden rounded-2xl border border-brand-border bg-white px-4 py-3.5 text-brand-900 dark:border-brand-border dark:bg-brand-50 sm:max-w-[75%] sm:py-3">
+            <div className={proseCard}>
+              <div className={proseInner}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                  {preToolDisplay}
+                </ReactMarkdown>
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {historyFromFirstTool.length > 0 ? (
+          <TurnActivityTimeline steps={historyFromFirstTool} active={false} />
+        ) : null}
+        {showPostBubble ? (
+          <div className="flex w-full justify-start">
+            <div className={proseCard}>
               {assistantMarkdownBlock}
               {assistantPlotsBlock}
             </div>
           </div>
+        ) : null}
+        {activityBelowBody.length > 0 ? (
+          <TurnActivityTimeline
+            steps={activityBelowBody}
+            active={false}
+            announce={false}
+          />
         ) : null}
       </div>
     );

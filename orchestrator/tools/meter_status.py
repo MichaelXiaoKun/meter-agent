@@ -11,6 +11,28 @@ import sys
 
 from subprocess_env import tool_subprocess_env
 
+
+def _stderr_for_user(stderr: str, returncode: int) -> str:
+    """
+    Subprocess stderr may contain log lines plus a Python traceback.
+    Keep a short, user-safe message for tool_result / timeline (no stack frames).
+    """
+    raw = (stderr or "").strip()
+    if not raw:
+        return f"Meter status agent exited with code {returncode}."
+    if "Traceback (most recent call last)" in raw:
+        for line in reversed(raw.splitlines()):
+            t = line.strip()
+            if not t or t.startswith("^"):
+                continue
+            # Final "SomeError: message" line after trace frames
+            if ": " in t:
+                head = t.split(":", 1)[0]
+                if "Error" in head or head.endswith("Exception"):
+                    return t[:600]
+        return "Meter status failed (unexpected error; check server logs)."
+    return raw[:600]
+
 _AGENT_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "meter-status-agent")
 )
@@ -68,5 +90,5 @@ def check_meter_status(
     return {
         "success": False,
         "report": None,
-        "error": result.stderr.strip() or f"Process exited with code {result.returncode}",
+        "error": _stderr_for_user(result.stderr, result.returncode),
     }

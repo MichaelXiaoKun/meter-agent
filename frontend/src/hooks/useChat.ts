@@ -4,6 +4,7 @@ import type { Message, PlotAttachment, PlotSummary, SSEEvent } from "../types";
 import * as api from "../api";
 import {
   applyThinkingElapsed,
+  isInflightThinkingStep,
   reduceTurnActivity,
   type TurnActivityStep,
 } from "../turnActivity";
@@ -91,7 +92,10 @@ export function useChat(
   const [processingConvId, setProcessingConvId] = useState<string | null>(null);
   const [serverProcessing, setServerProcessing] = useState(false);
   const [streamStatus, setStreamStatus] = useState<AgentStatus>(IDLE);
-  const [streamText, setStreamText] = useState("");
+  /** Assistant text before the first ``tool_call`` in this turn (often empty). */
+  const [streamLead, setStreamLead] = useState("");
+  /** Assistant text after tools start (main reply body). */
+  const [streamTail, setStreamTail] = useState("");
   const [streamPlots, setStreamPlots] = useState<PlotAttachment[]>([]);
   const [streamTokenUsage, setStreamTokenUsage] = useState(() =>
     readStoredTokenUsage(activeConvId)
@@ -107,7 +111,10 @@ export function useChat(
   // Model is held in a ref so the picker can change mid-session without
   // rebinding sendMessage. Each send reads the latest value at fetch time.
   const modelRef = useRef<string | null>(model ?? null);
-  const accumulatedRef = useRef("");
+  const streamLeadAccRef = useRef("");
+  const streamTailAccRef = useRef("");
+  /** First ``tool_call`` SSE flips this; later text chunks append to tail. */
+  const sawToolCallRef = useRef(false);
   const plotsRef = useRef<PlotAttachment[]>([]);
   /** Only clear the thread when switching to a different conversation — not on remount (Strict Mode) or re-fetch. */
   const prevLoadedConvIdRef = useRef<string | null>(null);
@@ -262,7 +269,11 @@ export function useChat(
       });
 
       setStreamStatus({ kind: "connecting" });
-      setStreamText("");
+      streamLeadAccRef.current = "";
+      streamTailAccRef.current = "";
+      sawToolCallRef.current = false;
+      setStreamLead("");
+      setStreamTail("");
       setStreamPlots([]);
       setAssistantError(null);
       setTurnActivity([
@@ -275,7 +286,6 @@ export function useChat(
       ]);
       streamOpenedForTurnRef.current = false;
       thinkingSegmentStartMsRef.current = null;
-      accumulatedRef.current = "";
       plotsRef.current = [];
       sseLastSeqRef.current = 0;
       // Per-turn nonce for event dedup — server echoes it back on every
@@ -347,10 +357,7 @@ export function useChat(
               if (canCloseThinking) {
                 const t0 = thinkingSegmentStartMsRef.current;
                 const hasOpen = next.some(
-                  (step) =>
-                    step != null &&
-                    step.kind === "thinking" &&
-                    step.title === "Thinking"
+                  (step) => step != null && isInflightThinkingStep(step)
                 );
                 if (hasOpen) {
                   const elapsedSec =
@@ -379,16 +386,33 @@ export function useChat(
                 setStreamStatus({ kind: "thinking" });
                 break;
               case "thinking":
-                accumulatedRef.current = "";
+                // Server emits ``thinking`` before *every* Claude stream iteration. After the
+                // first ``tool_call`` of this user turn, the next iteration streams the main
+                // reply into ``tail`` — do not clear tail or reset ``sawToolCallRef`` here or
+                // late tokens jump above the activity strip.
+                if (!sawToolCallRef.current) {
+                  streamLeadAccRef.current = "";
+                  streamTailAccRef.current = "";
+                  setStreamLead("");
+                  setStreamTail("");
+                }
                 setStreamStatus({ kind: "thinking" });
-                setStreamText("");
                 break;
               case "text_delta":
-                accumulatedRef.current += event.text ?? "";
+              case "text_stream": {
+                const chunk = event.text ?? "";
                 setStreamStatus({ kind: "streaming" });
-                setStreamText(accumulatedRef.current);
+                if (!sawToolCallRef.current) {
+                  streamLeadAccRef.current += chunk;
+                  setStreamLead(streamLeadAccRef.current);
+                } else {
+                  streamTailAccRef.current += chunk;
+                  setStreamTail(streamTailAccRef.current);
+                }
                 break;
+              }
               case "tool_call":
+                sawToolCallRef.current = true;
                 setStreamStatus({ kind: "tool_call", tool: event.tool ?? "" });
                 break;
               case "tool_progress":
@@ -469,15 +493,21 @@ export function useChat(
         if (activeConvRef.current === convId) {
           setViewedMessages(final);
         }
-        setStreamText("");
+        streamLeadAccRef.current = "";
+        streamTailAccRef.current = "";
+        sawToolCallRef.current = false;
+        setStreamLead("");
+        setStreamTail("");
         setStreamPlots([]);
+        // Always drop the live strip so it never lingers under the persisted bubble
+        // (``streamReportedError`` used to skip this and left Reasoning / Generating orphan rows).
+        setTurnActivity([]);
+        streamOpenedForTurnRef.current = false;
         setProcessingConvId(null);
         if (streamReportedError && streamErrorMessage) {
           setStreamStatus({ kind: "error", error: streamErrorMessage });
         } else {
           setStreamStatus(IDLE);
-          setTurnActivity([]);
-          streamOpenedForTurnRef.current = false;
         }
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
@@ -488,6 +518,14 @@ export function useChat(
             error: msg,
           });
         }
+        streamLeadAccRef.current = "";
+        streamTailAccRef.current = "";
+        sawToolCallRef.current = false;
+        setStreamLead("");
+        setStreamTail("");
+        setStreamPlots([]);
+        setTurnActivity([]);
+        streamOpenedForTurnRef.current = false;
         setProcessingConvId(null);
       } finally {
         abortRef.current = null;
@@ -507,7 +545,11 @@ export function useChat(
     sseLastSeqRef.current = 0;
     setAssistantError(null);
     setStreamStatus(IDLE);
-    setStreamText("");
+    streamLeadAccRef.current = "";
+    streamTailAccRef.current = "";
+    sawToolCallRef.current = false;
+    setStreamLead("");
+    setStreamTail("");
     setStreamPlots([]);
     setTurnActivity([]);
     streamOpenedForTurnRef.current = false;
@@ -534,7 +576,8 @@ export function useChat(
   return {
     messages: viewedMessages,
     status,
-    streamingText: isViewingProcessing ? streamText : "",
+    streamingLead: isViewingProcessing ? streamLead : "",
+    streamingTail: isViewingProcessing ? streamTail : "",
     /** Last input-token count from the orchestrator (persists after a turn until switch/cancel). */
     tokenUsage: streamTokenUsage,
     historyLoading,

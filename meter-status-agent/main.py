@@ -36,21 +36,30 @@ def main() -> None:
         print("Error: Bearer token required. Use --token or set BLUEBOT_TOKEN.", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Fetching status for serial {args.serial}...", file=sys.stderr)
-    status = fetch_meter_status(args.serial, token)
-    print(f"Online: {status.get('online')}  |  Last seen: {status.get('last_message_at')}", file=sys.stderr)
+    try:
+        print(f"Fetching status for serial {args.serial}...", file=sys.stderr)
+        status = fetch_meter_status(args.serial, token)
+        print(
+            f"Online: {status.get('online')}  |  Last seen: {status.get('last_message_at')}",
+            file=sys.stderr,
+        )
 
-    print("Running analysis...", file=sys.stderr)
-    analysis = analyze(status, args.serial)
-    report = format_report(analysis, args.serial)
+        print("Running analysis...", file=sys.stderr)
+        analysis = analyze(status, args.serial)
+        report = format_report(analysis, args.serial)
 
-    if args.output == "file":
-        filename = f"status_{args.serial}.md"
-        with open(filename, "w") as f:
-            f.write(report)
-        print(f"Report saved to {filename}", file=sys.stderr)
-    else:
-        print(report)
+        if args.output == "file":
+            filename = f"status_{args.serial}.md"
+            with open(filename, "w") as f:
+                f.write(report)
+            print(f"Report saved to {filename}", file=sys.stderr)
+        else:
+            print(report)
+    except Exception as e:
+        # Orchestrator surfaces stderr to the UI / SSE — never dump a Python traceback here.
+        msg = str(e).strip() or type(e).__name__
+        print(msg, file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
