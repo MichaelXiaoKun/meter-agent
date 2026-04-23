@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message, PlotAttachment } from "../types";
@@ -15,7 +22,11 @@ import MicButton from "./MicButton";
 import ThemeToggle from "./ThemeToggle";
 import { IconSidebarDock } from "./SidebarIconRail";
 import type { OrchestratorModelOption } from "../api";
-import type { TurnActivityStep } from "../turnActivity";
+import {
+  splitActivityAtFirstTool,
+  splitTurnActivityAroundStreamBody,
+  type TurnActivityStep,
+} from "../turnActivity";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 
@@ -36,6 +47,18 @@ function SendArrowIcon({ className }: { className?: string }) {
   );
 }
 
+function StreamingAssistantBubble({ markdown }: { markdown: string }) {
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[75%] min-w-0 overflow-hidden rounded-2xl border border-brand-border bg-white px-4 py-3 text-brand-900 dark:border-brand-border dark:bg-brand-50">
+        <div className="prose prose-sm max-w-none min-w-0 break-words prose-p:my-1 prose-a:break-words prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm dark:prose-invert dark:prose-headings:text-brand-900 [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface ChatViewProps {
   /**
    * ID of the currently selected conversation (``null`` while the welcome
@@ -47,7 +70,10 @@ interface ChatViewProps {
   conversationId: string | null;
   messages: Message[];
   status: AgentStatus;
-  streamingText: string;
+  /** Assistant markdown before the first tool in this turn (may be empty). */
+  streamingLead: string;
+  /** Assistant markdown after tools (main streamed reply). */
+  streamingTail: string;
   pendingPlots: PlotAttachment[];
   tokenUsage: { tokens: number; pct: number };
   /** True while fetching messages for the active conversation (empty transcript). */
@@ -87,7 +113,8 @@ export default function ChatView({
   conversationId,
   messages,
   status,
-  streamingText,
+  streamingLead,
+  streamingTail,
   pendingPlots,
   tokenUsage,
   historyLoading,
@@ -378,7 +405,15 @@ export default function ChatView({
     if (smoothScrollInFlightRef.current) return;
     if (!stickToBottomRef.current) return;
     scrollContainerToBottom();
-  }, [messages, streamingText, status, turnActivity, pendingPlots]);
+  }, [
+    messages,
+    streamingLead,
+    streamingTail,
+    status,
+    turnActivity,
+    turnActivityActive,
+    pendingPlots,
+  ]);
 
   /**
    * Window-switch behaviour: whenever the active conversation changes, force
@@ -548,10 +583,27 @@ export default function ChatView({
     status.kind !== "idle" && status.kind !== "error";
   const hasMessages =
     messages.length > 0 ||
-    !!streamingText ||
+    !!streamingLead.trim() ||
+    !!streamingTail.trim() ||
     statusActive ||
     status.kind === "error" ||
-    turnActivity.length > 0;
+    (turnActivityActive && turnActivity.length > 0);
+
+  /** Any streamed chars (including leading whitespace) — keeps ``done`` split in sync from the first chunk. */
+  const hasStreamForSplit =
+    streamingLead.length > 0 || streamingTail.length > 0;
+  const { above: activityAboveStreamBody, below: activityBelowStreamBody } =
+    useMemo(
+      () => splitTurnActivityAroundStreamBody(turnActivity, hasStreamForSplit),
+      [turnActivity, hasStreamForSplit]
+    );
+
+  const { beforeTools: activityBeforeFirstTool, fromFirstTool: activityFromFirstTool } =
+    useMemo(
+      () => splitActivityAtFirstTool(activityAboveStreamBody),
+      [activityAboveStreamBody]
+    );
+  const hasToolSegment = activityFromFirstTool.length > 0;
 
   // Pair plot paths with assistant messages: collect from tool_result rows,
   // attach to the next assistant message (same logic as the Streamlit app).
@@ -885,25 +937,40 @@ export default function ChatView({
                   key={i}
                   message={msg}
                   plots={plotsByIndex.get(i)}
+                  transcript={messages}
+                  messageIndex={i}
                 />
               ))}
 
-              {turnActivity.length > 0 && (
+              {/*
+                Pre-tool strip → first reply (lead) → tools / sub-agent strip →
+                post-tool reply (tail) → completion. History uses one bubble only.
+              */}
+              {turnActivityActive && activityBeforeFirstTool.length > 0 ? (
                 <TurnActivityTimeline
-                  steps={turnActivity}
-                  active={turnActivityActive}
+                  steps={activityBeforeFirstTool}
+                  active={turnActivityActive && !hasToolSegment}
                 />
-              )}
-
-              {streamingText && (
-                <div className="flex justify-start">
-                  <div className="max-w-[75%] min-w-0 overflow-hidden rounded-2xl border border-brand-border bg-white px-4 py-3 text-brand-900 dark:border-brand-border dark:bg-brand-50">
-                    <div className="prose prose-sm max-w-none min-w-0 break-words prose-p:my-1 prose-a:break-words prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm dark:prose-invert dark:prose-headings:text-brand-900 [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingText}</ReactMarkdown>
-                    </div>
-                  </div>
-                </div>
-              )}
+              ) : null}
+              {streamingLead.trim() ? (
+                <StreamingAssistantBubble markdown={streamingLead} />
+              ) : null}
+              {turnActivityActive && activityFromFirstTool.length > 0 ? (
+                <TurnActivityTimeline
+                  steps={activityFromFirstTool}
+                  active={turnActivityActive && hasToolSegment}
+                />
+              ) : null}
+              {streamingTail.trim() ? (
+                <StreamingAssistantBubble markdown={streamingTail} />
+              ) : null}
+              {turnActivityActive && activityBelowStreamBody.length > 0 ? (
+                <TurnActivityTimeline
+                  steps={activityBelowStreamBody}
+                  active={false}
+                  announce={false}
+                />
+              ) : null}
 
               {pendingPlots.length > 0 && (
                 <div className="flex justify-start">
