@@ -2,7 +2,11 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { MutableRefObject } from "react";
 import type { Message, PlotAttachment, PlotSummary, SSEEvent } from "../types";
 import * as api from "../api";
-import { reduceTurnActivity, type TurnActivityStep } from "../turnActivity";
+import {
+  applyThinkingElapsed,
+  reduceTurnActivity,
+  type TurnActivityStep,
+} from "../turnActivity";
 
 function isAbortOrUnload(err: unknown): boolean {
   if (err instanceof DOMException && err.name === "AbortError") return true;
@@ -111,6 +115,8 @@ export function useChat(
   const sseExpectedTurnIdRef = useRef<string | null>(null);
   const sseLastSeqRef = useRef<number>(0);
   const streamOpenedForTurnRef = useRef(false);
+  /** First ``thinking`` in a segment; cleared when we show ``Thought for Ns``. */
+  const thinkingSegmentStartMsRef = useRef<number | null>(null);
 
   useEffect(() => {
     activeConvRef.current = activeConvId;
@@ -268,6 +274,7 @@ export function useChat(
         },
       ]);
       streamOpenedForTurnRef.current = false;
+      thinkingSegmentStartMsRef.current = null;
       accumulatedRef.current = "";
       plotsRef.current = [];
       sseLastSeqRef.current = 0;
@@ -322,9 +329,42 @@ export function useChat(
             if (!shouldApplySseEvent(event, sseExpectedTurnIdRef, sseLastSeqRef)) {
               return;
             }
-            setTurnActivity((prev) =>
-              reduceTurnActivity(prev, event, streamOpenedForTurnRef)
-            );
+            if (event.type === "thinking") {
+              // Always reset: a new `thinking` SSE (e.g. after rate-limit) starts a fresh window.
+              thinkingSegmentStartMsRef.current = Date.now();
+            }
+            setTurnActivity((prev) => {
+              let next = reduceTurnActivity(prev, event, streamOpenedForTurnRef);
+              // Do not end the segment on `compressing` — it can fire after `thinking` during
+              // retries and would clear the timer before the first token/tool. ChatGPT-style
+              // "Thought for" closes on first user-visible work only.
+              const canCloseThinking =
+                event.type === "text_delta" ||
+                event.type === "text_stream" ||
+                event.type === "tool_call" ||
+                event.type === "error" ||
+                event.type === "done";
+              if (canCloseThinking) {
+                const t0 = thinkingSegmentStartMsRef.current;
+                const hasOpen = next.some(
+                  (s) => s.kind === "thinking" && s.title === "Thinking"
+                );
+                if (hasOpen) {
+                  const elapsedSec =
+                    t0 != null
+                      ? (Date.now() - t0) / 1000
+                      : 0.1;
+                  next = applyThinkingElapsed(
+                    next,
+                    t0 != null ? Math.max(0.05, elapsedSec) : 0.1
+                  );
+                  if (t0 != null) {
+                    thinkingSegmentStartMsRef.current = null;
+                  }
+                }
+              }
+              return next;
+            });
             switch (event.type) {
               case "queued":
                 setStreamStatus({

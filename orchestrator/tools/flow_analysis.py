@@ -225,6 +225,65 @@ TOOL_DEFINITION = {
 }
 
 
+def analyze_flow_inputs_error_payload(
+    inputs: object,
+    *,
+    display_timezone: str | None = None,
+) -> dict | None:
+    """
+    If ``analyze_flow_data`` cannot run because required fields are missing or
+    empty, return the same error-shaped dict as a failed analysis run.
+
+    Otherwise return ``None``. Used by the orchestrator so a malformed tool
+    call does not surface as a bare ``KeyError`` (e.g. ``'start'``) to the UI.
+    """
+    issues: list[str] = []
+    if not isinstance(inputs, dict):
+        issues.append("tool input must be a JSON object")
+    else:
+        sn = inputs.get("serial_number")
+        if sn is None or (isinstance(sn, str) and not str(sn).strip()):
+            issues.append("serial_number is missing or empty")
+        for k in ("start", "end"):
+            if k not in inputs:
+                issues.append(f"{k} is missing")
+            else:
+                v = inputs[k]
+                if v is None:
+                    issues.append(f"{k} is null")
+                elif isinstance(v, str) and not str(v).strip():
+                    issues.append(f"{k} is empty")
+    if not issues:
+        return None
+    tz_name = display_tz_name_for_user(display_timezone)
+    meter_tz = inputs.get("meter_timezone") if isinstance(inputs, dict) else None
+    plot_tz = _resolve_plot_tz_name(
+        meter_timezone=meter_tz,
+        display_timezone=tz_name,
+    )
+    hint = (
+        "Call resolve_time_range first when the user gave a relative range "
+        "(e.g. last 12 hours), then pass the returned Unix start/end here."
+    )
+    err = (
+        "Invalid analyze_flow_data input — "
+        + "; ".join(issues)
+        + ". "
+        + hint
+    )
+    return {
+        "success": False,
+        "report": None,
+        "report_truncated": False,
+        "plot_paths": [],
+        "plot_summaries": [],
+        "analysis_json_path": None,
+        "display_range": "",
+        "plot_timezone": plot_tz,
+        "error": err,
+    }
+
+
 _ALLOWED_NETWORK_TYPES = {"wifi", "lorawan", "unknown"}
 
 

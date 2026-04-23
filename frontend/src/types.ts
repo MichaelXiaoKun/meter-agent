@@ -14,6 +14,9 @@ export interface ContentBlock {
   input?: Record<string, unknown>;
   tool_use_id?: string;
   content?: string;
+  /** Persisted turn timeline for replay in history. */
+  v?: number;
+  events?: Array<Record<string, unknown>>;
 }
 
 export interface Message {
@@ -41,6 +44,7 @@ export interface PlotAttachment {
 export interface SSEEvent {
   type:
     | "text_delta"
+    | "text_stream"
     | "tool_call"
     | "tool_result"
     | "tool_progress"
@@ -55,6 +59,8 @@ export interface SSEEvent {
   tool?: string;
   input?: Record<string, unknown>;
   success?: boolean;
+  /** Success-only: full activity timeline title from the server. */
+  tool_activity?: string;
   plot_paths?: string[];
   plot_summaries?: PlotSummary[];
   plot_timezone?: string;

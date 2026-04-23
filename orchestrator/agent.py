@@ -15,12 +15,15 @@ Usage (from an outer chat loop):
 """
 
 import json
+import logging
 import os
+from collections.abc import Mapping
 import re
 import threading
 import time
 
 import anthropic
+import httpx
 
 from tpm_window import (
     record_input_tokens,
@@ -39,7 +42,11 @@ from tools.meters_by_email import (
     TOOL_DEFINITION as _METERS_BY_EMAIL_DEF,
     list_meters_for_account,
 )
-from tools.flow_analysis import TOOL_DEFINITION as _FLOW_ANALYSIS_DEF, analyze_flow_data
+from tools.flow_analysis import (
+    TOOL_DEFINITION as _FLOW_ANALYSIS_DEF,
+    analyze_flow_data,
+    analyze_flow_inputs_error_payload,
+)
 from tools.pipe_configuration import (
     TOOL_DEFINITION as _PIPE_CONFIGURATION_DEF,
     configure_meter_pipe,
@@ -48,6 +55,7 @@ from tools.set_transducer_angle import (
     TOOL_DEFINITION as _SET_TRANSDUCER_ANGLE_DEF,
     set_transducer_angle_only,
 )
+from message_sanitize import messages_for_anthropic_api
 
 TOOLS = [
     _TIME_RANGE_DEF,
@@ -243,6 +251,8 @@ _CHEAP_MODEL = "claude-haiku-4-5"
 _DEFAULT_ORCHESTRATOR_MODEL = _CHEAP_MODEL
 _MODEL = (os.environ.get("ORCHESTRATOR_MODEL") or _DEFAULT_ORCHESTRATOR_MODEL).strip() or _DEFAULT_ORCHESTRATOR_MODEL
 _MODEL_CONTEXT_WINDOW = 200_000   # tokens
+# SDK default is connect=5s; slow networks often fail on count_tokens before stream starts.
+_ANTHROPIC_HTTP_TIMEOUT = httpx.Timeout(connect=30.0, read=600.0, write=600.0, pool=600.0)
 
 # ---------------------------------------------------------------------------
 # Per-turn model selection (from the UI). We keep a tight allowlist so the
@@ -436,16 +446,24 @@ Rules:
      the browser provides it. Ambiguous phrases ("today", "yesterday", "this morning", dates
      without an offset) are interpreted in that local timezone unless the user explicitly names
      a different one in their message (e.g. "in UTC", "Eastern time", "Tokyo").
-     Always call resolve_time_range before analyze_flow_data when the user gives a time range
-     in words. Translate the time expression to English before passing it as the description
+     **Never** call analyze_flow_data without integer ``start`` and ``end`` (Unix seconds UTC).
+     When the user describes the window in words, call resolve_time_range first and pass
+     that tool’s ``start`` and ``end`` fields into analyze_flow_data. If the user already gave
+     explicit Unix bounds, you may skip resolve_time_range for that window.
+     Translate the time expression to English before passing it as the description
      argument (e.g. "dernières 6 heures" → "last 6 hours", "最近6時間" → "last 6 hours").
-  3. After calling resolve_time_range, always show the user the display_range string
-     from the tool result (and you may mention resolved_label if helpful) and ask them
-     to confirm before proceeding.
-     Only call analyze_flow_data once the user confirms. If they correct the timezone,
-     call resolve_time_range again with the adjusted description before proceeding.
+  3. For a clear one-shot request (e.g. "analyse the last 12 hours for BB…"), call
+     resolve_time_range then analyze_flow_data **in the same tool loop** using the returned
+     ``start``/``end`` — no extra user confirmation turn is required when the range is
+     unambiguous. In your reply, still quote the ``display_range`` from resolve_time_range
+     (or from analyze_flow_data) so the user sees the exact window. If the range or timezone
+     is ambiguous, ask a short clarifying question before analyze_flow_data. If the user
+     corrects the window or zone, call resolve_time_range again before analyze_flow_data.
   4. If resolve_time_range returns an error, relay it to the user and ask them to rephrase.
   5. If a sub-agent tool returns success=false, explain the error clearly and suggest a remedy.
+     If the message says required fields (e.g. start/end) were missing, **retry with corrected
+     tool inputs** in the same turn when you can — do not describe that as a vague "technical
+     glitch"; fix the pipeline and continue.
   6. Ground every factual claim in your reply on tool results — never invent numbers.
   7. Do not convert Unix timestamps (range_start, range_end, or tool start/end integers)
      to wall-clock times yourself — LLMs often get this wrong. For human-readable times,
@@ -502,6 +520,35 @@ Rules:
           results actually say.
 """
 
+_log = logging.getLogger(__name__)
+
+
+def _rough_input_token_fallback(messages: list) -> int:
+    """When ``count_tokens`` is unreachable, approximate from text length (+ system/tools fudge)."""
+    safe = messages_for_anthropic_api(messages)
+    char_n = 0
+    for msg in safe:
+        content = msg.get("content")
+        if isinstance(content, str):
+            char_n += len(content)
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
+                    char_n += len(str(block.get("text", "")))
+                elif btype == "tool_result":
+                    inner = block.get("content")
+                    if isinstance(inner, str):
+                        char_n += len(inner)
+                    elif isinstance(inner, list):
+                        for p in inner:
+                            if isinstance(p, dict) and p.get("type") == "text":
+                                char_n += len(str(p.get("text", "")))
+    # ~4 chars per token; count_tokens also charges system + tool defs — add conservative overhead.
+    return min(max(char_n // 4 + 12_000, 1), _MODEL_CONTEXT_WINDOW)
+
 
 def _count_tokens(
     client: anthropic.Anthropic,
@@ -520,13 +567,23 @@ def _count_tokens(
     may pass a subset of ``TOOLS``).
     """
     tool_list = tools if tools is not None else TOOLS
-    response = client.messages.count_tokens(
-        model=model or _MODEL,
-        system=_SYSTEM_PROMPT,
-        tools=tool_list,
-        messages=messages,
-    )
-    return response.input_tokens
+    safe = messages_for_anthropic_api(messages)
+    try:
+        response = client.messages.count_tokens(
+            model=model or _MODEL,
+            system=_SYSTEM_PROMPT,
+            tools=tool_list,
+            messages=safe,
+        )
+        return response.input_tokens
+    except (anthropic.APIConnectionError, anthropic.APITimeoutError) as exc:
+        n = _rough_input_token_fallback(messages)
+        _log.warning(
+            "count_tokens failed (%s); using rough estimate %s input tokens for budgeting",
+            exc.__class__.__name__,
+            n,
+        )
+        return n
 
 
 def _compress_history(
@@ -741,6 +798,12 @@ def _run_analyze_flow_with_progress(
     Run analyze_flow_data in a worker thread so the main thread can emit SSE heartbeats.
     The subprocess can run for a long time with no other events otherwise.
     """
+    bad = analyze_flow_inputs_error_payload(
+        inputs, display_timezone=client_timezone
+    )
+    if bad is not None:
+        return json.dumps(bad, default=str)
+
     result_holder: list = []
     exc_holder: list[BaseException] = []
 
@@ -763,6 +826,17 @@ def _run_analyze_flow_with_progress(
 
     thread = threading.Thread(target=worker, daemon=True, name="analyze_flow_data")
     thread.start()
+    # Sub-agent (data-processing) is silent for seconds — surface simple status
+    # lines; the web UI maps these to the tool row in the activity timeline.
+    emit(
+        {
+            "type": "tool_progress",
+            "tool": "analyze_flow_data",
+            "message": (
+                "Flow-analysis agent: started — loading data and running the pipeline…"
+            ),
+        }
+    )
 
     elapsed_chunks = 0
     while True:
@@ -770,13 +844,18 @@ def _run_analyze_flow_with_progress(
         if not thread.is_alive():
             break
         elapsed_chunks += 1
+        sec = elapsed_chunks * 4
+        if sec <= 8:
+            line = f"Flow-analysis agent: computing stats, gaps, and quality… ({sec}s)"
+        elif sec <= 24:
+            line = f"Flow-analysis agent: building plots and report — still working… ({sec}s)"
+        else:
+            line = f"Flow-analysis agent: still running (large range or I/O)… {sec}s"
         emit(
             {
                 "type": "tool_progress",
                 "tool": "analyze_flow_data",
-                "message": (
-                    f"Still analyzing flow data… (~{elapsed_chunks * 4}s elapsed)"
-                ),
+                "message": line,
             }
         )
 
@@ -798,6 +877,77 @@ def _sse_tool_succeeded(result_dict: dict) -> bool:
         return s
     err = result_dict.get("error")
     return err is None or err == ""
+
+
+def _clip_activity(text: str, max_len: int) -> str:
+    s = (text or "").strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 1] + "…"
+
+
+def _coerce_tool_input(inp: object) -> dict:
+    if isinstance(inp, dict):
+        return inp
+    if isinstance(inp, Mapping):
+        return dict(inp)
+    return {}
+
+
+def _tool_activity_line(
+    tool_name: str, inp: dict, result: dict, *, ok: bool
+) -> str | None:
+    """
+    One-line status for the web timeline when a tool succeeds.
+    The client falls back to generic labels when this returns None.
+    """
+    if not ok:
+        return None
+    sn = ""
+    if isinstance(inp.get("serial_number"), str):
+        sn = inp["serial_number"].strip()
+    email = ""
+    if isinstance(inp.get("email"), str):
+        email = inp["email"].strip()
+
+    if tool_name == "resolve_time_range":
+        dr = result.get("display_range")
+        if isinstance(dr, str) and dr.strip():
+            return _clip_activity(f"Resolved the time range {dr.strip()}", 240)
+        return None
+
+    if tool_name == "analyze_flow_data":
+        if sn:
+            core = f"Analyzed the flow data for meter with serial number {sn}"
+        else:
+            core = "Analyzed the flow data"
+        dr = result.get("display_range")
+        if isinstance(dr, str) and dr.strip():
+            return _clip_activity(f"{core} — {dr.strip()}", 280)
+        return _clip_activity(core, 200)
+
+    if tool_name == "check_meter_status" and sn:
+        return _clip_activity(f"Checked the meter {sn}", 200)
+
+    if tool_name == "get_meter_profile" and sn:
+        return _clip_activity(f"Read the meter profile for {sn}", 200)
+
+    if tool_name == "list_meters_for_account" and email:
+        return _clip_activity(f"Listed meters for account {email}", 240)
+
+    if tool_name == "configure_meter_pipe" and sn:
+        return _clip_activity(f"Configured the pipe for meter {sn}", 200)
+
+    if tool_name == "set_transducer_angle_only" and sn:
+        ang = inp.get("transducer_angle")
+        ang_s = str(ang).strip() if ang is not None else ""
+        if ang_s:
+            return _clip_activity(
+                f"Set the transducer angle to {ang_s} for meter {sn}", 220
+            )
+        return _clip_activity(f"Set the transducer angle for meter {sn}", 200)
+
+    return None
 
 
 def _dispatch(
@@ -905,7 +1055,8 @@ def run_turn(
                       {"type": "intent_route",  "intent": str, "source": str, "tools": list}
                           — when ORCHESTRATOR_INTENT_ROUTER is not off (rules/haiku pass)
                       {"type": "tool_call",    "tool": str, "input": dict}
-                      {"type": "tool_result",  "tool": str, "success": bool}
+                      {"type": "tool_result",  "tool": str, "success": bool,
+                       "tool_activity": str | None}  — optional human title when success
                       {"type": "tool_progress", "tool": str, "message": str}  — long tools (flow analysis)
                       {"type": "thinking"}  — while waiting for the LLM
 
@@ -922,7 +1073,7 @@ def run_turn(
     # same model so a user-picked Opus turn doesn't silently downgrade to
     # the server default halfway through.
     active_model = resolve_orchestrator_model(model)
-    client = anthropic.Anthropic(api_key=_anthropic_key)
+    client = anthropic.Anthropic(api_key=_anthropic_key, timeout=_ANTHROPIC_HTTP_TIMEOUT)
     history_replaced = False
     active_tools, _, _ = _resolve_routed_tools(client, messages, emit=_emit)
 
@@ -963,9 +1114,9 @@ def run_turn(
 
         if pct >= _COMPRESS_THRESHOLD:
             _emit({"type": "compressing", "tokens": token_count, "pct": pct})
-            api_messages = _compress_history(client, messages)
+            api_messages = messages_for_anthropic_api(_compress_history(client, messages))
         else:
-            api_messages = messages
+            api_messages = messages_for_anthropic_api(messages)
 
         wait_for_sliding_tpm_headroom(
             _estimate_stream_turn_tpm_cost(token_count),
@@ -1019,9 +1170,9 @@ def run_turn(
                     )
                 if pct >= _COMPRESS_THRESHOLD:
                     _emit({"type": "compressing", "tokens": token_count, "pct": pct})
-                    api_messages = _compress_history(client, messages)
+                    api_messages = messages_for_anthropic_api(_compress_history(client, messages))
                 else:
-                    api_messages = messages
+                    api_messages = messages_for_anthropic_api(messages)
                 waited = _sleep_after_rate_limit(exc, stream_attempt)
                 _emit(
                     {
@@ -1055,10 +1206,11 @@ def run_turn(
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
-                    _emit({"type": "tool_call", "tool": block.name, "input": block.input})
+                    inp_d = _coerce_tool_input(block.input)
+                    _emit({"type": "tool_call", "tool": block.name, "input": inp_d})
                     if block.name == "analyze_flow_data":
                         result_json = _run_analyze_flow_with_progress(
-                            block.input,
+                            inp_d,
                             token,
                             client_timezone=client_timezone,
                             emit=_emit,
@@ -1067,7 +1219,7 @@ def run_turn(
                     else:
                         result_json = _dispatch(
                             block.name,
-                            block.input,
+                            inp_d,
                             token,
                             client_timezone=client_timezone,
                             anthropic_api_key=_anthropic_key,
@@ -1079,6 +1231,11 @@ def run_turn(
                         "tool": block.name,
                         "success": ok,
                     }
+                    activity = _tool_activity_line(
+                        block.name, inp_d, result_dict, ok=ok
+                    )
+                    if activity:
+                        event["tool_activity"] = activity
                     if not ok:
                         emsg = result_dict.get("error")
                         if emsg not in (None, ""):
