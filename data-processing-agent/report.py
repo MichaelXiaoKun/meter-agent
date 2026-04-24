@@ -7,6 +7,8 @@ Wraps the agent's analysis in a standardised report header.
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from processors.reasoning_schema import schema_to_compact_markdown
+
 
 def _verified_facts_markdown(facts: Dict[str, Any]) -> str:
     """Append-only block of deterministic metrics (same processors as the agent tools)."""
@@ -201,4 +203,7 @@ def format_report(
     body = header + analysis
     if verified_facts:
         body += _verified_facts_markdown(verified_facts)
+        schema = verified_facts.get("reasoning_schema")
+        if isinstance(schema, dict) and schema:
+            body += schema_to_compact_markdown(schema)
     return body

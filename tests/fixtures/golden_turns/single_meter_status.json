@@ -1,0 +1,33 @@
+{
+  "id": "single_meter_status",
+  "description": "Direct status query on a single serial — rule 1 says call check_meter_status immediately, no terminology lecture.",
+  "user": "Is BB8100015261 online?",
+  "expected_tool_sequence": [
+    {
+      "tool": "check_meter_status",
+      "args_contains": {"serial_number": "BB8100015261"},
+      "mock_result": {
+        "success": true,
+        "online": true,
+        "signal_quality": {"label": "good", "score": 92},
+        "pipe_config": {"material": "stainless_steel", "size_label": "2\""}
+      }
+    }
+  ],
+  "forbidden_tools": [
+    "analyze_flow_data",
+    "configure_meter_pipe",
+    "set_transducer_angle_only",
+    "list_meters_for_account",
+    "compare_meters"
+  ],
+  "response_must_not_contain": [
+    "check_meter_status",
+    "analyze_flow_data",
+    "subprocess",
+    "sub-agent",
+    "/Users/"
+  ],
+  "response_must_contain": [],
+  "prompt_versions": ["v1"]
+}

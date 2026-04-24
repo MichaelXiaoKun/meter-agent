@@ -27,10 +27,12 @@ from data_client import fetch_flow_data_range
 from agent import analyze
 from report import format_report
 from processors.analysis_bundle import build_analysis_bundle
-from processors.plots import pop_figures
+from processors.plots import pop_captions, pop_figures
 from processors.verified_facts import build_verified_facts
 
 _ANALYSIS_JSON_MARKER = "__BLUEBOT_ANALYSIS_JSON__"
+_PLOT_CAPTIONS_MARKER = "__BLUEBOT_PLOT_CAPTIONS__"
+_REASONING_SCHEMA_MARKER = "__BLUEBOT_REASONING_SCHEMA__"
 
 
 def main() -> None:
@@ -80,9 +82,17 @@ def main() -> None:
 
     pending = pop_figures()
     plot_paths = [path for _, path in pending]
+    plot_captions = pop_captions()
 
     _here = os.path.dirname(os.path.abspath(__file__))
-    bundle = build_analysis_bundle(args.serial, args.start, args.end, verified_facts, plot_paths)
+    bundle = build_analysis_bundle(
+        args.serial,
+        args.start,
+        args.end,
+        verified_facts,
+        plot_paths,
+        plot_captions=plot_captions,
+    )
     # Analysis bundles live under <agent>/analyses/ (gitignored) alongside plots/.
     # Override with BLUEBOT_ANALYSES_DIR when a persistent volume is needed.
     analyses_dir = os.environ.get("BLUEBOT_ANALYSES_DIR") or os.path.join(_here, "analyses")
@@ -102,10 +112,24 @@ def main() -> None:
     else:
         print(report)
 
+    # Reasoning schema: small, deterministic anchor block the orchestrator can
+    # surface to the outer LLM directly, so it does not have to re-derive the
+    # same evidence → hypothesis → next-step reasoning from Markdown prose.
+    reasoning_schema = verified_facts.get("reasoning_schema") if isinstance(verified_facts, dict) else None
+    if reasoning_schema:
+        print(_REASONING_SCHEMA_MARKER + json.dumps(reasoning_schema, default=str), file=sys.stderr)
+
     if pending:
         paths = plot_paths
         # Orchestrator parses this line for authoritative paths (not markdown).
         print("__BLUEBOT_PLOT_PATHS__" + json.dumps(paths), file=sys.stderr)
+        if plot_captions:
+            # Same path-keyed dict as the bundle so the orchestrator can zip
+            # captions back with plot_paths without guessing.
+            print(
+                _PLOT_CAPTIONS_MARKER + json.dumps(plot_captions, default=str),
+                file=sys.stderr,
+            )
         for path in paths:
             print(f"Plot saved: {path}", file=sys.stderr)
         # Only open interactive windows when running in a real terminal.

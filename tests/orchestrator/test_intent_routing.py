@@ -32,6 +32,7 @@ def _load_orchestrator_agent():
 
 
 orch = _load_orchestrator_agent()
+_CHEAP_MODEL = "claude-haiku-4-5"
 
 
 def _names(tools: list) -> set[str]:
@@ -59,6 +60,7 @@ class TestToolsForIntentLabel:
                 "check_meter_status",
                 "get_meter_profile",
                 "list_meters_for_account",
+                "compare_meters",
             }
 
 
@@ -84,12 +86,33 @@ def test_resolve_routed_tools_off_full_catalog(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("ORCHESTRATOR_INTENT_ROUTER", "off")
 
     tools, label, src = orch._resolve_routed_tools(
-        MagicMock(), [{"role": "user", "content": "anything"}], emit=None
+        MagicMock(), _CHEAP_MODEL, [{"role": "user", "content": "anything"}], emit=None
     )
     assert label == "full"
     assert src == "off"
     assert len(tools) == len(orch.TOOLS)
     assert _names(tools) == _names(orch.TOOLS)
+
+
+def test_resolve_routed_tools_rules_flow_persists_across_serial_followup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Follow-up that only supplies a serial must not drop ``analyze_flow_data``."""
+    monkeypatch.setenv("ORCHESTRATOR_INTENT_ROUTER", "rules")
+
+    tools, label, src = orch._resolve_routed_tools(
+        MagicMock(),
+        _CHEAP_MODEL,
+        [
+            {"role": "user", "content": "can you analyze data over the past 2 hours?"},
+            {"role": "assistant", "content": [{"type": "text", "text": "Which serial?"}]},
+            {"role": "user", "content": "it's BB8100013600"},
+        ],
+        emit=None,
+    )
+    assert src == "rules"
+    assert label == "flow"
+    assert "analyze_flow_data" in _names(tools)
 
 
 def test_resolve_routed_tools_rules_status_and_emit(
@@ -104,6 +127,7 @@ def test_resolve_routed_tools_rules_status_and_emit(
 
     tools, label, src = orch._resolve_routed_tools(
         MagicMock(),
+        _CHEAP_MODEL,
         [{"role": "user", "content": "Is the meter online?"}],
         emit=emit,
     )

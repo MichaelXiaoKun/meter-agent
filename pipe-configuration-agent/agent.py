@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Any, Dict
 
-import anthropic
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from llm import get_provider
 
 from processors.device_and_catalog import resolve_device_and_pipe_specs
 from processors.mqtt_pipe import apply_pipe_configuration_over_mqtt
@@ -155,38 +157,35 @@ def analyze(
         "Call the tools using these exact values (do not substitute identifiers the user did not provide)."
     )
 
-    client = anthropic.Anthropic()
+    model_id = os.environ.get("BLUEBOT_PIPE_CONFIG_MODEL", "claude-haiku-4-5")
+    provider = get_provider(model_id)
     messages = [{"role": "user", "content": user_message}]
 
     while True:
-        response = client.messages.create(
-            model=os.environ.get("BLUEBOT_PIPE_CONFIG_MODEL", "claude-haiku-4-5"),
-            max_tokens=4096,
+        response = provider.complete(
+            model_id,
+            messages,
             system=system_prompt,
             tools=TOOLS,
-            messages=messages,
+            max_tokens=4096,
         )
 
         if response.stop_reason == "end_turn":
-            for block in response.content:
-                if hasattr(block, "text"):
-                    return block.text
-            return "Analysis complete (no text output)."
+            return response.text or "Analysis complete (no text output)."
 
         if response.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "assistant", "content": response.assistant_content})
 
             tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    result = _dispatch_tool(block.name, block.input, token)
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": json.dumps(result, default=str),
-                        }
-                    )
+            for tc in response.tool_calls:
+                result = _dispatch_tool(tc.name, tc.input, token)
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tc.id,
+                        "content": json.dumps(result, default=str),
+                    }
+                )
 
             messages.append({"role": "user", "content": tool_results})
 

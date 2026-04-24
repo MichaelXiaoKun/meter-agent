@@ -49,6 +49,51 @@ def _ssa_code(is_lorawan: bool, angle: str) -> Tuple[Optional[str], Optional[str
     return m[label], None
 
 
+def allowed_angle_labels(*, is_lorawan: bool | None) -> list[str]:
+    """
+    Human-readable labels valid for this radio.
+
+    ``is_lorawan`` None means radio unknown — only labels supported on **both**
+    Wi-Fi and LoRaWAN are returned (safe subset).
+    """
+    if is_lorawan is True:
+        return sorted(_LORAWAN_ANGLE_MAP.keys())
+    if is_lorawan is False:
+        return sorted(_WIFI_ANGLE_MAP.keys())
+    both = set(_WIFI_ANGLE_MAP.keys()) & set(_LORAWAN_ANGLE_MAP.keys())
+    return sorted(both)
+
+
+def preflight_validate_angle(angle: str, *, is_lorawan: bool | None) -> str | None:
+    """
+    Return None if *angle* is allowed for the radio; else a short user-facing error.
+
+    ``is_lorawan``: True = LoRaWAN table, False = Wi-Fi, None = unknown (intersection only).
+    """
+    label = normalize_angle_label(angle)
+    if is_lorawan is True:
+        m = _LORAWAN_ANGLE_MAP
+    elif is_lorawan is False:
+        m = _WIFI_ANGLE_MAP
+    else:
+        allowed = set(_WIFI_ANGLE_MAP.keys()) & set(_LORAWAN_ANGLE_MAP.keys())
+        if label not in allowed:
+            return (
+                f"Unknown or ambiguous transducer angle {angle!r} (normalized {label!r}) "
+                f"when the meter radio type is uncertain. "
+                f"Valid without knowing Wi-Fi vs LoRaWAN: {', '.join(sorted(allowed))}. "
+                f"Use a device profile lookup first, or choose one of those angles."
+            )
+        return None
+    if label not in m:
+        return (
+            f"Unknown transducer angle {angle!r} (normalized {label!r}) for "
+            f"{'LoRaWAN' if is_lorawan else 'Wi-Fi'} meters. "
+            f"Valid: {', '.join(sorted(m.keys()))}"
+        )
+    return None
+
+
 def resolve_transducer_angle(
     pipe_resolution: Dict[str, Any],
     transducer_angle: str,

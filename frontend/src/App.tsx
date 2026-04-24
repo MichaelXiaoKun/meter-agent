@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import LoginPage from "./components/LoginPage";
 import Sidebar from "./components/Sidebar";
 import SidebarIconRail from "./components/SidebarIconRail";
@@ -73,6 +73,14 @@ export default function App() {
     setSelectedModel(modelId);
     writeStoredModel(modelId);
   }, []);
+
+  // TPM guide that tracks the UI's model selection rather than the server default.
+  const effectiveTpmGuide = useMemo(() => {
+    const id = selectedModel ?? defaultModel;
+    if (!id || !availableModels.length) return tpmInputGuideTokens;
+    const m = availableModels.find((m) => m.id === id);
+    return m && m.tpm_input_guide_tokens > 0 ? m.tpm_input_guide_tokens : tpmInputGuideTokens;
+  }, [selectedModel, defaultModel, availableModels, tpmInputGuideTokens]);
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     try {
       const v = localStorage.getItem("bb_sidebar_open");
@@ -412,7 +420,7 @@ export default function App() {
           pendingPlots={pendingPlots}
           tokenUsage={tokenUsage}
           historyLoading={historyLoading}
-          tpmInputGuideTokens={tpmInputGuideTokens}
+          tpmInputGuideTokens={effectiveTpmGuide}
           tpmServerSliding60s={tpmServerSliding60s}
           modelContextWindowTokens={modelContextWindowTokens}
           maxInputTokensTarget={maxInputTokensTarget}
