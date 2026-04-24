@@ -70,14 +70,22 @@ export function toolNowLine(
 export function toolDoneLine(
   name: string,
   ok: boolean,
-  opts?: { activity?: string }
+  opts?: { activity?: string; deduped?: boolean }
 ): string {
   if (!ok) return "Tool run failed";
   const act = opts?.activity?.trim();
-  if (act) return act;
-  const t = name.trim() || "tool";
-  if (TOOL_LIFECYCLE[t]) return TOOL_LIFECYCLE[t].done;
-  return `Finished ${t.replace(/_/g, " ")}`;
+  let base: string;
+  if (act) {
+    base = act;
+  } else {
+    const t = name.trim() || "tool";
+    if (TOOL_LIFECYCLE[t]) base = TOOL_LIFECYCLE[t].done;
+    else base = `Finished ${t.replace(/_/g, " ")}`;
+  }
+  if (opts?.deduped && ok) {
+    return `${base} — reused earlier result`;
+  }
+  return base;
 }
 
 const INTENT_SCOPING_TITLE: Record<string, string> = {
@@ -269,6 +277,7 @@ export function reduceTurnActivity(
       return push({ kind: "compressing", title: "Tightening context", detail: undefined });
     case "tool_call": {
       const tool = event.tool ?? "";
+      const deduped = event.deduped === true;
       // Same-turn retry: drop trailing failed rows for this tool so the timeline does not
       // show "Tool run failed" immediately before a successful second attempt.
       let trimmed = base;
@@ -289,6 +298,10 @@ export function reduceTurnActivity(
         event.input && typeof event.input === "object"
           ? (event.input as Record<string, unknown>)
           : undefined;
+      let title = toolNowLine(tool, toolInput);
+      if (deduped) {
+        title = `${title.replace(/…\s*$/u, "").trim()} — reusing earlier result…`;
+      }
       return [
         ...trimmed,
         {
@@ -296,7 +309,7 @@ export function reduceTurnActivity(
           kind: "tool" as const,
           tool,
           phase: "running" as const,
-          title: toolNowLine(tool, toolInput),
+          title,
           detail: undefined,
           toolInput,
         },
@@ -330,6 +343,7 @@ export function reduceTurnActivity(
     case "tool_result": {
       const tool = event.tool ?? "";
       const ok = event.success ?? false;
+      const deduped = event.deduped === true;
       const i = base.length;
       for (let k = i - 1; k >= 0; k -= 1) {
         const s = base[k];
@@ -347,6 +361,7 @@ export function reduceTurnActivity(
                   typeof event.tool_activity === "string"
                     ? event.tool_activity
                     : undefined,
+                deduped,
               }),
               ok,
               progressLines: s.progressLines,
@@ -370,6 +385,7 @@ export function reduceTurnActivity(
             typeof event.tool_activity === "string"
               ? event.tool_activity
               : undefined,
+          deduped,
         }),
         ...(!ok && event.message
           ? { detail: String(event.message) }
@@ -383,6 +399,17 @@ export function reduceTurnActivity(
       }
       streamOpened.current = true;
       return push({ kind: "stream", title: "Generating the reply", detail: undefined });
+    }
+    case "tool_round_limit": {
+      const lim = typeof event.limit === "number" ? event.limit : 0;
+      return push({
+        kind: "error",
+        title: "Step limit reached",
+        detail:
+          lim > 0
+            ? `This reply stopped after ${lim} assistant steps (safety limit). Send a shorter request or continue in a new message.`
+            : "This reply hit the assistant step safety limit. Continue in a new message.",
+      });
     }
     case "error":
       return push({ kind: "error", title: "Something went wrong", detail: event.error });

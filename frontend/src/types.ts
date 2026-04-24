@@ -43,18 +43,19 @@ export interface PlotAttachment {
 
 export interface SSEEvent {
   type:
-    | "text_delta"
-    | "text_stream"
-    | "tool_call"
-    | "tool_result"
-    | "tool_progress"
-    | "thinking"
-    | "token_usage"
-    | "compressing"
-    | "queued"
-    | "intent_route"
-    | "done"
-    | "error";
+  | "text_delta"
+  | "text_stream"
+  | "tool_call"
+  | "tool_result"
+  | "tool_progress"
+  | "thinking"
+  | "token_usage"
+  | "compressing"
+  | "queued"
+  | "intent_route"
+  | "tool_round_limit"
+  | "done"
+  | "error";
   text?: string;
   tool?: string;
   input?: Record<string, unknown>;
@@ -75,6 +76,10 @@ export interface SSEEvent {
   rate_limit_wait_seconds?: number;
   attempt?: number;
   model?: string;
+  /** When ``type`` is ``tool_round_limit`` — ORCHESTRATOR_MAX_TOOL_ROUNDS cap. */
+  limit?: number;
+  /** Same-turn dedupe: identical analyze_flow_data reused without re-running subprocess. */
+  deduped?: boolean;
   /** Present on events from orchestrator — same id for one user message / chat POST. */
   turn_id?: string;
   /** Monotonic per turn — drop duplicates or stale ordering bugs. */

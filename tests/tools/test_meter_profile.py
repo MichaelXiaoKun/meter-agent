@@ -117,6 +117,7 @@ class TestGetMeterProfile:
         assert res["profile"]["serialNumber"] == "BB8100013600"
         assert res["profile"]["organization_name"] == "L Parc"
         assert res["profile"]["device_groups"][0]["name"] == "Mains"
+        assert res["transducer_angle_options"] == ["15º", "25º", "35º", "45º"]
         assert res["error"] is None
 
     @respx.mock
@@ -128,6 +129,16 @@ class TestGetMeterProfile:
         res = get_meter_profile("BB8100013600", "tok")
         assert res["success"] is True
         assert res["network_type"] == "lorawan"
+        assert res["transducer_angle_options"] == [
+            "10º",
+            "15º",
+            "20º",
+            "25º",
+            "30º",
+            "35º",
+            "40º",
+            "45º",
+        ]
 
     @respx.mock
     def test_404_returns_structured_error(self):

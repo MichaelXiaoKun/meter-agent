@@ -3,7 +3,7 @@ api.py — FastAPI server exposing the orchestrator over HTTP + SSE.
 
 Run with:
     cd orchestrator
-    uvicorn api:app --port 8000 --reload
+    uvicorn api:app --port 8000 --reload --reload-dir . --reload-dir ../llm
 
 Auth0 config is read from environment variables using the same pattern as
 the Streamlit app:  AUTH0_DOMAIN_{ENV}, AUTH0_CLIENT_ID_{ENV},
@@ -23,6 +23,13 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
+
+# Load .env from the repo root (one level up from orchestrator/) for local dev.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+except ImportError:
+    pass
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -428,16 +435,22 @@ async def chat_init(
     body: ChatRequest,
     authorization: str = Header(...),
     x_anthropic_key: str | None = Header(default=None, alias="X-Anthropic-Key"),
+    x_llm_key: str | None = Header(default=None, alias="X-LLM-Key"),
 ):
     """Persist the user's message, kick off the worker thread, and return a
     one-shot ``stream_id`` the browser can subscribe to via ``EventSource``.
 
     The actual SSE event stream lives at ``GET /api/streams/{stream_id}``
     (see :func:`chat_stream`).
+
+    ``X-LLM-Key`` is the generic per-request provider key (works for any
+    provider).  ``X-Anthropic-Key`` is accepted for backward compatibility
+    and used only when ``X-LLM-Key`` is absent.
     """
     _gc_streams()
     token = _bearer_token(authorization)
-    user_anthropic_key = (x_anthropic_key or "").strip() or None
+    # X-LLM-Key takes priority; fall back to the legacy X-Anthropic-Key header.
+    user_anthropic_key = (x_llm_key or x_anthropic_key or "").strip() or None
     messages = store.load_messages(conv_id)
 
     user_msg = {"role": "user", "content": body.message}
@@ -527,6 +540,8 @@ async def chat_init(
             "rate_limit_wait_seconds",
             "attempt",
             "text",  # unused on slim; kept for forward compat
+            "limit",  # tool_round_limit
+            "deduped",
         }
     )
 

@@ -1,0 +1,35 @@
+{
+  "id": "meters_by_email",
+  "description": "Account-keyed meter list — rule 13 says use list_meters_for_account when the user identifies the account by email.",
+  "user": "What meters does alice@acme.com have?",
+  "expected_tool_sequence": [
+    {
+      "tool": "list_meters_for_account",
+      "args_contains": {"email": "alice@acme.com"},
+      "mock_result": {
+        "success": true,
+        "email": "alice@acme.com",
+        "meters": [
+          {"serial_number": "BB8100015261", "label": "Plant A, Loop 3"},
+          {"serial_number": "BB8100015262", "label": "Plant A, Loop 4"}
+        ],
+        "truncated": false,
+        "total": 2
+      }
+    }
+  ],
+  "forbidden_tools": [
+    "check_meter_status",
+    "analyze_flow_data",
+    "configure_meter_pipe",
+    "set_transducer_angle_only",
+    "compare_meters"
+  ],
+  "response_must_not_contain": [
+    "list_meters_for_account",
+    "subprocess",
+    "/Users/"
+  ],
+  "response_must_contain": ["alice@acme.com"],
+  "prompt_versions": ["v1"]
+}

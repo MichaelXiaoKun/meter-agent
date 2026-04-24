@@ -22,12 +22,17 @@ import re
 import threading
 import time
 
-import anthropic
+import sys as _sys
+import os as _os
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".."))
+
 import httpx
+
+from llm import get_provider, LLMRateLimitError
+from llm.registry import MODEL_CATALOG, get_cheap_model
 
 from tpm_window import (
     record_input_tokens,
-    record_input_tokens_from_usage,
     sliding_input_tokens_sum,
     wait_for_sliding_tpm_headroom,
 )
@@ -42,6 +47,10 @@ from tools.meters_by_email import (
     TOOL_DEFINITION as _METERS_BY_EMAIL_DEF,
     list_meters_for_account,
 )
+from tools.meter_compare import (
+    TOOL_DEFINITION as _METER_COMPARE_DEF,
+    compare_meters,
+)
 from tools.flow_analysis import (
     TOOL_DEFINITION as _FLOW_ANALYSIS_DEF,
     analyze_flow_data,
@@ -55,13 +64,16 @@ from tools.set_transducer_angle import (
     TOOL_DEFINITION as _SET_TRANSDUCER_ANGLE_DEF,
     set_transducer_angle_only,
 )
-from message_sanitize import messages_for_anthropic_api
+from message_sanitize import messages_for_anthropic_api  # still used for _rough_input_token_fallback
+from observability import emit_event, turn_context, timed
+from prompts import load_system_prompt
 
 TOOLS = [
     _TIME_RANGE_DEF,
     _METER_STATUS_DEF,
     _METER_PROFILE_DEF,
     _METERS_BY_EMAIL_DEF,
+    _METER_COMPARE_DEF,
     _FLOW_ANALYSIS_DEF,
     _PIPE_CONFIGURATION_DEF,
     _SET_TRANSDUCER_ANGLE_DEF,
@@ -84,6 +96,7 @@ _BASE_READ_TOOLS: frozenset[str] = frozenset(
         "check_meter_status",
         "get_meter_profile",
         "list_meters_for_account",
+        "compare_meters",
     }
 )
 
@@ -113,24 +126,49 @@ def _intent_router_mode() -> str:
     return "rules"
 
 
-def _last_user_text_for_routing(messages: list) -> str:
-    """Most recent user message text (this turn's user utterance is usually last)."""
+# How many recent **user** messages to concatenate for intent routing. Follow-ups like
+# "it's BB81…" (serial only) must inherit flow/config intent from earlier user lines;
+# otherwise rules classify as ``general`` and ``analyze_flow_data`` is stripped from the
+# tool list — models then correctly report the tool as unavailable.
+_INTENT_ROUTE_USER_LOOKBACK = 4
+
+
+def _plain_text_from_user_message(m: dict) -> str:
+    """Extract searchable user text from one message (text blocks only)."""
+    content = m.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+            elif hasattr(block, "text"):
+                parts.append(str(getattr(block, "text", "") or ""))
+        return " ".join(parts).strip()
+    return ""
+
+
+def _recent_user_text_for_routing(messages: list) -> str:
+    """
+    Last N user utterances, oldest first, joined by newlines.
+
+    Using only the final user line breaks multi-step flows (e.g. user asks for a 2-hour
+    analysis, then replies with a serial): the last line has no flow keywords, intent
+    becomes ``general``, and expensive tools are hidden from the provider.
+    """
+    blobs: list[str] = []
     for i in range(len(messages) - 1, -1, -1):
         m = messages[i]
         if m.get("role") != "user":
             continue
-        content = m.get("content")
-        if isinstance(content, str):
-            return content.strip()[:12_000]
-        if isinstance(content, list):
-            parts: list[str] = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    parts.append(str(block.get("text", "")))
-                elif hasattr(block, "text"):
-                    parts.append(str(getattr(block, "text", "") or ""))
-            return " ".join(parts).strip()[:12_000]
-    return ""
+        t = _plain_text_from_user_message(m)
+        if t:
+            blobs.append(t)
+        if len(blobs) >= _INTENT_ROUTE_USER_LOOKBACK:
+            break
+    blobs.reverse()
+    return "\n".join(blobs).strip()[:12_000]
 
 
 def _route_intent_rules(user_text: str) -> str:
@@ -173,7 +211,8 @@ def _parse_haiku_intent_json(text: str) -> str | None:
 
 
 def _route_intent_haiku(
-    client: anthropic.Anthropic,
+    provider,
+    cheap_model: str,
     user_text: str,
 ) -> str:
     if not (user_text or "").strip():
@@ -190,14 +229,15 @@ def _route_intent_haiku(
     try:
         est = min(4000, max(400, len(user_text) // 2 + 400))
         wait_for_sliding_tpm_headroom(est, _TPM_INPUT_GUIDE_TOKENS)
-        resp = client.messages.create(
-            model=_CHEAP_MODEL,
-            max_tokens=120,
+        resp = provider.complete(
+            cheap_model,
+            [{"role": "user", "content": user_text[:8000]}],
             system=system,
-            messages=[{"role": "user", "content": user_text[:8000]}],
+            tools=[],
+            max_tokens=120,
         )
-        record_input_tokens_from_usage(getattr(resp, "usage", None))
-        raw = resp.content[0].text if resp.content else ""
+        record_input_tokens(resp.input_tokens)
+        raw = resp.text
     except Exception:
         return _route_intent_rules(user_text)
     parsed = _parse_haiku_intent_json(raw)
@@ -214,7 +254,8 @@ def _tools_for_intent_label(label: str) -> list:
 
 
 def _resolve_routed_tools(
-    client: anthropic.Anthropic,
+    provider,
+    cheap_model: str,
     messages: list,
     *,
     emit,
@@ -226,9 +267,9 @@ def _resolve_routed_tools(
     mode = _intent_router_mode()
     if mode == "off":
         return (list(TOOLS), "full", "off")
-    user_text = _last_user_text_for_routing(messages)
+    user_text = _recent_user_text_for_routing(messages)
     if mode == "haiku":
-        label = _route_intent_haiku(client, user_text)
+        label = _route_intent_haiku(provider, cheap_model, user_text)
         src = "haiku"
     else:
         label = _route_intent_rules(user_text)
@@ -246,17 +287,14 @@ def _resolve_routed_tools(
     return (tools, label, src)
 
 
-# Cheapest tier (Haiku). Override main chat with ORCHESTRATOR_MODEL (e.g. claude-sonnet-4-6).
-_CHEAP_MODEL = "claude-haiku-4-5"
-_DEFAULT_ORCHESTRATOR_MODEL = _CHEAP_MODEL
+# Default orchestrator model — override with ORCHESTRATOR_MODEL env var.
+# Supported: any model ID in meter_agent/llm/registry.py MODEL_CATALOG.
+_DEFAULT_ORCHESTRATOR_MODEL = "claude-haiku-4-5"
 _MODEL = (os.environ.get("ORCHESTRATOR_MODEL") or _DEFAULT_ORCHESTRATOR_MODEL).strip() or _DEFAULT_ORCHESTRATOR_MODEL
-_MODEL_CONTEXT_WINDOW = 200_000   # tokens
-# SDK default is connect=5s; slow networks often fail on count_tokens before stream starts.
-_ANTHROPIC_HTTP_TIMEOUT = httpx.Timeout(connect=30.0, read=600.0, write=600.0, pool=600.0)
 
 # ---------------------------------------------------------------------------
 # Per-turn model selection (from the UI). We keep a tight allowlist so the
-# frontend cannot pass an arbitrary string to Anthropic. The list is also
+# frontend cannot pass an arbitrary string to the provider. The list is also
 # exposed via /api/config so the UI can populate its picker.
 #
 # ORCHESTRATOR_ALLOWED_MODELS (comma-separated IDs) extends / overrides the
@@ -264,34 +302,12 @@ _ANTHROPIC_HTTP_TIMEOUT = httpx.Timeout(connect=30.0, read=600.0, write=600.0, p
 # ---------------------------------------------------------------------------
 
 
-_MODEL_CATALOG: dict[str, dict[str, object]] = {
-    "claude-haiku-4-5": {
-        "label": "Haiku 4.5",
-        "tier": "fast",
-        "description": "Fast + cheap; great default for routine analysis.",
-        "tpm_input_guide_tokens": 50_000,
-    },
-    "claude-sonnet-4-5": {
-        "label": "Sonnet 4.5",
-        "tier": "balanced",
-        "description": "Balanced quality / cost; better multi-step reasoning.",
-        "tpm_input_guide_tokens": 30_000,
-    },
-    "claude-opus-4-5": {
-        "label": "Opus 4.5",
-        "tier": "max",
-        "description": "Highest quality, slowest + most expensive.",
-        "tpm_input_guide_tokens": 30_000,
-    },
-}
-
-
 def _configured_allowed_models() -> list[str]:
     raw = (os.environ.get("ORCHESTRATOR_ALLOWED_MODELS") or "").strip()
     if not raw:
-        return list(_MODEL_CATALOG.keys())
+        return list(MODEL_CATALOG.keys())
     parts = [p.strip() for p in raw.split(",") if p.strip()]
-    return [p for p in parts if p] or list(_MODEL_CATALOG.keys())
+    return [p for p in parts if p] or list(MODEL_CATALOG.keys())
 
 
 def list_available_models() -> list[dict[str, object]]:
@@ -299,8 +315,9 @@ def list_available_models() -> list[dict[str, object]]:
     out: list[dict[str, object]] = []
     default_id = _MODEL
     for mid in _configured_allowed_models():
-        meta = _MODEL_CATALOG.get(mid) or {
+        meta = MODEL_CATALOG.get(mid) or {
             "label": mid,
+            "provider": "unknown",
             "tier": "custom",
             "description": "",
             "tpm_input_guide_tokens": 30_000,
@@ -309,6 +326,7 @@ def list_available_models() -> list[dict[str, object]]:
             {
                 "id": mid,
                 "label": meta["label"],
+                "provider": meta.get("provider", "unknown"),
                 "tier": meta["tier"],
                 "description": meta["description"],
                 "tpm_input_guide_tokens": meta["tpm_input_guide_tokens"],
@@ -352,15 +370,89 @@ def _env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+def _max_tool_rounds_per_turn() -> int:
+    """
+    Maximum LLM↔tool iterations for one user message (outer ``run_turn`` loop).
+
+    Stops runaway tool loops. Override with ORCHESTRATOR_MAX_TOOL_ROUNDS (clamped 4…128).
+    """
+    explicit = _env_int("ORCHESTRATOR_MAX_TOOL_ROUNDS")
+    if explicit is not None:
+        return max(4, min(int(explicit), 128))
+    return 32
+
+
+# Tools whose result is a deterministic function of their inputs *within* one turn.
+# Safe to cache and replay on duplicate calls in the same turn; a post-mutation
+# reread is still sound because :func:`_invalidate_dedupe_for_write` drops any
+# cached read tied to a serial the write tool just touched (see rule 11).
+_DEDUPABLE_READ_TOOLS: frozenset[str] = frozenset(
+    {
+        "resolve_time_range",
+        "check_meter_status",
+        "get_meter_profile",
+        "list_meters_for_account",
+        "compare_meters",
+        "analyze_flow_data",
+    }
+)
+
+# Write tools are *never* cached: each call is an MQTT / management push and
+# must reach the device even when the arguments look identical.
+_WRITE_TOOLS: frozenset[str] = frozenset(
+    {"configure_meter_pipe", "set_transducer_angle_only"}
+)
+
+
+def _per_turn_tool_dedupe_key(tool_name: str, inp_d: dict) -> str | None:
+    """Return a stable cache key for a read-only tool call, else ``None``.
+
+    Canonicalises the whole args dict via ``sort_keys=True`` so ``{"a": 1,
+    "b": 2}`` and ``{"b": 2, "a": 1}`` hit the same entry. Write tools and
+    unknown tools always return ``None`` so they bypass the cache.
+    """
+    if tool_name not in _DEDUPABLE_READ_TOOLS:
+        return None
+    return json.dumps(
+        {"tool": tool_name, "args": inp_d},
+        sort_keys=True,
+        default=str,
+    )
+
+
+def _invalidate_dedupe_for_write(
+    dedupe_cache: dict[str, tuple[str, str | None]],
+    tool_name: str,
+    inp_d: dict,
+) -> list[str]:
+    """Drop cached reads that reference the serial this write just mutated.
+
+    Returns the list of invalidated cache keys (for telemetry). Rule 11
+    ("verify after configuration") assumes subsequent ``check_meter_status``
+    / ``get_meter_profile`` calls re-hit the device, so we must not hand
+    back a stale cached read after a write succeeds.
+    """
+    if tool_name not in _WRITE_TOOLS:
+        return []
+    serial = str(inp_d.get("serial_number") or "").strip() or None
+    if serial is None:
+        return []
+    dropped: list[str] = [
+        key for key, (_json, tagged) in dedupe_cache.items() if tagged == serial
+    ]
+    for key in dropped:
+        dedupe_cache.pop(key, None)
+    return dropped
+
+
 def _default_tpm_input_guide_for_active_model() -> int:
     """
-    Tier-1 ITPM from Anthropic docs: Haiku 4.5 = 50k, Sonnet 4 / Opus 4 = 30k.
+    Default input-TPM guide pulled from the model catalog.
     Override with ORCHESTRATOR_TPM_GUIDE_TOKENS when your org tier differs.
     """
-    m = (os.environ.get("ORCHESTRATOR_MODEL") or _DEFAULT_ORCHESTRATOR_MODEL).strip().lower()
-    if "haiku" in m:
-        return 50_000
-    return 30_000
+    m = (os.environ.get("ORCHESTRATOR_MODEL") or _DEFAULT_ORCHESTRATOR_MODEL).strip()
+    entry = MODEL_CATALOG.get(m, {})
+    return int(entry.get("tpm_input_guide_tokens", 30_000))
 
 
 def _resolve_tpm_input_guide_tokens() -> int:
@@ -382,15 +474,10 @@ _TPM_INPUT_GUIDE_TOKENS = _resolve_tpm_input_guide_tokens()
 _MAX_INPUT_TOKENS_TARGET = _resolve_max_input_tokens_target(_TPM_INPUT_GUIDE_TOKENS)
 
 
-def _resolve_anthropic_api_key(override: str | None) -> str:
-    """Prefer per-request key (browser), else server env."""
-    k = (override or "").strip() or os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not k:
-        raise RuntimeError(
-            "Missing Anthropic API key. Add your key under **Claude API key** in the sidebar, "
-            "or set ANTHROPIC_API_KEY on the server."
-        )
-    return k
+def _resolve_api_key_override(override: str | None) -> str | None:
+    """Return a non-empty key override string, or None (provider factory reads env vars)."""
+    k = (override or "").strip()
+    return k or None
 
 
 def _estimate_stream_turn_tpm_cost(token_count: int) -> int:
@@ -404,10 +491,11 @@ def _estimate_stream_turn_tpm_cost(token_count: int) -> int:
 
 def get_rate_limit_config_for_api() -> dict[str, object]:
     """Public knobs for /api/config and logging (matches run_turn budgeting)."""
+    active_model_ctx = int(MODEL_CATALOG.get(_MODEL, {}).get("context_window", 200_000))
     return {
         "tpm_input_guide_tokens": _TPM_INPUT_GUIDE_TOKENS,
         "max_input_tokens_target": _MAX_INPUT_TOKENS_TARGET,
-        "model_context_window": _MODEL_CONTEXT_WINDOW,
+        "model_context_window": active_model_ctx,
         "tpm_headroom_fraction": _env_float("ORCHESTRATOR_TPM_HEADROOM_FRACTION", 0.5),
         "tpm_sliding_input_tokens_60s": sliding_input_tokens_sum(),
         "tpm_window_seconds": 60,
@@ -419,106 +507,10 @@ def get_rate_limit_config_for_api() -> dict[str, object]:
         # made a choice yet (or their stored choice is no longer allowed).
         "default_model": _MODEL,
         "available_models": list_available_models(),
+        "max_tool_rounds_per_turn": _max_tool_rounds_per_turn(),
     }
 
-_SYSTEM_PROMPT = """\
-You are a conversational assistant for bluebot ultrasonic flow meter analysis.
-You help field engineers and operators check meter health, analyse flow data, and configure
-pipe parameters by delegating to specialist sub-agents through tool calls.
-
-Available tools:
-  resolve_time_range     — convert natural language time expressions to Unix timestamps
-  check_meter_status     — fetch current meter health (online state, signal quality, pipe config)
-  get_meter_profile      — management-API device metadata + Wi-Fi vs LoRaWAN classification (by serial number)
-  list_meters_for_account — list every meter attached to a Bluebot user account (by account email)
-  analyze_flow_data      — analyse historical flow rate data over a time range
-  configure_meter_pipe        — full pipe material/standard/size + transducer angle (management + MQTT)
-  set_transducer_angle_only   — transducer angle only: MQTT **ssa** publish (no pipe catalog / spm)
-
-Rules:
-  1. **Serial number** for tools:
-     - For **check_meter_status** and **analyze_flow_data**, pass the user's **serial_number**
-       (e.g. BB8100015261) and call the tool. Do not ask for extra confirmation
-       or terminology lectures before calling. If the API returns an error, explain it then.
-     - For **configure_meter_pipe** and **set_transducer_angle_only**, use **serial_number** for
-       management/MQTT as required by those tools.
-  2. **Time ranges:** The API sends the user’s local IANA timezone (e.g. America/Denver) when
-     the browser provides it. Ambiguous phrases ("today", "yesterday", "this morning", dates
-     without an offset) are interpreted in that local timezone unless the user explicitly names
-     a different one in their message (e.g. "in UTC", "Eastern time", "Tokyo").
-     **Never** call analyze_flow_data without integer ``start`` and ``end`` (Unix seconds UTC).
-     When the user describes the window in words, call resolve_time_range first and pass
-     that tool’s ``start`` and ``end`` fields into analyze_flow_data. If the user already gave
-     explicit Unix bounds, you may skip resolve_time_range for that window.
-     Translate the time expression to English before passing it as the description
-     argument (e.g. "dernières 6 heures" → "last 6 hours", "最近6時間" → "last 6 hours").
-  3. For a clear one-shot request (e.g. "analyse the last 12 hours for BB…"), call
-     resolve_time_range then analyze_flow_data **in the same tool loop** using the returned
-     ``start``/``end`` — no extra user confirmation turn is required when the range is
-     unambiguous. In your reply, still quote the ``display_range`` from resolve_time_range
-     (or from analyze_flow_data) so the user sees the exact window. If the range or timezone
-     is ambiguous, ask a short clarifying question before analyze_flow_data. If the user
-     corrects the window or zone, call resolve_time_range again before analyze_flow_data.
-  4. If resolve_time_range returns an error, relay it to the user and ask them to rephrase.
-  5. If a sub-agent tool returns success=false, explain the error clearly and suggest a remedy.
-     If the message says required fields (e.g. start/end) were missing, **retry with corrected
-     tool inputs** in the same turn when you can — do not describe that as a vague "technical
-     glitch"; fix the pipeline and continue.
-  6. Ground every factual claim in your reply on tool results — never invent numbers.
-  7. Do not convert Unix timestamps (range_start, range_end, or tool start/end integers)
-     to wall-clock times yourself — LLMs often get this wrong. For human-readable times,
-     use only display_range (and optionally resolved_label) from resolve_time_range, or
-     display_range from analyze_flow_data. If you must cite raw seconds, give the integers
-     without timezone interpretation.
-  8. Keep replies concise: highlight key findings and let the user ask for detail.
-  9. For configure_meter_pipe, collect serial_number, pipe_material, pipe_standard, pipe_size,
-     and transducer_angle before calling. If any are missing, ask concise follow-ups first.
-     Relay tool errors verbatim when helpful; do not guess MQTT or catalog outcomes.
-  10. When the user wants **only** a transducer angle change (no pipe material/standard/size),
-     use **set_transducer_angle_only** with serial_number and transducer_angle.
-     Use **configure_meter_pipe** when they need pipe dimensions or a full pipe + angle push.
-  11. Use **get_meter_profile** when the user asks about the meter's model, label, organization,
-     network type, or whether it is Wi-Fi vs LoRaWAN. Also call it **before analyze_flow_data**
-     whenever possible and pass through two fields from its result:
-       a. ``network_type`` → the analyze_flow_data ``network_type`` input — tunes gap detection
-          and coverage to the meter's physics (``wifi`` ≈ 2 s cadence, ``lorawan`` ≈ 12–60 s
-          bursty cadence; ``unknown`` keeps the conservative 60 s cap).
-       b. ``profile.deviceTimeZone`` → the analyze_flow_data ``meter_timezone`` input — renders
-          the plot x-axes in the meter's local clock so they match the verified-facts wall times.
-     Cite the classification reason verbatim when relevant.
-  12. Use **list_meters_for_account** when the user asks questions keyed by an **email address**
-     rather than a serial number — for example: "what meters does alice@acme.com have?",
-     "list the devices on bob@example.com's account", "how many meters are registered to this email?".
-     The user must supply the email verbatim in their message; do not guess or assume one.
-     Stay email-centric in your reply: report the meter list back against the email the user gave,
-     and do not introduce account ids or organization concepts the user did not ask about.
-     After the list returns, offer to run check_meter_status / get_meter_profile / analyze_flow_data
-     on a specific serial number of interest. Error handling:
-       a. If the tool returns ``success: false``, relay the ``error`` field verbatim — it is already
-          phrased for end users and tells you (via ``error_stage``) whether the problem was looking
-          up the account, its ownership, or its meters.
-       b. If ``success: true`` but ``meters`` is empty, use the ``notice`` field verbatim.
-       c. If ``truncated`` is true, tell the user how many meters were returned vs the real total
-          and ask them to narrow down (e.g. by a specific serial number of interest).
-  13. **User-facing language (no implementation leakage).** Replies to the user must read like
-     product answers, not engineering notes. Specifically:
-       a. Never mention internal tool, function, module, environment-variable, or file names
-          (e.g. ``analyze_flow_data``, ``resolve_time_range``, ``get_meter_profile``,
-          ``verified_facts_precomputed``, ``baseline_quality``, ``BLUEBOT_*``, ``processors/``,
-          ``sub-agent``, ``subprocess``, "the API", "the JSON bundle", "analysis_*.json").
-          Talk about *capabilities* ("the meter analysis", "the time-range resolver") instead.
-       b. Never disclose absolute filesystem paths or server paths (``/Users/...``,
-          ``data-processing-agent/analyses/...``, Unix timestamp integers without context, etc.).
-          Artefacts like plots are surfaced through the UI attachments the tools return; do not
-          paste their raw paths into prose.
-       c. When a capability is missing or a tool returns ``success=false``, refuse briefly in
-          user terms and offer a concrete alternative — e.g. "I can't filter to business hours
-          automatically yet. Want me to analyze a specific block like *Tue 8 AM – 5 PM Denver*
-          instead?" — without explaining *why* the system can't do it (no references to
-          missing filters, schemas, JSON files, or code).
-       d. Do not speculate about what internal data *might* contain; only report what the tool
-          results actually say.
-"""
+_SYSTEM_PROMPT, _SYSTEM_PROMPT_VERSION = load_system_prompt()
 
 _log = logging.getLogger(__name__)
 
@@ -546,12 +538,14 @@ def _rough_input_token_fallback(messages: list) -> int:
                         for p in inner:
                             if isinstance(p, dict) and p.get("type") == "text":
                                 char_n += len(str(p.get("text", "")))
-    # ~4 chars per token; count_tokens also charges system + tool defs — add conservative overhead.
-    return min(max(char_n // 4 + 12_000, 1), _MODEL_CONTEXT_WINDOW)
+    # ~4 chars per token; add conservative system/tool overhead.
+    m = (os.environ.get("ORCHESTRATOR_MODEL") or _DEFAULT_ORCHESTRATOR_MODEL).strip()
+    ctx = int(MODEL_CATALOG.get(m, {}).get("context_window", 200_000))
+    return min(max(char_n // 4 + 12_000, 1), ctx)
 
 
 def _count_tokens(
-    client: anthropic.Anthropic,
+    provider,
     messages: list,
     *,
     model: str | None = None,
@@ -560,23 +554,19 @@ def _count_tokens(
     """Return the input token count for the current conversation state.
 
     Per-turn *model* overrides the server default so the estimate matches
-    the model that will actually handle this turn. Different Claude tiers
-    can tokenise slightly differently, but more importantly this keeps the
-    UI's ``token_usage`` events honest when the user switches model.
-    *tools* should match the list passed to ``messages.stream`` (intent routing
+    the model that will actually handle this turn.
+    *tools* should match the list passed to the stream call (intent routing
     may pass a subset of ``TOOLS``).
     """
     tool_list = tools if tools is not None else TOOLS
-    safe = messages_for_anthropic_api(messages)
     try:
-        response = client.messages.count_tokens(
-            model=model or _MODEL,
+        return provider.count_tokens(
+            model or _MODEL,
+            messages,
             system=_SYSTEM_PROMPT,
             tools=tool_list,
-            messages=safe,
         )
-        return response.input_tokens
-    except (anthropic.APIConnectionError, anthropic.APITimeoutError) as exc:
+    except Exception as exc:
         n = _rough_input_token_fallback(messages)
         _log.warning(
             "count_tokens failed (%s); using rough estimate %s input tokens for budgeting",
@@ -587,7 +577,8 @@ def _count_tokens(
 
 
 def _compress_history(
-    client: anthropic.Anthropic,
+    provider,
+    cheap_model: str,
     messages: list,
     *,
     keep_recent: int | None = None,
@@ -617,8 +608,6 @@ def _compress_history(
                 text = None
                 if isinstance(block, dict) and block.get("type") == "text":
                     text = block["text"]
-                elif hasattr(block, "text"):
-                    text = block.text
                 if text:
                     lines.append(f"{role.capitalize()}: {text[:500]}")
                     break
@@ -626,16 +615,14 @@ def _compress_history(
     transcript = "\n".join(lines)
 
     try:
-        # Haiku summarization call — rough input size from transcript + prompt overhead.
         summarize_est = min(
             _TPM_INPUT_GUIDE_TOKENS // 2,
             max(800, len(transcript) // 4 + 1500),
         )
         wait_for_sliding_tpm_headroom(summarize_est, _TPM_INPUT_GUIDE_TOKENS)
-        summary_resp = client.messages.create(
-            model=_CHEAP_MODEL,
-            max_tokens=512,
-            messages=[{
+        summary_resp = provider.complete(
+            cheap_model,
+            [{
                 "role": "user",
                 "content": (
                     "You are summarizing an earlier part of a conversation for context compression. "
@@ -645,9 +632,12 @@ def _compress_history(
                     f"{transcript}"
                 ),
             }],
+            system="",
+            tools=[],
+            max_tokens=512,
         )
-        record_input_tokens_from_usage(getattr(summary_resp, "usage", None))
-        summary_text = summary_resp.content[0].text.strip()
+        record_input_tokens(summary_resp.input_tokens)
+        summary_text = summary_resp.text.strip()
     except Exception:
         return messages
 
@@ -659,7 +649,8 @@ def _compress_history(
 
 
 def _try_compress_history_inplace(
-    client: anthropic.Anthropic,
+    provider,
+    cheap_model: str,
     messages: list,
     *,
     keep_recent: int | None = None,
@@ -669,7 +660,7 @@ def _try_compress_history_inplace(
     Returns True if *messages* was mutated.
     """
     before = len(messages)
-    compressed = _compress_history(client, messages, keep_recent=keep_recent)
+    compressed = _compress_history(provider, cheap_model, messages, keep_recent=keep_recent)
     if compressed is messages or len(compressed) >= before:
         return False
     messages.clear()
@@ -678,11 +669,12 @@ def _try_compress_history_inplace(
 
 
 def _collapse_entire_thread_to_summary(
-    client: anthropic.Anthropic,
+    provider,
+    cheap_model: str,
     messages: list,
 ) -> bool:
     """
-    Last resort: replace the whole thread with one short user message (Haiku summary).
+    Last resort: replace the whole thread with one short user message (cheap model summary).
     Used when layered compression still leaves input above the TPM budget.
     """
     if not messages:
@@ -696,23 +688,23 @@ def _collapse_entire_thread_to_summary(
             max(900, len(preview) // 4 + 2048),
         )
         wait_for_sliding_tpm_headroom(collapse_est, _TPM_INPUT_GUIDE_TOKENS)
-        summary_resp = client.messages.create(
-            model=_CHEAP_MODEL,
+        summary_resp = provider.complete(
+            cheap_model,
+            [{
+                "role": "user",
+                "content": (
+                    "Summarize this entire conversation JSON for context compression. "
+                    "Output under 600 words. Cover devices, serial numbers, time ranges, "
+                    "tool outcomes, and open questions. Start with 'Thread summary:'.\n\n"
+                    f"{preview}"
+                ),
+            }],
+            system="",
+            tools=[],
             max_tokens=1024,
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        "Summarize this entire conversation JSON for context compression. "
-                        "Output under 600 words. Cover devices, serial numbers, time ranges, "
-                        "tool outcomes, and open questions. Start with 'Thread summary:'.\n\n"
-                        f"{preview}"
-                    ),
-                }
-            ],
         )
-        record_input_tokens_from_usage(getattr(summary_resp, "usage", None))
-        summary_text = summary_resp.content[0].text.strip()
+        record_input_tokens(summary_resp.input_tokens)
+        summary_text = summary_resp.text.strip()
     except Exception:
         return False
     messages.clear()
@@ -725,29 +717,22 @@ def _collapse_entire_thread_to_summary(
     return True
 
 
-def _sleep_after_rate_limit(exc: anthropic.RateLimitError, attempt_index: int) -> float:
+def _sleep_after_rate_limit(exc: LLMRateLimitError, attempt_index: int) -> float:
     """
-    TPM is a rolling *per-minute* budget. After 429, wait before retrying so usage can drop.
-
-    Uses Retry-After when present; otherwise scales with attempt (capped).
+    After a rate-limit error, wait before retrying so usage can drop.
+    Uses Retry-After when the provider populated it; otherwise scales with attempt.
     """
-    seconds: float
-    try:
-        raw = exc.response.headers.get("retry-after") if exc.response else None
-        if raw is not None and str(raw).strip() != "":
-            seconds = float(raw)
-            if seconds > 0:
-                time.sleep(seconds)
-                return seconds
-    except (TypeError, ValueError):
-        pass
+    if exc.retry_after and exc.retry_after > 0:
+        time.sleep(exc.retry_after)
+        return exc.retry_after
     seconds = min(10.0 * float(attempt_index), 65.0)
     time.sleep(seconds)
     return seconds
 
 
 def _compress_until_under_input_budget(
-    client: anthropic.Anthropic,
+    provider,
+    cheap_model: str,
     messages: list,
     max_input_tokens: int,
     *,
@@ -760,7 +745,7 @@ def _compress_until_under_input_budget(
     """
     changed = False
     for _ in range(24):
-        ntok = _count_tokens(client, messages, model=model, tools=tools)
+        ntok = _count_tokens(provider, messages, model=model, tools=tools)
         record_input_tokens(ntok)
         if ntok <= max_input_tokens:
             return changed
@@ -768,20 +753,20 @@ def _compress_until_under_input_budget(
         for kr in (5, 4, 3, 2, 1):
             if len(messages) <= kr:
                 continue
-            if _try_compress_history_inplace(client, messages, keep_recent=kr):
+            if _try_compress_history_inplace(provider, cheap_model, messages, keep_recent=kr):
                 changed = True
                 round_progress = True
-                after = _count_tokens(client, messages, model=model, tools=tools)
+                after = _count_tokens(provider, messages, model=model, tools=tools)
                 record_input_tokens(after)
                 if after <= max_input_tokens:
                     return changed
         if not round_progress:
             break
 
-    final_ntok = _count_tokens(client, messages, model=model, tools=tools)
+    final_ntok = _count_tokens(provider, messages, model=model, tools=tools)
     record_input_tokens(final_ntok)
     if final_ntok > max_input_tokens:
-        if _collapse_entire_thread_to_summary(client, messages):
+        if _collapse_entire_thread_to_summary(provider, cheap_model, messages):
             changed = True
     return changed
 
@@ -935,6 +920,14 @@ def _tool_activity_line(
     if tool_name == "list_meters_for_account" and email:
         return _clip_activity(f"Listed meters for account {email}", 240)
 
+    if tool_name == "compare_meters":
+        sns = inp.get("serial_numbers")
+        if isinstance(sns, list) and sns:
+            clean = [s.strip() for s in sns if isinstance(s, str) and s.strip()]
+            if clean:
+                return _clip_activity(f"Compared meters {', '.join(clean)}", 240)
+        return _clip_activity("Compared meters", 200)
+
     if tool_name == "configure_meter_pipe" and sn:
         return _clip_activity(f"Configured the pipe for meter {sn}", 200)
 
@@ -984,6 +977,13 @@ def _dispatch(
             inputs["email"],
             token,
             limit=inputs.get("limit"),
+        )
+
+    elif name == "compare_meters":
+        result = compare_meters(
+            inputs["serial_numbers"],
+            token,
+            anthropic_api_key=anthropic_api_key,
         )
 
     elif name == "analyze_flow_data":
@@ -1068,20 +1068,61 @@ def run_turn(
         if on_event:
             on_event(event)
 
-    _anthropic_key = _resolve_anthropic_api_key(anthropic_api_key)
+    api_key_override = _resolve_api_key_override(anthropic_api_key)
     # Resolve once; subsequent iterations / rate-limit retries all use the
-    # same model so a user-picked Opus turn doesn't silently downgrade to
-    # the server default halfway through.
+    # same model so a user-picked model turn doesn't silently downgrade.
     active_model = resolve_orchestrator_model(model)
-    client = anthropic.Anthropic(api_key=_anthropic_key, timeout=_ANTHROPIC_HTTP_TIMEOUT)
+    provider = get_provider(active_model, api_key_override=api_key_override)
+    cheap_model = get_cheap_model(active_model)
+    model_ctx = int(MODEL_CATALOG.get(active_model, {}).get("context_window", 200_000))
     history_replaced = False
-    active_tools, _, _ = _resolve_routed_tools(client, messages, emit=_emit)
+    active_tools, _intent_label, _intent_src = _resolve_routed_tools(
+        provider, cheap_model, messages, emit=_emit
+    )
+    max_rounds = _max_tool_rounds_per_turn()
+    # key -> (result_json, serial_number_tag | None). The tag lets
+    # :func:`_invalidate_dedupe_for_write` drop cached reads for a serial that
+    # a write tool has just mutated (rule 11 verify-after-configuration).
+    dedupe_cache: dict[str, tuple[str, str | None]] = {}
+    round_ix = 0
+    # Mutable counters threaded through the telemetry ``turn_end`` event.
+    _counters = {"tool_calls": 0, "tool_failures": 0, "api_calls": 0, "rounds": 0}
 
-    while True:
+    _turn_ctx = turn_context()
+    _turn_id = _turn_ctx.__enter__()
+    emit_event(
+        "turn_start",
+        model=active_model,
+        cheap_model=cheap_model,
+        intent=_intent_label,
+        intent_source=_intent_src,
+        tool_names=[t["name"] for t in active_tools],
+        history_len=len(messages),
+        prompt_version=_SYSTEM_PROMPT_VERSION,
+    )
+
+    def _finish(outcome: str, reply: str, replaced: bool, **extra):
+        _counters["rounds"] = round_ix
+        emit_event("turn_end", outcome=outcome, **_counters, **extra)
+        _turn_ctx.__exit__(None, None, None)
+        return reply, replaced
+
+    try:
+      while True:
+        round_ix += 1
+        if round_ix > max_rounds:
+            msg = (
+                f"Stopped after {max_rounds} assistant steps (safety limit). "
+                "Send a shorter request or continue in a new message."
+            )
+            messages.append({"role": "assistant", "content": [{"type": "text", "text": msg}]})
+            _emit({"type": "tool_round_limit", "limit": max_rounds})
+            return _finish("round_limit", msg, history_replaced, limit=max_rounds)
+
         token_count = _count_tokens(
-            client, messages, model=active_model, tools=active_tools
+            provider, messages, model=active_model, tools=active_tools
         )
-        pct = token_count / _MODEL_CONTEXT_WINDOW
+        pct = token_count / model_ctx
         _emit({"type": "token_usage", "tokens": token_count, "pct": pct, "model": active_model})
 
         # Stay under ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET (default: headroom fraction × TPM guide).
@@ -1097,14 +1138,14 @@ def run_turn(
                 }
             )
             if _compress_until_under_input_budget(
-                client, messages, _MAX_INPUT_TOKENS_TARGET,
+                provider, cheap_model, messages, _MAX_INPUT_TOKENS_TARGET,
                 model=active_model, tools=active_tools,
             ):
                 history_replaced = True
             token_count = _count_tokens(
-                client, messages, model=active_model, tools=active_tools
+                provider, messages, model=active_model, tools=active_tools
             )
-            pct = token_count / _MODEL_CONTEXT_WINDOW
+            pct = token_count / model_ctx
             _emit({"type": "token_usage", "tokens": token_count, "pct": pct, "model": active_model})
             if token_count > _MAX_INPUT_TOKENS_TARGET:
                 raise RuntimeError(
@@ -1114,7 +1155,7 @@ def run_turn(
 
         if pct >= _COMPRESS_THRESHOLD:
             _emit({"type": "compressing", "tokens": token_count, "pct": pct})
-            api_messages = messages_for_anthropic_api(_compress_history(client, messages))
+            api_messages = messages_for_anthropic_api(_compress_history(provider, cheap_model, messages))
         else:
             api_messages = messages_for_anthropic_api(messages)
 
@@ -1128,22 +1169,27 @@ def run_turn(
         while stream_attempt < 8:
             stream_attempt += 1
             try:
-                with client.messages.stream(
+                with timed(
+                    "api_call",
                     model=active_model,
-                    max_tokens=4096,
-                    system=_SYSTEM_PROMPT,
-                    tools=active_tools,
-                    messages=api_messages,
-                ) as stream:
-                    for text_delta in stream.text_stream:
-                        _emit({"type": "text_delta", "text": text_delta})
-                    response = stream.get_final_message()
-                if getattr(response, "usage", None):
-                    record_input_tokens_from_usage(response.usage)
-                else:
-                    record_input_tokens(token_count)
+                    attempt=stream_attempt,
+                    input_tokens_estimate=token_count,
+                ) as _api_end:
+                    response = provider.stream(
+                        active_model,
+                        api_messages,
+                        system=_SYSTEM_PROMPT,
+                        tools=active_tools,
+                        max_tokens=4096,
+                        on_text_delta=lambda delta: _emit({"type": "text_delta", "text": delta}),
+                    )
+                    _api_end["input_tokens"] = response.input_tokens
+                    _api_end["output_tokens"] = getattr(response, "output_tokens", None)
+                    _api_end["stop_reason"] = response.stop_reason
+                    _counters["api_calls"] += 1
+                record_input_tokens(response.input_tokens or token_count)
                 break
-            except anthropic.RateLimitError as exc:
+            except LLMRateLimitError as exc:
                 _emit(
                     {
                         "type": "compressing",
@@ -1154,14 +1200,14 @@ def run_turn(
                     }
                 )
                 if _compress_until_under_input_budget(
-                    client, messages, _MAX_INPUT_TOKENS_TARGET,
+                    provider, cheap_model, messages, _MAX_INPUT_TOKENS_TARGET,
                     model=active_model, tools=active_tools,
                 ):
                     history_replaced = True
                 token_count = _count_tokens(
-                    client, messages, model=active_model, tools=active_tools
+                    provider, messages, model=active_model, tools=active_tools
                 )
-                pct = token_count / _MODEL_CONTEXT_WINDOW
+                pct = token_count / model_ctx
                 _emit({"type": "token_usage", "tokens": token_count, "pct": pct, "model": active_model})
                 if token_count > _MAX_INPUT_TOKENS_TARGET:
                     raise RuntimeError(
@@ -1170,7 +1216,9 @@ def run_turn(
                     )
                 if pct >= _COMPRESS_THRESHOLD:
                     _emit({"type": "compressing", "tokens": token_count, "pct": pct})
-                    api_messages = messages_for_anthropic_api(_compress_history(client, messages))
+                    api_messages = messages_for_anthropic_api(
+                        _compress_history(provider, cheap_model, messages)
+                    )
                 else:
                     api_messages = messages_for_anthropic_api(messages)
                 waited = _sleep_after_rate_limit(exc, stream_attempt)
@@ -1188,79 +1236,136 @@ def run_turn(
 
         if response is None:
             raise RuntimeError(
-                "Claude API rate limit (tokens per minute) persisted after compressing context, "
-                f"waiting, and {stream_attempt} stream attempts. Wait ~1 minute and send again, "
+                f"Rate limit persisted after compressing context, waiting, and "
+                f"{stream_attempt} stream attempts. Wait ~1 minute and send again, "
                 "or start a new chat."
             )
 
         if response.stop_reason == "end_turn":
-            messages.append({"role": "assistant", "content": response.content})
-            for block in response.content:
-                if hasattr(block, "text"):
-                    return block.text, history_replaced
-            return "(No response)", history_replaced
+            messages.append({"role": "assistant", "content": response.assistant_content})
+            reply = response.text or "(No response)"
+            return _finish(
+                "ok", reply, history_replaced, reply_chars=len(reply)
+            )
 
         if response.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "assistant", "content": response.assistant_content})
 
             tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    inp_d = _coerce_tool_input(block.input)
-                    _emit({"type": "tool_call", "tool": block.name, "input": inp_d})
-                    if block.name == "analyze_flow_data":
+            for tc in response.tool_calls:
+                inp_d = _coerce_tool_input(tc.input)
+                dedupe_key = _per_turn_tool_dedupe_key(tc.name, inp_d)
+                from_cache = bool(dedupe_key and dedupe_key in dedupe_cache)
+                call_ev = {"type": "tool_call", "tool": tc.name, "input": inp_d}
+                if from_cache:
+                    call_ev["deduped"] = True
+                    emit_event(
+                        "tool_dedupe_hit",
+                        tool=tc.name,
+                        serial_number=inp_d.get("serial_number"),
+                        round=round_ix,
+                    )
+                _emit(call_ev)
+                _counters["tool_calls"] += 1
+                with timed(
+                    "tool_call",
+                    tool=tc.name,
+                    args=inp_d,
+                    cached=from_cache,
+                    round=round_ix,
+                ) as _tool_end:
+                    if from_cache:
+                        result_json, _ = dedupe_cache[dedupe_key]
+                    elif tc.name == "analyze_flow_data":
                         result_json = _run_analyze_flow_with_progress(
                             inp_d,
                             token,
                             client_timezone=client_timezone,
                             emit=_emit,
-                            anthropic_api_key=_anthropic_key,
+                            anthropic_api_key=anthropic_api_key,
                         )
                     else:
                         result_json = _dispatch(
-                            block.name,
+                            tc.name,
                             inp_d,
                             token,
                             client_timezone=client_timezone,
-                            anthropic_api_key=_anthropic_key,
+                            anthropic_api_key=anthropic_api_key,
                         )
                     result_dict = json.loads(result_json)
-                    ok = _sse_tool_succeeded(result_dict)
-                    event: dict = {
-                        "type": "tool_result",
-                        "tool": block.name,
-                        "success": ok,
-                    }
-                    activity = _tool_activity_line(
-                        block.name, inp_d, result_dict, ok=ok
+                    _tool_end["bytes_out"] = len(result_json)
+                    _tool_end["success"] = _sse_tool_succeeded(result_dict)
+                    if not _tool_end["success"]:
+                        _counters["tool_failures"] += 1
+                        _tool_end["error"] = str(result_dict.get("error") or "")[:500]
+                if (
+                    dedupe_key
+                    and not from_cache
+                    and _sse_tool_succeeded(result_dict)
+                ):
+                    serial_tag = str(inp_d.get("serial_number") or "").strip() or None
+                    dedupe_cache[dedupe_key] = (result_json, serial_tag)
+                if (
+                    tc.name in _WRITE_TOOLS
+                    and _sse_tool_succeeded(result_dict)
+                ):
+                    dropped = _invalidate_dedupe_for_write(
+                        dedupe_cache, tc.name, inp_d
                     )
-                    if activity:
-                        event["tool_activity"] = activity
-                    if not ok:
-                        emsg = result_dict.get("error")
-                        if emsg not in (None, ""):
-                            event["message"] = str(emsg)[:500]
-                    if block.name == "analyze_flow_data":
-                        event["plot_paths"] = result_dict.get("plot_paths", [])
-                        ptz = result_dict.get("plot_timezone")
-                        if ptz:
-                            event["plot_timezone"] = ptz
-                        sums = result_dict.get("plot_summaries")
-                        if sums:
-                            event["plot_summaries"] = sums
-                        aj = result_dict.get("analysis_json_path")
-                        if aj:
-                            event["analysis_json_path"] = aj
-                    _emit(event)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": result_json,
-                    })
+                    if dropped:
+                        emit_event(
+                            "tool_dedupe_invalidate",
+                            tool=tc.name,
+                            serial_number=inp_d.get("serial_number"),
+                            dropped=len(dropped),
+                            round=round_ix,
+                        )
+                ok = _sse_tool_succeeded(result_dict)
+                event: dict = {
+                    "type": "tool_result",
+                    "tool": tc.name,
+                    "success": ok,
+                }
+                if from_cache:
+                    event["deduped"] = True
+                activity = _tool_activity_line(tc.name, inp_d, result_dict, ok=ok)
+                if activity:
+                    event["tool_activity"] = activity
+                if not ok:
+                    emsg = result_dict.get("error")
+                    if emsg not in (None, ""):
+                        event["message"] = str(emsg)[:500]
+                if tc.name == "analyze_flow_data":
+                    event["plot_paths"] = result_dict.get("plot_paths", [])
+                    ptz = result_dict.get("plot_timezone")
+                    if ptz:
+                        event["plot_timezone"] = ptz
+                    sums = result_dict.get("plot_summaries")
+                    if sums:
+                        event["plot_summaries"] = sums
+                    aj = result_dict.get("analysis_json_path")
+                    if aj:
+                        event["analysis_json_path"] = aj
+                _emit(event)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": result_json,
+                })
 
             messages.append({"role": "user", "content": tool_results})
 
         else:
             break
 
-    return "(Unexpected stop reason)", history_replaced
+      return _finish("unexpected_stop", "(Unexpected stop reason)", history_replaced)
+    except BaseException as exc:
+        _counters["rounds"] = round_ix
+        emit_event(
+            "turn_end",
+            outcome="error",
+            error=f"{type(exc).__name__}: {exc}",
+            **_counters,
+        )
+        _turn_ctx.__exit__(None, None, None)
+        raise

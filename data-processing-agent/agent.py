@@ -13,11 +13,15 @@ Contract:
 
 import json
 import os
+import sys
 from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
-import anthropic
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from llm import get_provider
+from llm.registry import get_cheap_model
 
 from processors.descriptive import compute_descriptive_stats
 from processors.continuity import detect_gaps, detect_zero_flow_periods
@@ -352,6 +356,10 @@ def analyze(df: pd.DataFrame, serial_number: str, verified_facts: Optional[Dict[
         "low-quality share, quiet-flow median), use the value from `verified_facts_precomputed` or the matching tool result. "
         "`verified_facts_precomputed` may include `flatline` (constant or near-constant flow) and `coverage_6h` "
         "(per-window sample density); use them when discussing variability and time coverage. "
+        "It also includes `reasoning_schema` with fields `regime`, `evidence[]`, `hypotheses[]`, and `next_checks[]` — "
+        "treat these as the primary anchor for your conclusions and recommendations: cite the codes "
+        "(e.g. `E_GAP_LONG`, `H_COMMS_INSTABILITY`) rather than re-deriving the same story in prose, and keep the "
+        "narrative short where a code already conveys the finding. If the schema conflicts with the narrative, trust the schema. "
         "If `verified_facts_precomputed` contains `baseline_quality` with `reliable=false` (any state other than "
         "`reliable`), DO NOT make today-vs-typical or projection claims; relay the `state`, `reasons_refused`, "
         "and `recommendations` verbatim and stop there for that topic. Only when `baseline_quality.reliable=true` "
@@ -391,38 +399,35 @@ def analyze(df: pd.DataFrame, serial_number: str, verified_facts: Optional[Dict[
 
     max_output_tokens = int(os.environ.get("BLUEBOT_ANALYSIS_MAX_OUTPUT_TOKENS", "3072"))
 
-    client = anthropic.Anthropic()
+    model_id = os.environ.get("BLUEBOT_ANALYSIS_MODEL", "claude-haiku-4-5")
+    provider = get_provider(model_id)
     messages = [{"role": "user", "content": user_message}]
 
     while True:
-        response = client.messages.create(
-            model=os.environ.get("BLUEBOT_ANALYSIS_MODEL", "claude-haiku-4-5"),
-            max_tokens=max_output_tokens,
+        response = provider.complete(
+            model_id,
+            messages,
             system=system_prompt,
             tools=TOOLS,
-            messages=messages,
+            max_tokens=max_output_tokens,
         )
 
         if response.stop_reason == "end_turn":
-            for block in response.content:
-                if hasattr(block, "text"):
-                    return block.text
-            return "Analysis complete (no text output)."
+            return response.text or "Analysis complete (no text output)."
 
         if response.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "assistant", "content": response.assistant_content})
 
             tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    result = _dispatch_tool(block.name, block.input, timestamps, values, quality, serial_number)
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": json.dumps(result, default=str),
-                        }
-                    )
+            for tc in response.tool_calls:
+                result = _dispatch_tool(tc.name, tc.input, timestamps, values, quality, serial_number)
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tc.id,
+                        "content": json.dumps(result, default=str),
+                    }
+                )
 
             messages.append({"role": "user", "content": tool_results})
 

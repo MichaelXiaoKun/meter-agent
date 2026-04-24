@@ -1,15 +1,20 @@
 """
 summarizer.py — Generates a short conversation title after each turn.
 
-Uses Claude Haiku (fast, cheap) to produce a 5-8 word summary of the
-conversation so far and updates the conversation's title in the store.
+Uses the cheap tier of whatever provider backs the active model to produce
+a 5-8 word summary and updates the conversation's title in the store.
 Called after every successful run_turn() in both CLI and Streamlit UI.
 """
 
-import anthropic
-import store
+import os
+import sys
 
-from tpm_window import record_input_tokens_from_usage
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+import store
+from llm import get_provider
+from llm.registry import get_cheap_model, MODEL_CATALOG
+from tpm_window import record_input_tokens
 
 
 def _extract_transcript(messages: list[dict]) -> str:
@@ -32,8 +37,6 @@ def _extract_transcript(messages: list[dict]) -> str:
                 text = None
                 if isinstance(block, dict) and block.get("type") == "text":
                     text = block["text"]
-                elif hasattr(block, "text"):
-                    text = block.text
                 if text:
                     lines.append(f"Assistant: {text[:300]}")
                     break
@@ -41,9 +44,14 @@ def _extract_transcript(messages: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def summarize(messages: list[dict], anthropic_api_key: str | None = None) -> str:
+def summarize(
+    messages: list[dict],
+    anthropic_api_key: str | None = None,
+    *,
+    active_model: str | None = None,
+) -> str:
     """
-    Generate a 5-8 word conversation title using Claude Haiku.
+    Generate a 5-8 word conversation title using the cheapest available model.
 
     Returns an empty string on any failure so callers can silently skip.
     """
@@ -52,14 +60,12 @@ def summarize(messages: list[dict], anthropic_api_key: str | None = None) -> str
         return ""
 
     try:
-        ak = (anthropic_api_key or "").strip() or os.environ.get("ANTHROPIC_API_KEY", "").strip()
-        if not ak:
-            return ""
-        client = anthropic.Anthropic(api_key=ak)
-        response = client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=20,
-            messages=[{
+        model_id = active_model or os.environ.get("ORCHESTRATOR_MODEL", "claude-haiku-4-5").strip()
+        cheap = get_cheap_model(model_id)
+        provider = get_provider(cheap, api_key_override=(anthropic_api_key or "").strip() or None)
+        response = provider.complete(
+            cheap,
+            [{
                 "role": "user",
                 "content": (
                     "Write a very short title (max 5 words, under 30 characters) for this chat. "
@@ -68,9 +74,12 @@ def summarize(messages: list[dict], anthropic_api_key: str | None = None) -> str
                     f"{transcript}"
                 ),
             }],
+            system="",
+            tools=[],
+            max_tokens=20,
         )
-        record_input_tokens_from_usage(getattr(response, "usage", None))
-        title = response.content[0].text.strip().rstrip(".")
+        record_input_tokens(response.input_tokens)
+        title = response.text.strip().rstrip(".")
         return title[:40]
     except Exception:
         return ""
@@ -80,8 +89,10 @@ def update_title(
     conversation_id: str,
     messages: list[dict],
     anthropic_api_key: str | None = None,
+    *,
+    active_model: str | None = None,
 ) -> None:
     """Generate a summary title and persist it. Silently no-ops on failure."""
-    title = summarize(messages, anthropic_api_key=anthropic_api_key)
+    title = summarize(messages, anthropic_api_key=anthropic_api_key, active_model=active_model)
     if title:
         store.set_title(conversation_id, title)
