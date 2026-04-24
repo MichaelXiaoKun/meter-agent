@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import ImageViewer from "./ImageViewer";
 import { plotAltFromMeta, plotCaptionFromMeta } from "../plotLabels";
+import type { PlotAttachment } from "../types";
 
 interface PlotImageProps {
   src: string;
@@ -84,5 +85,97 @@ export default function PlotImage({
         <ImageViewer src={src} alt={resolvedAlt} onClose={() => setOpen(false)} />
       )}
     </figure>
+  );
+}
+
+const _PLOT_TYPE_LABELS: Record<string, string> = {
+  time_series: "Flow rate",
+  flow_duration_curve: "Flow duration curve",
+  peaks_annotated: "Demand peaks",
+  signal_quality: "Signal quality",
+};
+
+function plotTypeLabel(type: string): string {
+  return _PLOT_TYPE_LABELS[type] ?? type.replace(/_/g, " ");
+}
+
+/**
+ * Renders a PlotAttachment list with two layouts:
+ *
+ * - Single-meter (no groupLabel): vertical stack, same as before.
+ * - Batch (groupLabel = serial number): reorganises by plot_type so the same
+ *   chart type across all meters appears in a 2-column grid side-by-side.
+ *   Each column is labelled with the meter serial number, each section with
+ *   the chart type — optimised for visual comparison.
+ */
+export function PlotGrouped({
+  plots,
+  className,
+}: {
+  plots: PlotAttachment[];
+  className?: string;
+}) {
+  const isBatch = plots.some((p) => p.groupLabel);
+
+  // Batch: reorganise by plot_type so same chart type sits side-by-side.
+  const typeGroups = useMemo(() => {
+    if (!isBatch) return null;
+    const order: string[] = [];
+    const byType = new Map<string, PlotAttachment[]>();
+    for (const p of plots) {
+      const key = p.plotType ?? "other";
+      if (!byType.has(key)) { byType.set(key, []); order.push(key); }
+      byType.get(key)!.push(p);
+    }
+    return order.map((type) => ({ type, items: byType.get(type)! }));
+  }, [plots, isBatch]);
+
+  if (!isBatch || !typeGroups) {
+    return (
+      <>
+        {plots.map((p) => (
+          <PlotImage
+            key={p.src}
+            src={p.src}
+            alt="Flow analysis plot"
+            title={p.title}
+            plotTimezone={p.plotTimezone}
+            plotType={p.plotType}
+            className={className}
+          />
+        ))}
+      </>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      {typeGroups.map((g) => (
+        <div key={g.type}>
+          <p className="mb-2 text-[0.68rem] font-semibold uppercase tracking-wider text-brand-muted">
+            {plotTypeLabel(g.type)}
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            {g.items.map((p) => (
+              <div key={p.src}>
+                {p.groupLabel && (
+                  <p className="mb-1 font-mono text-[0.65rem] font-medium text-brand-muted">
+                    {p.groupLabel}
+                  </p>
+                )}
+                <PlotImage
+                  src={p.src}
+                  alt="Flow analysis plot"
+                  title={p.title}
+                  plotTimezone={p.plotTimezone}
+                  plotType={p.plotType}
+                  className={className ?? "w-full rounded-lg shadow-sm"}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
