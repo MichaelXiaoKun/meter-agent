@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { getAuthViewFromHash, setHashForAuthView, type AuthGateView } from "./authGate";
+import { clearAuth, getStoredAuth, setAuth } from "./authStorage";
 import LoginPage from "./components/LoginPage";
+import ForgotPasswordPage from "./components/ForgotPasswordPage";
+import CheckMailPage from "./components/CheckMailPage";
 import Sidebar from "./components/Sidebar";
 import SidebarIconRail from "./components/SidebarIconRail";
 import ChatView from "./components/ChatView";
@@ -46,8 +50,9 @@ const SHELF_SWAP_MS =
   Math.max(SHELF_STRIP_MS, SHELF_WIDTH_MS) + SHELF_SWAP_TAIL_MS;
 
 export default function App() {
-  const [token, setToken] = useLocalStorage("bb_token", "");
-  const [user, setUser] = useLocalStorage("bb_user", "");
+  const [authView, setAuthView] = useState<AuthGateView>(() => getAuthViewFromHash());
+  const [token, setToken] = useState(() => getStoredAuth().token);
+  const [user, setUser] = useState(() => getStoredAuth().user);
   const [tpmInputGuideTokens, setTpmInputGuideTokens] =
     useState(DEFAULT_TPM_INPUT_GUIDE);
   const [tpmServerSliding60s, setTpmServerSliding60s] = useState(0);
@@ -176,13 +181,35 @@ export default function App() {
   }, []);
 
   /**
-   * When true, the user used “New chat” and we should show the welcome
-   * composer without auto-selecting the first conversation in the list.
+   * When true, show the empty “New chat” / welcome composer and do not
+   * auto-select the first row in the sidebar. Set when:
+   *   • this browser has no ``bb_active_conv`` (first open or never picked a
+   *     thread — refresh with a stored id still restores that thread);
+   *   • the user taps “New chat”; or
+   *   • login succeeds (fresh session should land on new chat, not the
+   *     oldest conversation).
    * Cleared on sidebar pick, first send (creates a conv), or list reconcile.
    */
-  const [userChoseWelcome, setUserChoseWelcome] = useState(false);
+  const [userChoseWelcome, setUserChoseWelcome] = useState(() => {
+    try {
+      return !localStorage.getItem("bb_active_conv");
+    } catch {
+      return true;
+    }
+  });
 
   const isLoggedIn = !!token && !!user;
+
+  const goAuth = useCallback((v: AuthGateView) => {
+    setAuthView(v);
+    setHashForAuthView(v);
+  }, []);
+
+  useEffect(() => {
+    const onHash = () => setAuthView(getAuthViewFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   const handleSelectConversation = useCallback(
     (id: string) => {
@@ -272,19 +299,32 @@ export default function App() {
     }
   }, [conversations, activeConvId, setActiveConvId, listLoaded, userChoseWelcome]);
 
-  function handleLogin(accessToken: string, username: string) {
+  function handleLogin(
+    accessToken: string,
+    username: string,
+    options?: { persist?: boolean }
+  ) {
+    const persist = options?.persist !== false;
+    setAuth(accessToken, username, { persist });
     setToken(accessToken);
     setUser(username);
+    setUserChoseWelcome(true);
+    setActiveConvId(null);
+    setAuthView("login");
+    setHashForAuthView("login");
   }
 
   function handleLogout() {
     cancel();
+    clearAuth();
     setToken("");
     setUser("");
     setUserChoseWelcome(false);
     setActiveConvId(null);
     localStorage.removeItem("bb_active_conv");
     setAnthropicApiKey("");
+    setAuthView("login");
+    setHashForAuthView("login");
   }
 
   function handleNewConversation() {
@@ -334,7 +374,18 @@ export default function App() {
   }
 
   if (!isLoggedIn) {
-    return <LoginPage onLogin={handleLogin} />;
+    if (authView === "forgot") {
+      return (
+        <ForgotPasswordPage
+          onBackToLogin={() => goAuth("login")}
+          onSuccess={() => goAuth("check-mail")}
+        />
+      );
+    }
+    if (authView === "check-mail") {
+      return <CheckMailPage onBackToLogin={() => goAuth("login")} />;
+    }
+    return <LoginPage onLogin={handleLogin} onForgotPassword={() => goAuth("forgot")} />;
   }
 
   const sidebarProps = {
@@ -428,6 +479,7 @@ export default function App() {
           turnActivityActive={turnActivityActive}
           serverProcessing={serverProcessing}
           onSend={handleSend}
+          onCancel={cancel}
           onDismissAssistantError={clearAssistantError}
           disabled={false}
           availableModels={availableModels}

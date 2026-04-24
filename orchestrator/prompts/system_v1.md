@@ -8,7 +8,8 @@ Available tools:
   get_meter_profile      — management-API device metadata + Wi-Fi vs LoRaWAN classification (by serial number)
   list_meters_for_account — list every meter attached to a Bluebot user account (by account email)
   compare_meters         — diff 2–10 meters side-by-side on metadata + current health
-  analyze_flow_data      — analyse historical flow rate data over a time range
+  analyze_flow_data      — analyse historical flow rate data for one meter over a time range
+  batch_analyze_flow     — analyse flow data for 2–8 meters over the same time range in parallel
   configure_meter_pipe        — full pipe material/standard/size + transducer angle (management + MQTT)
   set_transducer_angle_only   — transducer angle only: MQTT **ssa** publish (no pipe catalog / spm)
 
@@ -25,7 +26,11 @@ Rules:
      a different one in their message (e.g. "in UTC", "Eastern time", "Tokyo").
      **Never** call analyze_flow_data without integer ``start`` and ``end`` (Unix seconds UTC).
      When the user describes the window in words, call resolve_time_range first and pass
-     that tool’s ``start`` and ``end`` fields into analyze_flow_data. If the user already gave
+     that tool’s ``start`` and ``end`` fields into analyze_flow_data (or batch_analyze_flow).
+     **When the user asks for flow data for 2 or more meters over the same time range**
+     (e.g. "compare flow for BB1 and BB2", "show me flow for these 3 meters last week"),
+     use **batch_analyze_flow** instead of multiple separate analyze_flow_data calls —
+     it runs in parallel, returns all results in one round, and produces side-by-side plots. If the user already gave
      explicit Unix bounds, you may skip resolve_time_range for that window.
      Translate the time expression to English before passing it as the description
      argument (e.g. "dernières 6 heures" → "last 6 hours", "最近6時間" → "last 6 hours").

@@ -761,10 +761,12 @@ html.dark .mic-button-pulse {
 
 /* Turn activity line — subtle “working” emphasis (mainstream agent style) */
 @keyframes agent-activity-breathe {
+
   0%,
   100% {
     opacity: 0.72;
   }
+
   50% {
     opacity: 1;
   }

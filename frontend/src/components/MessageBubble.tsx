@@ -8,7 +8,7 @@ import {
   splitTurnActivityAroundStreamBody,
   type TurnActivityStep,
 } from "../turnActivity";
-import PlotImage from "./PlotImage";
+import PlotImage, { PlotGrouped } from "./PlotImage";
 import TurnActivityTimeline from "./TurnActivityTimeline";
 
 function extractText(content: string | ContentBlock[]): string {
@@ -241,19 +241,10 @@ export default function MessageBubble({
 
   const assistantPlotsBlock =
     !isUser && plots?.length ? (
-      <>
-        {plots.map((p) => (
-          <PlotImage
-            key={p.src}
-            src={p.src}
-            alt="Flow analysis plot"
-            title={p.title}
-            plotTimezone={p.plotTimezone}
-            plotType={p.plotType}
-            className={`w-full rounded-lg shadow-sm ${text ? "mt-3" : ""}`}
-          />
-        ))}
-      </>
+      <PlotGrouped
+        plots={plots}
+        className={`w-full rounded-lg shadow-sm ${text ? "mt-3" : ""}`}
+      />
     ) : null;
 
   if (isUser) {

@@ -39,6 +39,8 @@ export interface PlotAttachment {
   plotTimezone?: string;
   /** From ``plot_summaries.plot_type`` — used to hide time-axis hint for non-temporal charts. */
   plotType?: string;
+  /** Serial number — set for ``batch_analyze_flow`` results to enable per-meter grouping. */
+  groupLabel?: string;
 }
 
 export interface SSEEvent {
@@ -65,6 +67,13 @@ export interface SSEEvent {
   plot_paths?: string[];
   plot_summaries?: PlotSummary[];
   plot_timezone?: string;
+  /** Present on ``batch_analyze_flow`` tool_result events — used for per-meter plot grouping. */
+  meters?: Array<{
+    serial_number: string;
+    plot_paths?: string[];
+    plot_summaries?: PlotSummary[];
+    plot_timezone?: string;
+  }>;
   message?: string;
   tokens?: number;
   pct?: number;
