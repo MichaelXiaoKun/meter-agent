@@ -29,6 +29,8 @@ _PYTHON = _VENV_PYTHON if os.path.exists(_VENV_PYTHON) else sys.executable
 
 _PLOT_PATHS_MARKER = "__BLUEBOT_PLOT_PATHS__"
 _ANALYSIS_JSON_MARKER = "__BLUEBOT_ANALYSIS_JSON__"
+_PLOT_CAPTIONS_MARKER = "__BLUEBOT_PLOT_CAPTIONS__"
+_REASONING_SCHEMA_MARKER = "__BLUEBOT_REASONING_SCHEMA__"
 
 _TRUNCATION_NOTE = "\n\n…*(Report truncated for length; increase `BLUEBOT_FLOW_REPORT_MAX_CHARS` if needed.)*"
 
@@ -41,11 +43,20 @@ _PLOT_TYPE_TITLES: dict[str, str] = {
 }
 
 
-def _plot_summaries(plot_paths: list[str], plot_tz: str) -> list[dict]:
+def _plot_summaries(
+    plot_paths: list[str],
+    plot_tz: str,
+    plot_captions: dict[str, dict] | None = None,
+) -> list[dict]:
     """
     Per-file metadata for the React UI (captions / alt text). Order matches
     ``plot_paths`` so the client can zip arrays without guessing.
+
+    When ``plot_captions`` is provided (keyed by absolute path), the structured
+    caption from the data-processing-agent is attached under ``"caption"`` so
+    the outer LLM can cite the visual evidence without reading raster pixels.
     """
+    caps = plot_captions or {}
     out: list[dict] = []
     for p in plot_paths:
         name = os.path.basename(p)
@@ -64,14 +75,16 @@ def _plot_summaries(plot_paths: list[str], plot_tz: str) -> list[dict]:
         else:
             plot_type = "unknown"
             title = "Analysis plot"
-        out.append(
-            {
-                "filename": name,
-                "plot_type": plot_type,
-                "title": title,
-                "plot_timezone": plot_tz,
-            }
-        )
+        entry = {
+            "filename": name,
+            "plot_type": plot_type,
+            "title": title,
+            "plot_timezone": plot_tz,
+        }
+        cap = caps.get(p)
+        if isinstance(cap, dict) and cap:
+            entry["caption"] = cap
+        out.append(entry)
     return out
 
 
@@ -163,6 +176,51 @@ def _collect_analysis_json_path(stderr: str) -> str | None:
             p = data["path"]
             if isinstance(p, str) and ".." not in p and "\x00" not in p:
                 return p
+    except json.JSONDecodeError:
+        pass
+    return None
+
+
+def _collect_plot_captions(stderr: str) -> dict[str, dict]:
+    """Per-plot structured captions emitted alongside __BLUEBOT_PLOT_PATHS__."""
+    if not stderr:
+        return {}
+    idx = stderr.find(_PLOT_CAPTIONS_MARKER)
+    if idx == -1:
+        return {}
+    tail = stderr[idx + len(_PLOT_CAPTIONS_MARKER) :].strip()
+    line = tail.splitlines()[0] if tail else ""
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    clean: dict[str, dict] = {}
+    for k, v in data.items():
+        if (
+            isinstance(k, str)
+            and isinstance(v, dict)
+            and ".." not in k
+            and "\x00" not in k
+        ):
+            clean[k] = v
+    return clean
+
+
+def _collect_reasoning_schema(stderr: str) -> dict | None:
+    """Compact evidence/hypothesis/next_checks block emitted by the subprocess."""
+    if not stderr:
+        return None
+    idx = stderr.find(_REASONING_SCHEMA_MARKER)
+    if idx == -1:
+        return None
+    tail = stderr[idx + len(_REASONING_SCHEMA_MARKER) :].strip()
+    line = tail.splitlines()[0] if tail else ""
+    try:
+        data = json.loads(line)
+        if isinstance(data, dict):
+            return data
     except json.JSONDecodeError:
         pass
     return None
@@ -277,6 +335,7 @@ def analyze_flow_inputs_error_payload(
         "report_truncated": False,
         "plot_paths": [],
         "plot_summaries": [],
+        "reasoning_schema": None,
         "analysis_json_path": None,
         "display_range": "",
         "plot_timezone": plot_tz,
@@ -359,6 +418,7 @@ def analyze_flow_data(
             "report_truncated": False,
             "plot_paths": [],
             "plot_summaries": [],
+            "reasoning_schema": None,
             "analysis_json_path": None,
             "display_range": "",
             "plot_timezone": plot_tz,
@@ -376,6 +436,7 @@ def analyze_flow_data(
             "report_truncated": False,
             "plot_paths": [],
             "plot_summaries": [],
+            "reasoning_schema": None,
             "analysis_json_path": None,
             "display_range": "",
             "plot_timezone": plot_tz,
@@ -416,7 +477,9 @@ def analyze_flow_data(
         report, truncated = _maybe_truncate_report(raw_report)
         if truncated:
             plot_paths = _collect_plot_paths(report, stderr, _AGENT_DIR)
-        summaries = _plot_summaries(plot_paths, plot_tz)
+        plot_captions = _collect_plot_captions(stderr)
+        summaries = _plot_summaries(plot_paths, plot_tz, plot_captions=plot_captions)
+        reasoning_schema = _collect_reasoning_schema(stderr)
         logger.info(
             "analyze_flow_data ok serial=%r returncode=0 plots=%s report_truncated=%s",
             serial_number,
@@ -429,6 +492,7 @@ def analyze_flow_data(
             "report_truncated": truncated,
             "plot_paths": plot_paths,
             "plot_summaries": summaries,
+            "reasoning_schema": reasoning_schema,
             "analysis_json_path": _collect_analysis_json_path(stderr),
             "display_range": display_range,
             "plot_timezone": plot_tz,
@@ -464,6 +528,7 @@ def analyze_flow_data(
         "report_truncated": False,
         "plot_paths": [],
         "plot_summaries": [],
+        "reasoning_schema": None,
         "analysis_json_path": None,
         "display_range": display_range,
         "plot_timezone": plot_tz,

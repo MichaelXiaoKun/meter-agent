@@ -1,0 +1,38 @@
+{
+  "id": "compare_two_meters",
+  "description": "Explicit diff of 2+ serials — rule 14 says call compare_meters, never loop get_meter_profile / check_meter_status per serial.",
+  "user": "Compare BB8100015261 and BB8100015262 — are they configured the same?",
+  "expected_tool_sequence": [
+    {
+      "tool": "compare_meters",
+      "args_contains": {
+        "serial_numbers": ["BB8100015261", "BB8100015262"]
+      },
+      "mock_result": {
+        "success": true,
+        "differences": {
+          "pipe_config.size_label": {
+            "BB8100015261": "2\"",
+            "BB8100015262": "3\""
+          }
+        },
+        "uniform_fields": ["network_type", "pipe_config.material"],
+        "failures": []
+      }
+    }
+  ],
+  "forbidden_tools": [
+    "get_meter_profile",
+    "check_meter_status",
+    "analyze_flow_data",
+    "configure_meter_pipe",
+    "set_transducer_angle_only"
+  ],
+  "response_must_not_contain": [
+    "compare_meters",
+    "subprocess",
+    "/Users/"
+  ],
+  "response_must_contain": [],
+  "prompt_versions": ["v1"]
+}

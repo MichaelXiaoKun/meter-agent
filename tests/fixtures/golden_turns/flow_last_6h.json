@@ -1,0 +1,55 @@
+{
+  "id": "flow_last_6h",
+  "description": "One-shot flow analysis over a relative window — rule 3 says resolve_time_range + analyze_flow_data in the same tool loop. Rule 12 says call get_meter_profile first when available for network_type / meter_timezone.",
+  "user": "Analyze flow on BB8100015261 for the last 6 hours.",
+  "expected_tool_sequence": [
+    {
+      "tool": "resolve_time_range",
+      "args_contains": {"description": "last 6 hours"},
+      "mock_result": {
+        "success": true,
+        "start": 1700000000,
+        "end": 1700021600,
+        "display_range": "Nov 14 2023, 14:00 – 20:00 America/Denver",
+        "resolved_label": "last 6 hours"
+      }
+    },
+    {
+      "tool": "analyze_flow_data",
+      "args_contains": {
+        "serial_number": "BB8100015261",
+        "start": 1700000000,
+        "end": 1700021600
+      },
+      "mock_result": {
+        "success": true,
+        "display_range": "Nov 14 2023, 14:00 – 20:00 America/Denver",
+        "verified_facts_precomputed": {
+          "data_overview": {"n_samples": 10800},
+          "reasoning_schema": {
+            "regime": "STEADY_LOW_FLOW",
+            "evidence": [],
+            "hypothesis": [],
+            "next_checks": []
+          }
+        },
+        "report_markdown": "Short report body."
+      }
+    }
+  ],
+  "forbidden_tools": [
+    "configure_meter_pipe",
+    "set_transducer_angle_only",
+    "list_meters_for_account",
+    "compare_meters"
+  ],
+  "response_must_not_contain": [
+    "resolve_time_range",
+    "analyze_flow_data",
+    "verified_facts_precomputed",
+    "subprocess",
+    "/Users/"
+  ],
+  "response_must_contain": [],
+  "prompt_versions": ["v1"]
+}

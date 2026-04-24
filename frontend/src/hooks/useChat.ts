@@ -353,6 +353,7 @@ export function useChat(
                 event.type === "text_stream" ||
                 event.type === "tool_call" ||
                 event.type === "error" ||
+                event.type === "tool_round_limit" ||
                 event.type === "done";
               if (canCloseThinking) {
                 const t0 = thinkingSegmentStartMsRef.current;
@@ -466,6 +467,15 @@ export function useChat(
               case "compressing":
                 setStreamStatus({ kind: "compressing" });
                 break;
+              case "tool_round_limit": {
+                const lim = event.limit ?? 0;
+                const msg =
+                  lim > 0
+                    ? `Stopped after ${lim} assistant steps (safety limit).`
+                    : "Stopped: assistant step limit reached.";
+                setStreamStatus({ kind: "error", error: msg });
+                break;
+              }
               case "error": {
                 const msg = event.error ?? "Unknown error";
                 streamReportedError = true;

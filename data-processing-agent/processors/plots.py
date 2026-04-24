@@ -21,6 +21,12 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 
+from processors.plot_captions import (
+    caption_flow_duration_curve,
+    caption_peaks_annotated,
+    caption_signal_quality,
+    caption_time_series,
+)
 from processors.sampling_physics import max_healthy_inter_arrival_seconds
 
 # data-processing-agent/ (parent of processors/)
@@ -42,12 +48,25 @@ else:
 # Cleared by pop_figures() after the caller has consumed them.
 _pending: list[tuple] = []
 
+# Captions keyed by absolute path. Populated in parallel with ``_pending`` so
+# callers that only care about figures can keep using the 2-tuple unchanged,
+# while the CLI / orchestrator can call ``pop_captions()`` for the side-car
+# metadata that helps text-only LLMs "read" the chart.
+_pending_captions: dict[str, dict] = {}
+
 
 def pop_figures() -> list[tuple]:
     """Return accumulated (figure, path) pairs and clear the list."""
     result = _pending.copy()
     _pending.clear()
     return result
+
+
+def pop_captions() -> dict[str, dict]:
+    """Return captions-by-path produced in this analyze() call and clear."""
+    out = dict(_pending_captions)
+    _pending_captions.clear()
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -248,11 +267,19 @@ def _time_series(
 
     path = _save(fig, serial_number, start, "time_series")
     _pending.append((fig, path))
+    caption = caption_time_series(
+        timestamps,
+        values,
+        quality,
+        healthy_cap_seconds=max_healthy_inter_arrival_seconds(),
+    )
+    _pending_captions[path] = caption
     return {
         "path": path,
         "title": "Flow Rate Time Series",
         "low_quality_points_highlighted": int(low_q_mask.sum()),
         "tz": tz_info["zone"],
+        "caption": caption,
     }
 
 
@@ -293,7 +320,13 @@ def _flow_duration_curve(
 
     path = _save(fig, serial_number, start, "flow_duration_curve")
     _pending.append((fig, path))
-    return {"path": path, "title": "Flow Duration Curve"}
+    caption = caption_flow_duration_curve(values)
+    _pending_captions[path] = caption
+    return {
+        "path": path,
+        "title": "Flow Duration Curve",
+        "caption": caption,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -363,11 +396,16 @@ def _peaks_annotated(
 
     path = _save(fig, serial_number, start, "peaks_annotated")
     _pending.append((fig, path))
+    caption = caption_peaks_annotated(
+        timestamps, values, peak_count=int(len(peak_indices))
+    )
+    _pending_captions[path] = caption
     return {
         "path": path,
         "title": "Peaks Annotated",
         "peak_count": len(peak_indices),
         "tz": tz_info["zone"],
+        "caption": caption,
     }
 
 
@@ -429,12 +467,15 @@ def _signal_quality(
 
     path = _save(fig, serial_number, start, "signal_quality")
     _pending.append((fig, path))
+    caption = caption_signal_quality(quality)
+    _pending_captions[path] = caption
     return {
         "path": path,
         "title": "Signal Quality",
         "low_quality_count": low_count,
         "total_count": int(len(q_vals)),
         "tz": tz_info["zone"],
+        "caption": caption,
     }
 
 

@@ -1,44 +1,55 @@
 """
 Regression tests for the orchestrator's user-facing language guardrails.
 
-The orchestrator's system prompt includes **rule 13** (after the numbered
-re-order: rule 12 covers ``list_meters_for_account``), which forbids replies
-that leak internal tool names, module/file paths, env vars, or codebase jargon
-("sub-agent", "subprocess", "JSON bundle", etc.). We extract the prompt via a
-text scan — no imports — so the test stays green even when optional deps
-(anthropic, tpm_window, httpx) aren't installed in the current interpreter.
+The live prompt lives in ``orchestrator/prompts/system_v<N>.md`` and is selected
+at process start by ``ORCHESTRATOR_PROMPT_VERSION`` (default ``v1``). These
+tests pin the default version so a bad edit to ``system_v1.md`` fails loudly —
+adding a new version (``v2``) does not retire the guardrails on ``v1``.
 
-If someone later trims rule 13 or renames / removes it, this test fails loudly
-with a pointer at exactly what's missing.
+Rule 15 (after the numbered re-order: rule 13 covers ``list_meters_for_account``
+and rule 14 covers ``compare_meters``) forbids replies that leak internal tool
+names, module/file paths, env vars, or codebase jargon ("sub-agent",
+"subprocess", "JSON bundle", etc.). We locate it by header text so future
+renumbering does not silently bypass the checks.
 """
 
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import pytest
 
-_AGENT_PATH = (
-    Path(__file__).resolve().parents[2] / "orchestrator" / "agent.py"
-)
+_ORCHESTRATOR_DIR = Path(__file__).resolve().parents[2] / "orchestrator"
+if str(_ORCHESTRATOR_DIR) not in sys.path:
+    sys.path.insert(0, str(_ORCHESTRATOR_DIR))
 
-# Rule index for the "no implementation leakage" block (was 12 before list_meters was inserted).
-_RULE_USER_LANGUAGE = 13
+from prompts import load_system_prompt  # noqa: E402
+
+
+_RULE_USER_LANGUAGE_HEADER = "User-facing language"
 
 
 @pytest.fixture(scope="module")
 def system_prompt() -> str:
-    """Return the ``_SYSTEM_PROMPT`` string literal from ``orchestrator/agent.py``."""
-    src = _AGENT_PATH.read_text(encoding="utf-8")
-    # Capture everything between ``_SYSTEM_PROMPT = """\`` and the closing ``"""``.
+    """Return the pinned v1 system prompt text, read from disk via the loader."""
+    text, version = load_system_prompt("v1")
+    assert version == "v1"
+    assert text, "v1 system prompt must not be empty"
+    return text
+
+
+@pytest.fixture(scope="module")
+def user_language_rule_number(system_prompt: str) -> int:
+    """Locate the numbered rule that starts the user-facing language section."""
     match = re.search(
-        r'_SYSTEM_PROMPT\s*=\s*"""\\?\n(?P<body>.*?)^"""',
-        src,
-        flags=re.DOTALL | re.MULTILINE,
+        rf"^\s*(?P<num>\d+)\.\s.*{re.escape(_RULE_USER_LANGUAGE_HEADER)}",
+        system_prompt,
+        flags=re.MULTILINE | re.IGNORECASE,
     )
-    assert match, "Could not locate _SYSTEM_PROMPT triple-quoted literal in agent.py"
-    return match.group("body")
+    assert match, "Could not locate the user-facing language rule in _SYSTEM_PROMPT"
+    return int(match.group("num"))
 
 
 # ---------------------------------------------------------------------------
@@ -46,22 +57,22 @@ def system_prompt() -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_system_prompt_contains_numbered_rules(system_prompt):
-    for n in range(1, _RULE_USER_LANGUAGE + 1):
+def test_system_prompt_contains_numbered_rules(system_prompt, user_language_rule_number):
+    for n in range(1, user_language_rule_number + 1):
         assert re.search(
             rf"^\s*{n}\.\s", system_prompt, flags=re.MULTILINE
         ), f"rule {n}. is missing from the orchestrator system prompt"
 
 
-def test_rule_user_language_header_mentions_user_facing_language(system_prompt):
-    rule = _extract_rule(system_prompt, _RULE_USER_LANGUAGE)
-    assert rule, f"rule {_RULE_USER_LANGUAGE} not found"
+def test_rule_user_language_header_mentions_user_facing_language(system_prompt, user_language_rule_number):
+    rule = _extract_rule(system_prompt, user_language_rule_number)
+    assert rule, f"rule {user_language_rule_number} not found"
     assert re.search(
         r"user[- ]facing language|implementation leakage|no implementation leakage",
         rule,
         flags=re.IGNORECASE,
     ), (
-        f"rule {_RULE_USER_LANGUAGE} header no longer mentions user-facing language "
+        f"rule {user_language_rule_number} header no longer mentions user-facing language "
         "/ implementation leakage"
     )
 
@@ -84,43 +95,43 @@ def test_rule_user_language_header_mentions_user_facing_language(system_prompt):
         "subprocess",
     ],
 )
-def test_rule_user_language_bans_internal_names(system_prompt, needle):
-    rule = _extract_rule(system_prompt, _RULE_USER_LANGUAGE)
+def test_rule_user_language_bans_internal_names(system_prompt, user_language_rule_number, needle):
+    rule = _extract_rule(system_prompt, user_language_rule_number)
     assert needle in rule, (
-        f"rule {_RULE_USER_LANGUAGE} no longer names {needle!r} as forbidden jargon; "
+        f"rule {user_language_rule_number} no longer names {needle!r} as forbidden jargon; "
         "the LLM may regress to leaking it."
     )
 
 
-def test_rule_user_language_bans_absolute_paths(system_prompt):
-    rule = _extract_rule(system_prompt, _RULE_USER_LANGUAGE)
+def test_rule_user_language_bans_absolute_paths(system_prompt, user_language_rule_number):
+    rule = _extract_rule(system_prompt, user_language_rule_number)
     assert re.search(
         r"absolute filesystem paths|/Users/|data-processing-agent/analyses|analysis_\*\.json",
         rule,
     ), (
-        f"rule {_RULE_USER_LANGUAGE} no longer bans leaking absolute filesystem paths "
+        f"rule {user_language_rule_number} no longer bans leaking absolute filesystem paths "
         "/ bundle filenames"
     )
 
 
-def test_rule_user_language_requires_alternative_on_refusal(system_prompt):
-    rule = _extract_rule(system_prompt, _RULE_USER_LANGUAGE)
+def test_rule_user_language_requires_alternative_on_refusal(system_prompt, user_language_rule_number):
+    rule = _extract_rule(system_prompt, user_language_rule_number)
     assert re.search(r"alternative", rule, flags=re.IGNORECASE), (
-        f"rule {_RULE_USER_LANGUAGE} no longer requires offering a concrete alternative on refusal"
+        f"rule {user_language_rule_number} no longer requires offering a concrete alternative on refusal"
     )
     assert re.search(
         r"without explaining\s+\*?why\*?|do not explain why",
         rule,
         flags=re.IGNORECASE,
     ), (
-        f"rule {_RULE_USER_LANGUAGE} no longer tells the model to refuse without narrating the cause"
+        f"rule {user_language_rule_number} no longer tells the model to refuse without narrating the cause"
     )
 
 
-def test_rule_user_language_bans_speculation(system_prompt):
-    rule = _extract_rule(system_prompt, _RULE_USER_LANGUAGE)
+def test_rule_user_language_bans_speculation(system_prompt, user_language_rule_number):
+    rule = _extract_rule(system_prompt, user_language_rule_number)
     assert re.search(r"speculat", rule, flags=re.IGNORECASE), (
-        f"rule {_RULE_USER_LANGUAGE} no longer forbids speculating about internal data shapes"
+        f"rule {user_language_rule_number} no longer forbids speculating about internal data shapes"
     )
 
 
@@ -132,7 +143,7 @@ def test_rule_user_language_bans_speculation(system_prompt):
 def test_prompt_contains_no_raw_absolute_paths(system_prompt):
     assert "/Users/" not in system_prompt or "``/Users/" in system_prompt, (
         "the system prompt appears to embed a real absolute path; only quoted "
-        f"examples inside rule {_RULE_USER_LANGUAGE} are allowed"
+        "examples inside the user-language rule are allowed"
     )
 
 

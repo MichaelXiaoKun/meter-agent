@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from tools.transducer_angle_preflight import allowed_labels_for_network_type
+
 _DEFAULT_MANAGEMENT_BASE = "https://prod.bluebot.com"
 _ADMIN_HEADERS = {"x-admin-query": "true"}
 
@@ -31,7 +33,9 @@ TOOL_DEFINITION = {
         "and a **network_type** classification (``lorawan`` when networkUniqueIdentifier starts with FF, "
         "``wifi`` when networkUniqueIdentifier equals the serial number, else ``unknown``). "
         "LoRaWAN meters typically report every ~12–60 s; Wi-Fi meters report every ~2 s — useful context "
-        "when interpreting flow data gaps or sparse coverage."
+        "when interpreting flow data gaps or sparse coverage. "
+        "On success, **transducer_angle_options** lists firmware-supported angle labels for this radio "
+        "(or the safe subset when network_type is unknown)."
     ),
     "input_schema": {
         "type": "object",
@@ -149,6 +153,7 @@ def get_meter_profile(serial_number: str, token: str) -> Dict[str, Any]:
                 "expected_cadence_hint": str | None,
             } | None,
             "profile":       dict | None,   # compact subset of the management row
+            "transducer_angle_options": list[str] | None,  # valid labels for this radio (success only)
             "error":         str | None,
         }
     """
@@ -227,5 +232,8 @@ def get_meter_profile(serial_number: str, token: str) -> Dict[str, Any]:
         "network_type": classification["network_type"],
         "classification": classification,
         "profile": _pick_profile_fields(row),
+        "transducer_angle_options": allowed_labels_for_network_type(
+            classification["network_type"]
+        ),
         "error": None,
     }

@@ -20,12 +20,16 @@ Timezone behaviour:
 
 import os
 import re
+import sys
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-import anthropic
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
-from tpm_window import record_input_tokens_from_usage
+from llm import get_provider
+from llm.registry import get_cheap_model
+
+from tpm_window import record_input_tokens
 
 
 def _safe_zoneinfo(name: str | None):
@@ -297,22 +301,23 @@ def resolve_time_range(
     )
 
     try:
-        ak = (anthropic_api_key or "").strip() or os.environ.get("ANTHROPIC_API_KEY", "").strip()
-        if not ak:
-            raise ValueError("Missing Anthropic API key.")
-        client = anthropic.Anthropic(api_key=ak)
-        response = client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=256,
+        model_id = os.environ.get("ORCHESTRATOR_MODEL", "claude-haiku-4-5").strip()
+        cheap = get_cheap_model(model_id)
+        api_key_override = (anthropic_api_key or "").strip() or None
+        provider = get_provider(cheap, api_key_override=api_key_override)
+        response = provider.complete(
+            cheap,
+            [{"role": "user", "content": description}],
             system=system_prompt,
             tools=[_EXTRACT_TOOL],
-            tool_choice={"type": "tool", "name": "extract_time_range"},
-            messages=[{"role": "user", "content": description}],
+            max_tokens=256,
         )
 
-        record_input_tokens_from_usage(getattr(response, "usage", None))
+        record_input_tokens(response.input_tokens)
 
-        result = response.content[0].input
+        if not response.tool_calls:
+            raise ValueError("No tool call returned from time range parser.")
+        result = response.tool_calls[0].input
 
         # Convert ISO strings → Unix timestamps in Python (exact arithmetic).
         start_dt = datetime.fromisoformat(result["start_iso"])

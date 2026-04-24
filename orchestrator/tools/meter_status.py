@@ -3,13 +3,23 @@ meter_status.py — Orchestrator tool wrapper for the meter-status-agent.
 
 Runs the meter-status-agent as a subprocess using its own virtual environment
 if present, otherwise falls back to the current Python interpreter.
+
+The subprocess emits a ``__BLUEBOT_STATUS_JSON__<json>`` line on stderr with
+the deterministic processor output (staleness / signal quality / pipe config).
+We parse that out so callers get both the human-readable Markdown report and
+a structured dict they can diff / sort / filter without re-parsing text.
 """
 
+import json
 import os
 import subprocess
 import sys
+from typing import Any
 
 from subprocess_env import tool_subprocess_env
+
+
+_STATUS_JSON_MARKER = "__BLUEBOT_STATUS_JSON__"
 
 
 def _stderr_for_user(stderr: str, returncode: int) -> str:
@@ -32,6 +42,33 @@ def _stderr_for_user(stderr: str, returncode: int) -> str:
                     return t[:600]
         return "Meter status failed (unexpected error; check server logs)."
     return raw[:600]
+
+
+def _collect_status_data(stderr: str) -> dict | None:
+    """Parse the ``__BLUEBOT_STATUS_JSON__`` marker out of subprocess stderr.
+
+    Returns None when the marker is missing or malformed. Marker format is one
+    stderr line: the literal marker followed by a single ``json.dumps(...)``
+    payload with no embedded newlines (same convention as the
+    ``__BLUEBOT_ANALYSIS_JSON__`` marker in ``tools/flow_analysis.py``).
+    """
+    if not stderr:
+        return None
+    idx = stderr.find(_STATUS_JSON_MARKER)
+    if idx == -1:
+        return None
+    tail = stderr[idx + len(_STATUS_JSON_MARKER):].strip()
+    line = tail.splitlines()[0] if tail else ""
+    if not line:
+        return None
+    try:
+        data: Any = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, dict):
+        return data
+    return None
+
 
 _AGENT_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "meter-status-agent")
@@ -75,7 +112,26 @@ def check_meter_status(
     Run the meter-status-agent for a meter (by serial number) and return its report.
 
     Returns:
-        {"success": bool, "report": str | None, "error": str | None}
+        {
+            "success":     bool,
+            "report":      str | None,    # Markdown report (LLM output)
+            "status_data": dict | None,   # structured processor output; may be
+                                          # present even when success is False
+                                          # (e.g. if the LLM step failed after
+                                          # the fetch succeeded)
+            "error":       str | None,
+        }
+
+    ``status_data`` shape (on success):
+        {
+            "serial_number": str,
+            "online": bool | None,
+            "last_message_at": str | None,
+            "staleness": {"seconds_since": int, "communication_status": str, ...} | None,
+            "signal": {"score": int, "level": str, "reliable": bool, ...} | None,
+            "pipe_config": {"inner_diameter_mm": float, "nominal_size": str|None, ...} | None,
+            "errors": {"signal": "KeyError: ...", ...}  # per-processor failures, empty on full success
+        }
     """
     env = tool_subprocess_env(token, anthropic_api_key)
     result = subprocess.run(
@@ -85,10 +141,17 @@ def check_meter_status(
         text=True,
         env=env,
     )
+    status_data = _collect_status_data(result.stderr)
     if result.returncode == 0:
-        return {"success": True, "report": result.stdout.strip(), "error": None}
+        return {
+            "success": True,
+            "report": result.stdout.strip(),
+            "status_data": status_data,
+            "error": None,
+        }
     return {
         "success": False,
         "report": None,
+        "status_data": status_data,
         "error": _stderr_for_user(result.stderr, result.returncode),
     }

@@ -6,6 +6,7 @@ Used to anchor the model and to append a non-LLM "verified" block to the report.
 
 from __future__ import annotations
 
+import os
 from copy import deepcopy
 from typing import Any, Dict
 
@@ -24,6 +25,7 @@ from processors.descriptive import compute_descriptive_stats
 from processors.flatline import summarize_flatline
 from processors.quality import detect_low_quality_readings
 from processors.quiet_baseline import summarize_quiet_flow_baseline
+from processors.reasoning_schema import build_reasoning_schema
 
 
 def _positive_delta_stats(timestamps: np.ndarray) -> tuple[float, float]:
@@ -102,6 +104,13 @@ def build_verified_facts(df: pd.DataFrame) -> Dict[str, Any]:
     # Pipeline is not wired yet; stub keeps the output schema stable so
     # downstream consumers (report, orchestrator) can rely on the key.
     out["filter_applied"] = _filter_not_requested()
+
+    # Compact evidence/hypothesis/next_checks anchor derived from the same
+    # facts above. Bounded in size (≤ 6 evidence, ≤ 3 hypotheses, ≤ 3 checks)
+    # so it can REPLACE narrative redundancy without inflating token budgets.
+    # Built last so every dependent field is already populated.
+    network_hint = os.environ.get("BLUEBOT_METER_NETWORK_TYPE") or None
+    out["reasoning_schema"] = build_reasoning_schema(out, network_type=network_hint)
 
     return out
 

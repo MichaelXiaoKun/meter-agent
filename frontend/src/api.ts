@@ -12,6 +12,9 @@ function headers(
   };
   const ak = opts?.anthropicApiKey?.trim();
   if (ak) {
+    // X-LLM-Key is the generic override accepted by all providers.
+    // X-Anthropic-Key is kept for backward compatibility with older backends.
+    h["X-LLM-Key"] = ak;
     h["X-Anthropic-Key"] = ak;
   }
   return h;
@@ -317,11 +320,13 @@ export async function streamChatViaPolling(
 // ---------------------------------------------------------------------------
 
 export interface OrchestratorModelOption {
-  /** Anthropic model ID — also the value sent back to the server. */
+  /** Model ID sent back to the server (e.g. "claude-haiku-4-5", "gpt-4o", "gemini-2.0-flash"). */
   id: string;
-  /** Short human label for the picker (e.g. "Sonnet 4.5"). */
+  /** Short human label for the picker (e.g. "Haiku 4.5", "GPT-4o"). */
   label: string;
-  /** Coarse tier bucket used for UI hints: ``"fast" | "balanced" | "max" | "custom"``. */
+  /** Provider name: "anthropic" | "openai" | "gemini". */
+  provider: string;
+  /** Coarse tier bucket: "fast" | "balanced" | "max" | "reasoning" | "custom". */
   tier: string;
   /** One-line description shown on hover / inside the dropdown. */
   description: string;
@@ -335,13 +340,13 @@ export interface OrchestratorConfig {
   tpm_input_guide_tokens: number;
   /** Input token count before run_turn compresses (TPM headroom; shown as main context bar). */
   max_input_tokens_target: number;
-  /** Full Claude Messages API context window (informational). */
+  /** Full model context window in tokens (informational). */
   model_context_window: number;
   tpm_headroom_fraction: number;
   /** Sum of input tokens recorded from this API process in the last tpm_window_seconds. */
   tpm_sliding_input_tokens_60s: number;
   tpm_window_seconds: number;
-  /** True if ANTHROPIC_API_KEY is set on the server (user may still pass X-Anthropic-Key). */
+  /** True if ANTHROPIC_API_KEY is set on the server. */
   anthropic_server_configured?: boolean;
   /** Server default model ID (used by the UI when no stored pick is available). */
   default_model?: string;
