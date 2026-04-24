@@ -226,23 +226,23 @@ export default function SidebarIconRail({
 
       <div className="mt-auto flex w-full flex-col items-start gap-2.5">
         <ThemeToggle size="sm" />
-      <button
-        ref={accountButtonRef}
-        type="button"
-        className={`${SHELF_NEW_CHAT_TILE_CLASS} cursor-pointer text-sm font-semibold text-brand-800 dark:text-brand-muted dark:hover:text-brand-900`}
-        title={accountTitle}
-        aria-label="Account menu — signed-in user"
-        aria-haspopup="menu"
-        aria-expanded={menu ? true : false}
-        onClick={() => {
-          if (menu) closeMenu();
-          else openMenuNearButton();
-        }}
-      >
-        <span aria-hidden className="select-none">
-          {initial}
-        </span>
-      </button>
+        <button
+          ref={accountButtonRef}
+          type="button"
+          className={`${SHELF_NEW_CHAT_TILE_CLASS} cursor-pointer text-sm font-semibold text-brand-800 dark:text-brand-muted dark:hover:text-brand-900`}
+          title={accountTitle}
+          aria-label="Account menu — signed-in user"
+          aria-haspopup="menu"
+          aria-expanded={menu ? true : false}
+          onClick={() => {
+            if (menu) closeMenu();
+            else openMenuNearButton();
+          }}
+        >
+          <span aria-hidden className="select-none">
+            {initial}
+          </span>
+        </button>
       </div>
 
       {menuPortal}

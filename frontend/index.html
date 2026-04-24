@@ -1,44 +1,41 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <script>
-      (function () {
-        try {
-          var k = "bb_theme"; /* keep in sync with src/theme/storage.ts */
-          var v = localStorage.getItem(k);
-          if (v === "dark") document.documentElement.classList.add("dark");
-          else if (v === "light") document.documentElement.classList.remove("dark");
-          else if (window.matchMedia("(prefers-color-scheme: dark)").matches)
-            document.documentElement.classList.add("dark");
-        } catch (e) {}
-      })();
-    </script>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover"
-    />
-    <meta name="theme-color" content="#f5f8ff" />
-    <!-- Lets Chromium use the mic / Web Speech when the document is first-class HTTPS. -->
-    <meta http-equiv="Permissions-Policy" content="microphone=(self)" />
-    <meta name="mobile-web-app-capable" content="yes" />
-    <!--
+
+<head>
+  <script>
+    (function () {
+      try {
+        var k = "bb_theme"; /* keep in sync with src/theme/storage.ts */
+        var v = localStorage.getItem(k);
+        if (v === "dark") document.documentElement.classList.add("dark");
+        else if (v === "light") document.documentElement.classList.remove("dark");
+        else if (window.matchMedia("(prefers-color-scheme: dark)").matches)
+          document.documentElement.classList.add("dark");
+      } catch (e) { }
+    })();
+  </script>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f5f8ff" />
+  <!-- Lets Chromium use the mic / Web Speech when the document is first-class HTTPS. -->
+  <meta http-equiv="Permissions-Policy" content="microphone=(self)" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <!--
       Welcome-screen heading uses "Fredoka" — rounded, soft, with curves
       that read like pipe fittings and water droplets. We pull weights
       500/600/700 so the heading has options, and keep display=swap so
       the first paint can use a fallback while the font streams in.
     -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&display=swap"
-      rel="stylesheet"
-    />
-    <title>bluebot Assistant</title>
-  </head>
-  <body class="min-h-[100dvh] bg-brand-50 text-brand-900 antialiased">
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&display=swap" rel="stylesheet" />
+  <title>bluebot Assistant</title>
+</head>
+
+<body class="min-h-[100dvh] bg-brand-50 text-brand-900 antialiased">
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+
 </html>

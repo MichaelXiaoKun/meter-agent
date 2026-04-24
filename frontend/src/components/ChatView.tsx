@@ -12,7 +12,7 @@ import type { Message, PlotAttachment } from "../types";
 import type { AgentStatus } from "../hooks/useChat";
 import MessageBubble from "./MessageBubble";
 import { extractPlotAttachments } from "./plotAttachments";
-import PlotImage from "./PlotImage";
+import { PlotGrouped } from "./PlotImage";
 import WelcomeCard from "./WelcomeCard";
 import WelcomeBluebotLogo from "./WelcomeBluebotLogo";
 import TurnActivityTimeline from "./TurnActivityTimeline";
@@ -90,6 +90,7 @@ interface ChatViewProps {
   turnActivityActive: boolean;
   serverProcessing: boolean;
   onSend: (text: string) => void;
+  onCancel?: () => void;
   onDismissAssistantError?: () => void;
   disabled: boolean;
   /**
@@ -126,6 +127,7 @@ export default function ChatView({
   turnActivityActive,
   serverProcessing,
   onSend,
+  onCancel,
   onDismissAssistantError,
   disabled,
   narrowNav,
@@ -665,9 +667,27 @@ export default function ChatView({
   );
 
   /**
-   * Send button shared by welcome / footer composers.
+   * Send/Cancel button shared by welcome / footer composers.
+   * Shows send arrow when idle, stop icon when processing.
    */
-  const sendButton = (
+  const sendButton = isProcessing && onCancel ? (
+    <button
+      type="button"
+      onClick={onCancel}
+      className={composerSendIconButtonClass}
+      aria-label="Stop processing"
+      title="Stop"
+    >
+      <svg
+        className="h-5 w-5"
+        viewBox="0 0 24 24"
+        fill="currentColor"
+        aria-hidden
+      >
+        <rect x="6" y="6" width="12" height="12" />
+      </svg>
+    </button>
+  ) : (
     <button
       type="submit"
       disabled={isProcessing || !input.trim()}
@@ -974,18 +994,11 @@ export default function ChatView({
 
               {pendingPlots.length > 0 && (
                 <div className="flex justify-start">
-                  <div className="max-w-[75%] space-y-2">
-                    {pendingPlots.map((p) => (
-                      <PlotImage
-                        key={p.src}
-                        src={p.src}
-                        alt="Flow analysis plot"
-                        title={p.title}
-                        plotTimezone={p.plotTimezone}
-                        plotType={p.plotType}
-                        className="w-full rounded-lg border border-brand-border shadow-sm"
-                      />
-                    ))}
+                  <div className="max-w-[75%]">
+                    <PlotGrouped
+                      plots={pendingPlots}
+                      className="w-full rounded-lg border border-brand-border shadow-sm"
+                    />
                   </div>
                 </div>
               )}

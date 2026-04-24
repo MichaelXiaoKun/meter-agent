@@ -18,6 +18,7 @@ import json
 import logging
 import os
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 import threading
 import time
@@ -64,6 +65,10 @@ from tools.set_transducer_angle import (
     TOOL_DEFINITION as _SET_TRANSDUCER_ANGLE_DEF,
     set_transducer_angle_only,
 )
+from tools.batch_flow_analysis import (
+    TOOL_DEFINITION as _BATCH_FLOW_ANALYSIS_DEF,
+    batch_analyze_flow,
+)
 from message_sanitize import messages_for_anthropic_api  # still used for _rough_input_token_fallback
 from observability import emit_event, turn_context, timed
 from prompts import load_system_prompt
@@ -75,6 +80,7 @@ TOOLS = [
     _METERS_BY_EMAIL_DEF,
     _METER_COMPARE_DEF,
     _FLOW_ANALYSIS_DEF,
+    _BATCH_FLOW_ANALYSIS_DEF,
     _PIPE_CONFIGURATION_DEF,
     _SET_TRANSDUCER_ANGLE_DEF,
 ]
@@ -105,7 +111,7 @@ _TOOL_NAMES_BY_INTENT: dict[str, frozenset[str]] = {
     "status": _BASE_READ_TOOLS,
     "general": _BASE_READ_TOOLS,
     # Historical flow + plots (expensive subprocess).
-    "flow": _BASE_READ_TOOLS | frozenset({"analyze_flow_data"}),
+    "flow": _BASE_READ_TOOLS | frozenset({"analyze_flow_data", "batch_analyze_flow"}),
     # Pipe / angle changes (mutations).
     "config": _BASE_READ_TOOLS
     | frozenset(
@@ -402,6 +408,13 @@ _DEDUPABLE_READ_TOOLS: frozenset[str] = frozenset(
 _WRITE_TOOLS: frozenset[str] = frozenset(
     {"configure_meter_pipe", "set_transducer_angle_only"}
 )
+
+# These tools always run serially even when multiple tool_use blocks arrive in
+# one response: writes for rule-11 verify-after-write correctness; flow analysis
+# because its SSE heartbeats are per-meter and interleaving them would confuse
+# the UI timeline. Fan-out flow comparisons go through batch_analyze_flow instead.
+_SERIAL_ONLY_TOOLS: frozenset[str] = _WRITE_TOOLS | frozenset({"analyze_flow_data"})
+_MAX_PARALLEL_TOOL_WORKERS = 6
 
 
 def _per_turn_tool_dedupe_key(tool_name: str, inp_d: dict) -> str | None:
@@ -811,6 +824,8 @@ def _run_analyze_flow_with_progress(
 
     thread = threading.Thread(target=worker, daemon=True, name="analyze_flow_data")
     thread.start()
+    sn = str(inputs.get("serial_number") or "").strip()
+    tag = f" [{sn}]" if sn else ""
     # Sub-agent (data-processing) is silent for seconds — surface simple status
     # lines; the web UI maps these to the tool row in the activity timeline.
     emit(
@@ -818,7 +833,7 @@ def _run_analyze_flow_with_progress(
             "type": "tool_progress",
             "tool": "analyze_flow_data",
             "message": (
-                "Flow-analysis agent: started — loading data and running the pipeline…"
+                f"Flow-analysis agent{tag}: started — loading data and running the pipeline…"
             ),
         }
     )
@@ -831,11 +846,11 @@ def _run_analyze_flow_with_progress(
         elapsed_chunks += 1
         sec = elapsed_chunks * 4
         if sec <= 8:
-            line = f"Flow-analysis agent: computing stats, gaps, and quality… ({sec}s)"
+            line = f"Flow-analysis agent{tag}: computing stats, gaps, and quality… ({sec}s)"
         elif sec <= 24:
-            line = f"Flow-analysis agent: building plots and report — still working… ({sec}s)"
+            line = f"Flow-analysis agent{tag}: building plots and report — still working… ({sec}s)"
         else:
-            line = f"Flow-analysis agent: still running (large range or I/O)… {sec}s"
+            line = f"Flow-analysis agent{tag}: still running (large range or I/O)… {sec}s"
         emit(
             {
                 "type": "tool_progress",
@@ -928,6 +943,18 @@ def _tool_activity_line(
                 return _clip_activity(f"Compared meters {', '.join(clean)}", 240)
         return _clip_activity("Compared meters", 200)
 
+    if tool_name == "batch_analyze_flow":
+        sns = inp.get("serial_numbers")
+        if isinstance(sns, list) and sns:
+            clean = [s.strip() for s in sns if isinstance(s, str) and s.strip()]
+            if clean:
+                dr = result.get("display_range")
+                core = f"Analyzed flow for {', '.join(clean)}"
+                if isinstance(dr, str) and dr.strip():
+                    return _clip_activity(f"{core} — {dr.strip()}", 300)
+                return _clip_activity(core, 240)
+        return _clip_activity("Batch flow analysis", 200)
+
     if tool_name == "configure_meter_pipe" and sn:
         return _clip_activity(f"Configured the pipe for meter {sn}", 200)
 
@@ -998,6 +1025,17 @@ def _dispatch(
             meter_timezone=inputs.get("meter_timezone"),
         )
 
+    elif name == "batch_analyze_flow":
+        result = batch_analyze_flow(
+            inputs["serial_numbers"],
+            inputs["start"],
+            inputs["end"],
+            token,
+            display_timezone=client_timezone,
+            anthropic_api_key=anthropic_api_key,
+            network_type=inputs.get("network_type"),
+        )
+
     elif name == "configure_meter_pipe":
         result = configure_meter_pipe(
             inputs["serial_number"],
@@ -1021,6 +1059,154 @@ def _dispatch(
         result = {"error": f"Unknown tool: {name}"}
 
     return json.dumps(result, default=str)
+
+
+def _dispatch_tool_batch(
+    tool_calls: list,
+    *,
+    token: str,
+    client_timezone: str | None,
+    anthropic_api_key: str | None,
+    dedupe_cache: dict,
+    counters: dict,
+    emit,
+    round_ix: int,
+) -> list[dict]:
+    """Dispatch a batch of tool calls; read-only non-flow tools run in parallel.
+
+    Write tools and analyze_flow_data always serialize: writes for rule-11
+    verify-after-write correctness, flow for clean per-meter SSE progress.
+    Result ordering matches tool_calls (required by the Anthropic API).
+    """
+    use_parallel = (
+        len(tool_calls) > 1
+        and not any(tc.name in _SERIAL_ONLY_TOOLS for tc in tool_calls)
+    )
+
+    # Phase 1: cache check + emit tool_call events — always serial and ordered.
+    call_infos: list[tuple] = []
+    for tc in tool_calls:
+        inp_d = _coerce_tool_input(tc.input)
+        dedupe_key = _per_turn_tool_dedupe_key(tc.name, inp_d)
+        from_cache = bool(dedupe_key and dedupe_key in dedupe_cache)
+        cached_json: str | None = dedupe_cache[dedupe_key][0] if from_cache else None
+        call_ev: dict = {"type": "tool_call", "tool": tc.name, "input": inp_d}
+        if from_cache:
+            call_ev["deduped"] = True
+            emit_event(
+                "tool_dedupe_hit",
+                tool=tc.name,
+                serial_number=inp_d.get("serial_number"),
+                round=round_ix,
+            )
+        emit(call_ev)
+        counters["tool_calls"] += 1
+        call_infos.append((tc, inp_d, dedupe_key, from_cache, cached_json))
+
+    # Phase 2: execute — each slot writes to its own index (GIL-safe).
+    exec_results: list = [None] * len(call_infos)
+
+    def _execute(idx: int, tc, inp_d: dict, from_cache: bool, cached_json: str | None) -> None:
+        with timed("tool_call", tool=tc.name, args=inp_d, cached=from_cache, round=round_ix) as _end:
+            if from_cache:
+                result_json = cached_json
+            elif tc.name == "analyze_flow_data":
+                result_json = _run_analyze_flow_with_progress(
+                    inp_d, token,
+                    client_timezone=client_timezone,
+                    emit=emit,
+                    anthropic_api_key=anthropic_api_key,
+                )
+            else:
+                result_json = _dispatch(
+                    tc.name, inp_d, token,
+                    client_timezone=client_timezone,
+                    anthropic_api_key=anthropic_api_key,
+                )
+            result_dict = json.loads(result_json)
+            _end["bytes_out"] = len(result_json)
+            _end["success"] = _sse_tool_succeeded(result_dict)
+            if not _end["success"]:
+                _end["error"] = str(result_dict.get("error") or "")[:500]
+        exec_results[idx] = (result_json, result_dict)
+
+    if use_parallel:
+        n = min(len(call_infos), _MAX_PARALLEL_TOOL_WORKERS)
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            futs = [
+                pool.submit(_execute, i, tc, inp_d, fc, cj)
+                for i, (tc, inp_d, _, fc, cj) in enumerate(call_infos)
+            ]
+            for f in as_completed(futs):
+                f.result()
+    else:
+        for i, (tc, inp_d, _, fc, cj) in enumerate(call_infos):
+            _execute(i, tc, inp_d, fc, cj)
+
+    # Phase 3: cache update, write-invalidation, emit tool_result — serial and ordered.
+    tool_results: list[dict] = []
+    for i, (tc, inp_d, dedupe_key, from_cache, _) in enumerate(call_infos):
+        result_json, result_dict = exec_results[i]
+        ok = _sse_tool_succeeded(result_dict)
+
+        if not ok:
+            counters["tool_failures"] += 1
+
+        if dedupe_key and not from_cache and ok:
+            serial_tag = str(inp_d.get("serial_number") or "").strip() or None
+            dedupe_cache[dedupe_key] = (result_json, serial_tag)
+
+        if tc.name in _WRITE_TOOLS and ok:
+            dropped = _invalidate_dedupe_for_write(dedupe_cache, tc.name, inp_d)
+            if dropped:
+                emit_event(
+                    "tool_dedupe_invalidate",
+                    tool=tc.name,
+                    serial_number=inp_d.get("serial_number"),
+                    dropped=len(dropped),
+                    round=round_ix,
+                )
+
+        event: dict = {"type": "tool_result", "tool": tc.name, "success": ok}
+        if from_cache:
+            event["deduped"] = True
+        activity = _tool_activity_line(tc.name, inp_d, result_dict, ok=ok)
+        if activity:
+            event["tool_activity"] = activity
+        if not ok:
+            emsg = result_dict.get("error")
+            if emsg not in (None, ""):
+                event["message"] = str(emsg)[:500]
+        if tc.name == "analyze_flow_data":
+            event["plot_paths"] = result_dict.get("plot_paths", [])
+            ptz = result_dict.get("plot_timezone")
+            if ptz:
+                event["plot_timezone"] = ptz
+            sums = result_dict.get("plot_summaries")
+            if sums:
+                event["plot_summaries"] = sums
+            aj = result_dict.get("analysis_json_path")
+            if aj:
+                event["analysis_json_path"] = aj
+        elif tc.name == "batch_analyze_flow":
+            all_paths: list[str] = []
+            all_summaries: list[dict] = []
+            for m in result_dict.get("meters", []):
+                all_paths.extend(m.get("plot_paths", []))
+                all_summaries.extend(m.get("plot_summaries", []))
+            if all_paths:
+                event["plot_paths"] = all_paths
+            if all_summaries:
+                event["plot_summaries"] = all_summaries
+            event["meters"] = result_dict.get("meters", [])
+        emit(event)
+        tool_results.append({
+            "type": "tool_result",
+            "tool_use_id": tc.id,
+            "content": result_json,
+        })
+
+    return tool_results
 
 
 def run_turn(
@@ -1250,109 +1436,16 @@ def run_turn(
 
         if response.stop_reason == "tool_use":
             messages.append({"role": "assistant", "content": response.assistant_content})
-
-            tool_results = []
-            for tc in response.tool_calls:
-                inp_d = _coerce_tool_input(tc.input)
-                dedupe_key = _per_turn_tool_dedupe_key(tc.name, inp_d)
-                from_cache = bool(dedupe_key and dedupe_key in dedupe_cache)
-                call_ev = {"type": "tool_call", "tool": tc.name, "input": inp_d}
-                if from_cache:
-                    call_ev["deduped"] = True
-                    emit_event(
-                        "tool_dedupe_hit",
-                        tool=tc.name,
-                        serial_number=inp_d.get("serial_number"),
-                        round=round_ix,
-                    )
-                _emit(call_ev)
-                _counters["tool_calls"] += 1
-                with timed(
-                    "tool_call",
-                    tool=tc.name,
-                    args=inp_d,
-                    cached=from_cache,
-                    round=round_ix,
-                ) as _tool_end:
-                    if from_cache:
-                        result_json, _ = dedupe_cache[dedupe_key]
-                    elif tc.name == "analyze_flow_data":
-                        result_json = _run_analyze_flow_with_progress(
-                            inp_d,
-                            token,
-                            client_timezone=client_timezone,
-                            emit=_emit,
-                            anthropic_api_key=anthropic_api_key,
-                        )
-                    else:
-                        result_json = _dispatch(
-                            tc.name,
-                            inp_d,
-                            token,
-                            client_timezone=client_timezone,
-                            anthropic_api_key=anthropic_api_key,
-                        )
-                    result_dict = json.loads(result_json)
-                    _tool_end["bytes_out"] = len(result_json)
-                    _tool_end["success"] = _sse_tool_succeeded(result_dict)
-                    if not _tool_end["success"]:
-                        _counters["tool_failures"] += 1
-                        _tool_end["error"] = str(result_dict.get("error") or "")[:500]
-                if (
-                    dedupe_key
-                    and not from_cache
-                    and _sse_tool_succeeded(result_dict)
-                ):
-                    serial_tag = str(inp_d.get("serial_number") or "").strip() or None
-                    dedupe_cache[dedupe_key] = (result_json, serial_tag)
-                if (
-                    tc.name in _WRITE_TOOLS
-                    and _sse_tool_succeeded(result_dict)
-                ):
-                    dropped = _invalidate_dedupe_for_write(
-                        dedupe_cache, tc.name, inp_d
-                    )
-                    if dropped:
-                        emit_event(
-                            "tool_dedupe_invalidate",
-                            tool=tc.name,
-                            serial_number=inp_d.get("serial_number"),
-                            dropped=len(dropped),
-                            round=round_ix,
-                        )
-                ok = _sse_tool_succeeded(result_dict)
-                event: dict = {
-                    "type": "tool_result",
-                    "tool": tc.name,
-                    "success": ok,
-                }
-                if from_cache:
-                    event["deduped"] = True
-                activity = _tool_activity_line(tc.name, inp_d, result_dict, ok=ok)
-                if activity:
-                    event["tool_activity"] = activity
-                if not ok:
-                    emsg = result_dict.get("error")
-                    if emsg not in (None, ""):
-                        event["message"] = str(emsg)[:500]
-                if tc.name == "analyze_flow_data":
-                    event["plot_paths"] = result_dict.get("plot_paths", [])
-                    ptz = result_dict.get("plot_timezone")
-                    if ptz:
-                        event["plot_timezone"] = ptz
-                    sums = result_dict.get("plot_summaries")
-                    if sums:
-                        event["plot_summaries"] = sums
-                    aj = result_dict.get("analysis_json_path")
-                    if aj:
-                        event["analysis_json_path"] = aj
-                _emit(event)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tc.id,
-                    "content": result_json,
-                })
-
+            tool_results = _dispatch_tool_batch(
+                response.tool_calls,
+                token=token,
+                client_timezone=client_timezone,
+                anthropic_api_key=anthropic_api_key,
+                dedupe_cache=dedupe_cache,
+                counters=_counters,
+                emit=_emit,
+                round_ix=round_ix,
+            )
             messages.append({"role": "user", "content": tool_results})
 
         else:

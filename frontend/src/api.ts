@@ -2,6 +2,62 @@ import type { Conversation, Message, SSEEvent } from "./types";
 
 const BASE = "/api";
 
+/** Browser ``fetch`` errors when the orchestrator is down or /api is not proxied. */
+function mapFetchNetworkError(e: unknown): string {
+  const m = e instanceof Error ? e.message : String(e);
+  const lower = m.toLowerCase();
+  if (
+    m === "Failed to fetch" ||
+    m === "Load failed" ||
+    lower.includes("networkerror") ||
+    (lower.includes("network") && lower.includes("fetch")) ||
+    (lower.includes("load") && lower.includes("failed"))
+  ) {
+    return (
+      "Can’t reach the API server. If you are developing locally, start the meter orchestrator " +
+      "(e.g. uvicorn on port 8000) and open the app through the Vite dev server so requests to /api are proxied."
+    );
+  }
+  return m;
+}
+
+/** FastAPI may return ``detail`` as a string, or a validation error list. */
+function parseFastApiDetail(
+  body: unknown,
+  fallback: string,
+  status: number,
+  statusText: string
+): string {
+  if (body && typeof body === "object" && "detail" in (body as object)) {
+    const d = (body as { detail: unknown }).detail;
+    if (typeof d === "string" && d.trim()) {
+      return d;
+    }
+    if (Array.isArray(d) && d.length) {
+      const first = d[0];
+      if (typeof first === "string") {
+        return first;
+      }
+      if (first && typeof first === "object" && "msg" in (first as object)) {
+        const msg = (first as { msg: unknown }).msg;
+        if (typeof msg === "string" && msg.trim()) {
+          return msg;
+        }
+      }
+    }
+  }
+  if (status === 502 || status === 503) {
+    return "The service is temporarily unavailable. For local dev, run the orchestrator and use the Vite dev proxy for /api.";
+  }
+  if (status === 404) {
+    return "This API was not found. Use a current orchestrator build that exposes POST /api/auth/forgot-password, or check your /api reverse proxy.";
+  }
+  if (statusText && statusText !== "Error" && statusText.length > 0) {
+    return statusText;
+  }
+  return fallback;
+}
+
 function headers(
   token: string,
   opts?: { anthropicApiKey?: string | null }
@@ -28,16 +84,43 @@ export async function login(
   username: string,
   password: string
 ): Promise<{ access_token: string; user: string }> {
-  const res = await fetch(`${BASE}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+  } catch (e) {
+    throw new Error(mapFetchNetworkError(e));
+  }
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(body.detail ?? "Login failed");
+    const body = await res.json().catch(() => ({}));
+    throw new Error(parseFastApiDetail(body, "Login failed", res.status, res.statusText));
   }
   return res.json();
+}
+
+/**
+ * Triggers Auth0 database “change password” email (same as SaaS ``/forget-pass``), via orchestrator.
+ */
+export async function requestPasswordReset(email: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/auth/forgot-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+  } catch (e) {
+    throw new Error(mapFetchNetworkError(e));
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(
+      parseFastApiDetail(body, "Could not start password reset", res.status, res.statusText)
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
