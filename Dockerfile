@@ -22,6 +22,9 @@ COPY orchestrator/requirements-api.txt /app/orchestrator/requirements-api.txt
 RUN pip install --no-cache-dir -r /app/orchestrator/requirements-api.txt
 
 # Copy application code
+# Shared LLM abstraction (orchestrator/agent.py: ``from llm import ...``); lives
+# next to ``orchestrator/`` in the repo, not inside it.
+COPY llm/ /app/llm/
 COPY orchestrator/ /app/orchestrator/
 COPY data-processing-agent/ /app/data-processing-agent/
 COPY meter-status-agent/ /app/meter-status-agent/
