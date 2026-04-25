@@ -1,3 +1,4 @@
+import { motion, AnimatePresence } from "framer-motion";
 import type { TurnActivityStep } from "../turnActivity";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 
@@ -36,6 +37,32 @@ const COMPACT_MAIN: Record<TurnActivityStep["kind"], string> = {
   stream: "Generating",
   done: "Done",
   error: "Error",
+};
+
+const STEP_ICONS: Record<TurnActivityStep["kind"], string> = {
+  connecting: "↗",
+  intent_route: "🎯",
+  queued: "⏳",
+  thinking: "💭",
+  context: "📊",
+  compressing: "🗜",
+  tool: "⚙️",
+  stream: "✨",
+  done: "✓",
+  error: "✕",
+};
+
+const STEP_COLORS: Record<TurnActivityStep["kind"], { bg: string; text: string }> = {
+  connecting: { bg: "bg-blue-50 dark:bg-blue-950/30", text: "text-blue-700 dark:text-blue-300" },
+  intent_route: { bg: "bg-purple-50 dark:bg-purple-950/30", text: "text-purple-700 dark:text-purple-300" },
+  queued: { bg: "bg-amber-50 dark:bg-amber-950/30", text: "text-amber-700 dark:text-amber-300" },
+  thinking: { bg: "bg-indigo-50 dark:bg-indigo-950/30", text: "text-indigo-700 dark:text-indigo-300" },
+  context: { bg: "bg-cyan-50 dark:bg-cyan-950/30", text: "text-cyan-700 dark:text-cyan-300" },
+  compressing: { bg: "bg-violet-50 dark:bg-violet-950/30", text: "text-violet-700 dark:text-violet-300" },
+  tool: { bg: "bg-green-50 dark:bg-green-950/30", text: "text-green-700 dark:text-green-300" },
+  stream: { bg: "bg-pink-50 dark:bg-pink-950/30", text: "text-pink-700 dark:text-pink-300" },
+  done: { bg: "bg-emerald-50 dark:bg-emerald-950/30", text: "text-emerald-700 dark:text-emerald-300" },
+  error: { bg: "bg-red-50 dark:bg-red-950/30", text: "text-red-700 dark:text-red-300" },
 };
 
 function mainLineText(step: TurnActivityStep, compact: boolean): string {
@@ -122,6 +149,9 @@ function StepRow({
   const isError = step.kind === "error" || (step.kind === "tool" && step.phase === "done" && step.ok === false);
   const isDone = step.kind === "done" || (step.kind === "tool" && step.phase === "done" && step.ok);
 
+  const colors = STEP_COLORS[step.kind];
+  const icon = STEP_ICONS[step.kind];
+
   const mainCls = [
     "leading-relaxed",
     compact ? "text-xs" : "text-[13px]",
@@ -142,25 +172,18 @@ function StepRow({
 
   const rail = responding ? (
     <span
-      className="mt-1.5 block h-3.5 w-0.5 shrink-0 justify-self-end rounded-full bg-neutral-400/90 dark:bg-neutral-500"
-      aria-hidden
-    />
-  ) : isDone && !isError && step.kind !== "connecting" ? (
-    <span
-      className="mt-1.5 text-center text-[0.65rem] leading-none text-emerald-600/60 dark:text-emerald-500/50"
+      className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-medium ${colors.bg} ${colors.text} animate-pulse`}
       aria-hidden
     >
-      ·
-    </span>
-  ) : isError ? (
-    <span
-      className="mt-1.5 text-center text-[0.65rem] leading-none text-red-500/70"
-      aria-hidden
-    >
-      ·
+      {icon}
     </span>
   ) : (
-    <span className="block w-0.5 shrink-0 opacity-0" aria-hidden />
+    <span
+      className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-medium ${colors.bg} ${colors.text}`}
+      aria-hidden
+    >
+      {icon}
+    </span>
   );
 
   return (
@@ -175,8 +198,8 @@ function StepRow({
         more cells into the 2-col grid can let auto-placement order the <ul> above
         the <p> (progress looked “above” the first status line).
       */}
-      <div className="grid w-full min-w-0 grid-cols-[0.5rem_1fr] items-start gap-x-2">
-        {rail}
+      <div className="grid w-full min-w-0 grid-cols-[1.5rem_1fr] items-start gap-x-2">
+        <div className="flex justify-center pt-0.5">{rail}</div>
         <div className="min-w-0">
           <p className={mainCls.join(" ")}>{main}</p>
           {toolProgressList ? (
@@ -244,15 +267,24 @@ export default function TurnActivityTimeline({
     >
       <div className="w-full min-w-0 pl-0">
         <div className="flex flex-col">
-          {safeSteps.map((step, i) => (
-            <StepRow
-              key={`${step.seq}-${step.kind}-${i}`}
-              step={step}
-              isLast={i === lastIdx}
-              active={active}
-              compact={compact}
-            />
-          ))}
+          <AnimatePresence mode="popLayout">
+            {safeSteps.map((step, i) => (
+              <motion.div
+                key={`${step.seq}-${step.kind}-${i}`}
+                initial={{ opacity: 0, x: -8 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -8 }}
+                transition={{ duration: 0.2, delay: i * 0.04 }}
+              >
+                <StepRow
+                  step={step}
+                  isLast={i === lastIdx}
+                  active={active}
+                  compact={compact}
+                />
+              </motion.div>
+            ))}
+          </AnimatePresence>
         </div>
       </div>
     </div>

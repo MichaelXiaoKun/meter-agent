@@ -174,6 +174,17 @@ export async function checkProcessing(
   return !!data.processing;
 }
 
+export async function cancelProcessing(
+  convId: string,
+  signal?: AbortSignal
+): Promise<void> {
+  const res = await fetch(`${BASE}/conversations/${convId}/cancel`, {
+    method: "POST",
+    signal,
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
 export async function deleteConversation(
   convId: string,
   userId: string

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 
 /** Fallbacks when /api/config is unavailable — match orchestrator defaults. */
 export const DEFAULT_MODEL_CONTEXT_MAX = 200_000;
@@ -420,24 +421,30 @@ export function TokenBudgetPopover({
         </span>
       </button>
 
-      {open && (
-        <div
-          id={panelId}
-          role="region"
-          aria-labelledby="token-budget-trigger"
-          className={`absolute ${panelPositionClass}`}
-        >
-          <div className="max-h-[min(70vh,32rem)] overflow-y-auto rounded-xl border border-brand-border/80 bg-white p-1 shadow-xl backdrop-blur-sm dark:border-brand-border dark:bg-brand-100 dark:shadow-[0_20px_50px_-20px_rgba(0,0,0,0.55)]">
-            <TokenBudgetPanel
-              tokenUsage={tokenUsage}
-              tpmPerMinuteGuide={tpmPerMinuteGuide}
-              tpmServerSliding60s={tpmServerSliding60s}
-              inputBudgetTarget={inputBudgetTarget}
-              modelContextMax={modelContextMax}
-            />
-          </div>
-        </div>
-      )}
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            id={panelId}
+            role="region"
+            aria-labelledby="token-budget-trigger"
+            className={`absolute ${panelPositionClass}`}
+            initial={{ opacity: 0, scale: 0.95, y: 6 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 6 }}
+            transition={{ duration: 0.15 }}
+          >
+            <div className="max-h-[min(70vh,32rem)] overflow-y-auto rounded-xl border border-brand-border/80 bg-white p-1 shadow-xl backdrop-blur-sm dark:border-brand-border dark:bg-brand-100 dark:shadow-[0_20px_50px_-20px_rgba(0,0,0,0.55)]">
+              <TokenBudgetPanel
+                tokenUsage={tokenUsage}
+                tpmPerMinuteGuide={tpmPerMinuteGuide}
+                tpmServerSliding60s={tpmServerSliding60s}
+                inputBudgetTarget={inputBudgetTarget}
+                modelContextMax={modelContextMax}
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
