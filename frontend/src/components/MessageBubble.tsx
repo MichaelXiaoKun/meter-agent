@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <div className="flex items-center gap-1 opacity-0 group-hover/bubble:opacity-100 transition-opacity duration-150 mt-1">
+    <div className="flex items-center gap-1 opacity-0 group-hover/bubble:opacity-100 transition-opacity duration-150 mt-0.5">
       <button
         type="button"
         onClick={async () => {
@@ -301,7 +301,7 @@ export default function MessageBubble({
   if (hasHistoryActivity) {
     // Match live ChatView: pre-tool strip → first reply → tool strip → post-tool reply → done.
     const proseCard =
-      "max-w-[min(92%,28rem)] min-w-0 overflow-hidden rounded-2xl border border-brand-border bg-white px-4 py-3.5 text-brand-900 dark:border-brand-border dark:bg-brand-50 sm:max-w-[75%] sm:py-3";
+      "max-w-2xl min-w-0 w-full py-1";
     const proseInner =
       "prose prose-base max-w-none min-w-0 break-words prose-p:my-2 prose-p:leading-relaxed prose-headings:text-brand-900 prose-a:break-words prose-a:text-brand-500 prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm dark:prose-invert dark:prose-headings:text-brand-900 [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full sm:prose-sm sm:prose-p:my-1";
     const mdComponents = {
@@ -357,7 +357,7 @@ export default function MessageBubble({
   return (
     <div className="flex flex-col gap-2 items-start">
       <div className="group/bubble flex flex-col">
-        <div className="max-w-[min(92%,28rem)] min-w-0 overflow-hidden rounded-2xl border border-brand-border bg-white px-4 py-3.5 text-brand-900 dark:border-brand-border dark:bg-brand-50 sm:max-w-[75%] sm:py-3">
+        <div className="max-w-2xl min-w-0 w-full py-1">
           {assistantMarkdownBlock}
           {assistantPlotsBlock}
         </div>
