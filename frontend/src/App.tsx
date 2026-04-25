@@ -7,6 +7,7 @@ import CheckMailPage from "./components/CheckMailPage";
 import Sidebar from "./components/Sidebar";
 import SidebarIconRail from "./components/SidebarIconRail";
 import ChatView from "./components/ChatView";
+import { ToastContainer, useToast } from "./components/Toast";
 import { readStoredModel, writeStoredModel } from "./components/modelPickerStorage";
 import { useConversations } from "./hooks/useConversations";
 import { useChat } from "./hooks/useChat";
@@ -50,6 +51,7 @@ const SHELF_SWAP_MS =
   Math.max(SHELF_STRIP_MS, SHELF_WIDTH_MS) + SHELF_SWAP_TAIL_MS;
 
 export default function App() {
+  const toast = useToast();
   const [authView, setAuthView] = useState<AuthGateView>(() => getAuthViewFromHash());
   const [token, setToken] = useState(() => getStoredAuth().token);
   const [user, setUser] = useState(() => getStoredAuth().user);
@@ -494,6 +496,10 @@ export default function App() {
           }
         />
       </main>
+      <ToastContainer
+        toasts={toast.toasts}
+        onClose={toast.dismiss}
+      />
     </div>
   );
 }

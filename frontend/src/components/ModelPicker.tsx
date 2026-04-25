@@ -253,15 +253,12 @@ export default function ModelPicker({
           role="listbox"
           aria-label="AI model"
           className={[
-            "absolute rounded-2xl border border-brand-border bg-white p-1.5 shadow-[0_18px_56px_-18px_rgba(15,23,42,0.28)] dark:border-brand-border dark:bg-brand-100 dark:shadow-[0_18px_56px_-18px_rgba(0,0,0,0.55)]",
+            "absolute rounded-2xl border border-brand-border bg-white shadow-[0_18px_56px_-18px_rgba(15,23,42,0.28)] dark:border-brand-border dark:bg-brand-100 dark:shadow-[0_18px_56px_-18px_rgba(0,0,0,0.55)]",
             panelPositionClass,
           ].join(" ")}
         >
-          <div className="px-2 pb-1 pt-1 text-[0.7rem] font-medium uppercase tracking-wide text-brand-muted">
-            Model for next turn
-          </div>
-
-          {groups.map(({ provider, models: groupModels }, gi) => (
+          <div className="max-h-[min(70vh,24rem)] overflow-y-auto p-1.5">
+            {groups.map(({ provider, models: groupModels }, gi) => (
             <div key={provider}>
               {/* Provider group header (only shown when there are multiple providers) */}
               {groups.length > 1 && (
@@ -322,6 +319,7 @@ export default function ModelPicker({
               })}
             </div>
           ))}
+          </div>
         </div>
       )}
     </div>

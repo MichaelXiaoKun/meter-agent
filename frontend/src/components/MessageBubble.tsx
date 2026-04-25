@@ -1,4 +1,40 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="flex items-center gap-1 opacity-0 group-hover/bubble:opacity-100 transition-opacity duration-150 mt-1">
+      <button
+        type="button"
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(text);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          } catch { /* ignore */ }
+        }}
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-brand-muted hover:text-brand-900 hover:bg-brand-100 dark:hover:bg-white/10 dark:hover:text-brand-900 transition-colors"
+        title="Copy message"
+      >
+        {copied ? (
+          <>
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+            </svg>
+            Copied
+          </>
+        ) : (
+          <>
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            </svg>
+            Copy
+          </>
+        )}
+      </button>
+    </div>
+  );
+}
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message, ContentBlock, PlotAttachment } from "../types";
@@ -297,11 +333,12 @@ export default function MessageBubble({
           <TurnActivityTimeline steps={historyFromFirstTool} active={false} />
         ) : null}
         {showPostBubble ? (
-          <div className="flex w-full justify-start">
+          <div className="group/bubble flex flex-col">
             <div className={proseCard}>
               {assistantMarkdownBlock}
               {assistantPlotsBlock}
             </div>
+            {text && <CopyButton text={text} />}
           </div>
         ) : null}
         {activityBelowBody.length > 0 ? (
@@ -319,11 +356,12 @@ export default function MessageBubble({
 
   return (
     <div className="flex flex-col gap-2 items-start">
-      <div className="flex w-full justify-start">
+      <div className="group/bubble flex flex-col">
         <div className="max-w-[min(92%,28rem)] min-w-0 overflow-hidden rounded-2xl border border-brand-border bg-white px-4 py-3.5 text-brand-900 dark:border-brand-border dark:bg-brand-50 sm:max-w-[75%] sm:py-3">
           {assistantMarkdownBlock}
           {assistantPlotsBlock}
         </div>
+        {text && <CopyButton text={text} />}
       </div>
     </div>
   );
