@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { motion, AnimatePresence } from "framer-motion";
 import ThemeToggle from "./ThemeToggle";
 
 /** Account tile and similar chips — bordered ``h-9 w-9`` (pen uses ``RAIL_NEW_CHAT_PEN_CLASS``). */
@@ -12,7 +13,7 @@ export const SHELF_NEW_CHAT_TILE_CLASS =
 
 /** New-chat pen: same size/placement as tile, no frame until hover (matches expanded narrow New chat). */
 const RAIL_NEW_CHAT_PEN_CLASS =
-  "group flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-transparent bg-transparent text-brand-700 shadow-none ring-1 ring-transparent transition-[color,background-color,border-color,box-shadow,ring-color] duration-200 ease-out hover:border-brand-500 hover:bg-brand-50 hover:shadow-sm hover:ring-brand-border/40 hover:text-brand-900 dark:text-brand-muted dark:hover:bg-brand-100 dark:hover:text-brand-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 focus-visible:ring-offset-brand-50 dark:focus-visible:ring-offset-brand-100";
+  "group flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-transparent bg-transparent text-brand-700 shadow-none ring-1 ring-transparent transition-[color,background-color,border-color,box-shadow,ring-color,transform] duration-200 ease-out hover:border-brand-500 hover:bg-brand-50 hover:shadow-sm hover:ring-brand-border/40 hover:text-brand-900 active:scale-95 dark:text-brand-muted dark:hover:bg-brand-100 dark:hover:text-brand-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 focus-visible:ring-offset-brand-50 dark:focus-visible:ring-offset-brand-100";
 
 /** Rounded rectangle with a left rail — dock / hide (expanded) or open-panel hint (rail hover). */
 export function IconSidebarDock({ className }: { className?: string }) {
@@ -150,42 +151,48 @@ export default function SidebarIconRail({
 
   const accountTitle = `Signed in as ${user}. Click for account menu.`;
 
-  const menuPortal =
-    menu &&
-    createPortal(
-      <div
-        ref={menuRef}
-        role="menu"
-        aria-label="Account"
-        className="fixed z-[300] min-w-[11rem] rounded-xl border border-brand-border bg-white py-1 shadow-xl ring-1 ring-black/5 dark:bg-brand-100 dark:ring-white/10 dark:shadow-[0_16px_48px_-12px_rgba(0,0,0,0.55)]"
-        style={{ left: menu.x, top: menu.y }}
-      >
-        <button
-          type="button"
-          role="menuitem"
-          className="flex w-full px-3 py-2 text-left text-sm text-brand-900 hover:bg-brand-50 dark:hover:bg-white/10"
-          onClick={() => {
-            closeMenu();
-            onExpand();
-          }}
+  const menuPortal = createPortal(
+    <AnimatePresence>
+      {menu && (
+        <motion.div
+          ref={menuRef}
+          role="menu"
+          aria-label="Account"
+          className="fixed z-[300] min-w-[11rem] rounded-xl border border-brand-border bg-white py-1 shadow-xl ring-1 ring-black/5 dark:bg-brand-100 dark:ring-white/10 dark:shadow-[0_16px_48px_-12px_rgba(0,0,0,0.55)]"
+          style={{ left: menu.x, top: menu.y }}
+          initial={{ opacity: 0, scale: 0.95, y: -4 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: -4 }}
+          transition={{ duration: 0.15 }}
         >
-          Open sidebar…
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
-          onClick={() => {
-            closeMenu();
-            onLogout();
-          }}
-        >
-          <IconLogout className="h-4 w-4 shrink-0 opacity-80" />
-          <span>Sign out</span>
-        </button>
-      </div>,
-      document.body,
-    );
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full px-3 py-2 text-left text-sm text-brand-900 transition-colors hover:bg-brand-50 dark:hover:bg-white/10"
+            onClick={() => {
+              closeMenu();
+              onExpand();
+            }}
+          >
+            Open sidebar…
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+            onClick={() => {
+              closeMenu();
+              onLogout();
+            }}
+          >
+            <IconLogout className="h-4 w-4 shrink-0 opacity-80" />
+            <span>Sign out</span>
+          </button>
+        </motion.div>
+      )}
+    </AnimatePresence>,
+    document.body,
+  );
 
   return (
     <nav

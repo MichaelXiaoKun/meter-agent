@@ -8,6 +8,7 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { formatConversationRelativeDate, getDefaultDateLocale } from "../conversationRelativeDate";
 import {
   buildConversationListItems,
@@ -246,7 +247,7 @@ function ConversationRow({
 
   return (
     <div
-      className={`group relative mb-px box-border flex h-full min-h-0 w-full min-w-0 items-stretch rounded-lg ${rowClass} ${ringBusy} ${accent} ${selectRing}`}
+      className={`group relative mb-px box-border flex h-full min-h-0 w-full min-w-0 items-stretch rounded-lg transition-colors duration-150 ${rowClass} ${ringBusy} ${accent} ${selectRing}`}
     >
       <div className="flex min-h-0 min-w-0 flex-1">
         {selectionMode && (
@@ -331,15 +332,20 @@ function ConversationRow({
           <IconDotsHorizontal className="h-5 w-5" />
         </button>
 
-        {menuOpen && (
-          <div
-            role="menu"
-            className="absolute right-0 top-full z-50 mt-1 min-w-[12rem] rounded-lg border border-brand-border bg-white py-1 text-sm shadow-lg dark:bg-brand-100 dark:shadow-[0_12px_40px_-12px_rgba(0,0,0,0.5)]"
-          >
+        <AnimatePresence>
+          {menuOpen && (
+            <motion.div
+              role="menu"
+              className="absolute right-0 top-full z-50 mt-1 min-w-[12rem] rounded-lg border border-brand-border bg-white py-1 text-sm shadow-lg dark:bg-brand-100 dark:shadow-[0_12px_40px_-12px_rgba(0,0,0,0.5)]"
+              initial={{ opacity: 0, scale: 0.95, y: -4 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: -4 }}
+              transition={{ duration: 0.15 }}
+            >
             <button
               type="button"
               role="menuitem"
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-brand-900 hover:bg-brand-50 dark:hover:bg-white/10"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-brand-900 transition-colors active:scale-[0.97] active:transition-transform hover:bg-brand-50 dark:hover:bg-white/10"
               onClick={() => {
                 setOpenMenuId(null);
                 onTogglePin(c.id);
@@ -351,7 +357,7 @@ function ConversationRow({
             <button
               type="button"
               role="menuitem"
-              className="flex w-full items-center px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+              className="flex w-full items-center px-3 py-2 text-left text-sm text-red-600 transition-colors active:scale-[0.97] active:transition-transform hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
               onClick={() => {
                 setOpenMenuId(null);
                 if (!window.confirm("Delete this conversation?")) return;
@@ -363,7 +369,7 @@ function ConversationRow({
             <button
               type="button"
               role="menuitem"
-              className="flex w-full items-center px-3 py-2 text-left text-sm text-brand-900 hover:bg-brand-50 dark:hover:bg-white/10"
+              className="flex w-full items-center px-3 py-2 text-left text-sm text-brand-900 transition-colors active:scale-[0.97] active:transition-transform hover:bg-brand-50 dark:hover:bg-white/10"
               onClick={() => {
                 setOpenMenuId(null);
                 const current = c.title || "New conversation";
@@ -376,8 +382,9 @@ function ConversationRow({
             >
               Rename title
             </button>
-          </div>
-        )}
+            </motion.div>
+          )}
+        </AnimatePresence>
         </div>
       )}
     </div>

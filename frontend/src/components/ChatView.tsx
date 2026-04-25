@@ -6,16 +6,18 @@ import {
   useState,
   type RefObject,
 } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message, PlotAttachment } from "../types";
 import type { AgentStatus } from "../hooks/useChat";
-import MessageBubble from "./MessageBubble";
+import AnimatedMessageBubble from "./AnimatedMessageBubble";
 import { extractPlotAttachments } from "./plotAttachments";
 import { PlotGrouped } from "./PlotImage";
 import WelcomeCard from "./WelcomeCard";
 import WelcomeBluebotLogo from "./WelcomeBluebotLogo";
 import TurnActivityTimeline from "./TurnActivityTimeline";
+import { MessageSkeleton } from "./MessageSkeleton";
 import { TokenBudgetPopover } from "./TokenBudget";
 import ModelPicker from "./ModelPicker";
 import MicButton from "./MicButton";
@@ -49,13 +51,18 @@ function SendArrowIcon({ className }: { className?: string }) {
 
 function StreamingAssistantBubble({ markdown }: { markdown: string }) {
   return (
-    <div className="flex justify-start">
+    <motion.div
+      className="flex justify-start"
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3 }}
+    >
       <div className="max-w-[75%] min-w-0 overflow-hidden rounded-2xl border border-brand-border bg-white px-4 py-3 text-brand-900 dark:border-brand-border dark:bg-brand-50">
         <div className="prose prose-sm max-w-none min-w-0 break-words prose-p:my-1 prose-a:break-words prose-img:rounded-lg prose-img:shadow-sm prose-th:text-left prose-table:text-sm dark:prose-invert dark:prose-headings:text-brand-900 [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_table]:block [&_table]:overflow-x-auto [&_img]:max-w-full">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
         </div>
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -506,6 +513,7 @@ export default function ChatView({
     onSend(msg);
     setInput("");
     lastAppliedFinalRef.current = "";
+    inputRef.current?.focus();
   }
 
   /**
@@ -634,7 +642,7 @@ export default function ChatView({
 
   /** Same pill + field styling for welcome and active conversation (all viewports). */
   const composerShellClass =
-    "w-full max-w-2xl rounded-2xl border border-brand-border/90 bg-white p-2.5 shadow-[0_12px_48px_-12px_rgba(15,23,42,0.14)] dark:border-brand-border dark:bg-brand-100 dark:shadow-[0_12px_48px_-12px_rgba(0,0,0,0.45)] sm:rounded-[1.75rem] sm:p-2.5 md:p-2.5";
+    "w-full max-w-2xl rounded-2xl border border-brand-border/90 bg-white p-2.5 shadow-[0_12px_48px_-12px_rgba(15,23,42,0.14)] focus-within:ring-2 focus-within:ring-brand-500/30 transition-shadow dark:border-brand-border dark:bg-brand-100 dark:shadow-[0_12px_48px_-12px_rgba(0,0,0,0.45)] sm:rounded-[1.75rem] sm:p-2.5 md:p-2.5";
   /**
    * Auto-grow ``<textarea>`` used by the unified composer. The textarea
    * occupies its own row at the top of the pill and visually blends into
@@ -645,9 +653,9 @@ export default function ChatView({
    * ~6 lines, then the textarea scrolls internally).
    */
   const composerTextareaClass =
-    "block min-h-[36px] w-full min-w-0 resize-none rounded-none border-0 bg-transparent px-1.5 py-1 text-base leading-6 text-brand-900 outline-none ring-0 placeholder:text-brand-muted/55 focus:outline-none focus:ring-0 disabled:opacity-50 dark:placeholder:text-brand-muted/50";
+    "block min-h-[36px] w-full min-w-0 resize-none rounded-none border-0 bg-transparent px-1.5 py-1 text-base leading-6 text-brand-900 outline-none ring-0 placeholder:text-brand-muted/55 focus:outline-none focus:ring-0 disabled:opacity-50 transition-[height] duration-150 ease-out dark:placeholder:text-brand-muted/50";
   const composerSendIconButtonClass =
-    "flex h-12 w-12 min-h-[48px] min-w-[48px] shrink-0 items-center justify-center rounded-full bg-brand-700 text-white transition-opacity hover:opacity-90 active:opacity-90 disabled:bg-brand-300 disabled:opacity-60 sm:min-h-[44px] sm:min-w-[44px]";
+    "flex h-12 w-12 min-h-[48px] min-w-[48px] shrink-0 items-center justify-center rounded-full bg-brand-700 text-white transition-opacity hover:opacity-90 active:opacity-90 active:scale-95 transition-transform disabled:bg-brand-300 disabled:opacity-60 disabled:cursor-not-allowed sm:min-h-[44px] sm:min-w-[44px]";
   /**
    * Composer wrapper — fully transparent so the input field blends into the
    * surrounding chat area (no opaque "bottom header" bar). On the hasMessages
@@ -670,31 +678,42 @@ export default function ChatView({
    * Send/Cancel button shared by welcome / footer composers.
    * Shows send arrow when idle, stop icon when processing.
    */
-  const sendButton = isProcessing && onCancel ? (
+  const sendButton = (
     <button
-      type="button"
-      onClick={onCancel}
+      type={isProcessing && onCancel ? "button" : "submit"}
+      onClick={isProcessing && onCancel ? onCancel : undefined}
+      disabled={!isProcessing && !input.trim()}
       className={composerSendIconButtonClass}
-      aria-label="Stop processing"
-      title="Stop"
+      aria-label={isProcessing && onCancel ? "Stop processing" : "Send message"}
+      title={isProcessing && onCancel ? "Stop" : undefined}
     >
-      <svg
-        className="h-5 w-5"
-        viewBox="0 0 24 24"
-        fill="currentColor"
-        aria-hidden
-      >
-        <rect x="6" y="6" width="12" height="12" />
-      </svg>
-    </button>
-  ) : (
-    <button
-      type="submit"
-      disabled={isProcessing || !input.trim()}
-      className={composerSendIconButtonClass}
-      aria-label="Send message"
-    >
-      <SendArrowIcon className="h-5 w-5" />
+      <AnimatePresence mode="wait">
+        {isProcessing && onCancel ? (
+          <motion.svg
+            key="stop"
+            className="h-5 w-5"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden
+            initial={{ opacity: 0, scale: 0.7 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.7 }}
+            transition={{ duration: 0.2 }}
+          >
+            <rect x="6" y="6" width="12" height="12" />
+          </motion.svg>
+        ) : (
+          <motion.div
+            key="send"
+            initial={{ opacity: 0, scale: 0.7 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.7 }}
+            transition={{ duration: 0.2 }}
+          >
+            <SendArrowIcon className="h-5 w-5" />
+          </motion.div>
+        )}
+      </AnimatePresence>
     </button>
   );
 
@@ -926,41 +945,62 @@ export default function ChatView({
               ref={setTranscriptInnerEl}
               className="mx-auto w-full max-w-3xl flex-shrink-0 space-y-3 px-4 py-4 sm:px-6"
             >
-              {status.kind === "error" && (
-                <div
-                  role="alert"
-                  className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900 shadow-sm dark:border-red-900/55 dark:bg-red-950/35 dark:text-red-100 dark:shadow-none"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="font-semibold text-red-950 dark:text-red-100">
-                        Assistant couldn&apos;t finish (Claude API)
-                      </p>
-                      <p className="mt-1.5 whitespace-pre-wrap break-words text-red-800/95 dark:text-red-200/90">
-                        {status.error}
-                      </p>
+              <AnimatePresence>
+                {status.kind === "error" && (
+                  <motion.div
+                    role="alert"
+                    className="rounded-lg border border-red-300 bg-red-50 shadow-sm dark:border-red-800/50 dark:bg-red-950/40"
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.25 }}
+                  >
+                  <div className="px-4 py-3 space-y-2">
+                    <div className="flex items-start gap-3">
+                      <span className="text-xl shrink-0 mt-0.5">⚠️</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-red-950 dark:text-red-100 text-sm">
+                          Oops! Something went wrong
+                        </p>
+                        <p className="mt-1 text-xs text-red-800/85 dark:text-red-200/80 whitespace-pre-wrap break-words leading-relaxed">
+                          {status.error}
+                        </p>
+                      </div>
                     </div>
                     {onDismissAssistantError && (
-                      <button
-                        type="button"
-                        onClick={onDismissAssistantError}
-                        className="shrink-0 rounded-lg border border-red-300 bg-white px-2.5 py-1 text-xs font-medium text-red-800 hover:bg-red-100 dark:border-red-800/70 dark:bg-brand-100 dark:text-red-200 dark:hover:bg-red-950/40"
-                      >
-                        Dismiss
-                      </button>
+                      <div className="flex gap-2 justify-end pt-1">
+                        <button
+                          type="button"
+                          onClick={onDismissAssistantError}
+                          className="text-xs font-medium px-3 py-1.5 rounded-md bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200 hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
                     )}
                   </div>
+                </motion.div>
+                )}
+              </AnimatePresence>
+              {historyLoading && messages.length === 0 ? (
+                <div className="space-y-3">
+                  <MessageSkeleton />
+                  <MessageSkeleton />
+                  <MessageSkeleton />
                 </div>
+              ) : (
+                <AnimatePresence mode="popLayout">
+                  {messages.map((msg, i) => (
+                    <AnimatedMessageBubble
+                      key={i}
+                      message={msg}
+                      plots={plotsByIndex.get(i)}
+                      transcript={messages}
+                      messageIndex={i}
+                    />
+                  ))}
+                </AnimatePresence>
               )}
-              {messages.map((msg, i) => (
-                <MessageBubble
-                  key={i}
-                  message={msg}
-                  plots={plotsByIndex.get(i)}
-                  transcript={messages}
-                  messageIndex={i}
-                />
-              ))}
 
               {/*
                 Pre-tool strip → first reply (lead) → tools / sub-agent strip →
@@ -1042,14 +1082,21 @@ export default function ChatView({
               on the inner wrapper.
             */}
             <div className="sticky bottom-0 z-10 w-full flex-shrink-0 pointer-events-none">
-              {showJumpToLatest && (
-                <div className="pointer-events-none flex justify-center pb-2">
-                  <button
-                    type="button"
-                    onClick={jumpToLatest}
-                    className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-brand-border bg-white/95 px-3 py-1.5 text-xs font-medium text-brand-700 shadow-md backdrop-blur transition-opacity hover:bg-white dark:border-brand-border dark:bg-brand-50/95 dark:text-brand-muted dark:hover:bg-white/10 dark:hover:text-brand-900"
-                    aria-label="Jump to latest message"
+              <AnimatePresence>
+                {showJumpToLatest && (
+                  <motion.div
+                    className="pointer-events-none flex justify-center pb-2"
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 8 }}
+                    transition={{ duration: 0.2 }}
                   >
+                    <button
+                      type="button"
+                      onClick={jumpToLatest}
+                      className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-brand-border bg-white/95 px-3 py-1.5 text-xs font-medium text-brand-700 shadow-md backdrop-blur transition-opacity hover:bg-white dark:border-brand-border dark:bg-brand-50/95 dark:text-brand-muted dark:hover:bg-white/10 dark:hover:text-brand-900"
+                      aria-label="Jump to latest message"
+                    >
                     <svg
                       className="h-3.5 w-3.5"
                       viewBox="0 0 24 24"
@@ -1064,8 +1111,9 @@ export default function ChatView({
                     </svg>
                     Jump to latest
                   </button>
-                </div>
-              )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
               <div className={composerBottomWrapClass}>
                 <div className="pointer-events-auto mx-auto max-w-3xl">{composerFooter}</div>
               </div>

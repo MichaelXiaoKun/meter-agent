@@ -763,12 +763,20 @@ export function useChat(
         state.plotsRef.current = [];
         state.turnActivity = [];
         state.streamOpenedForTurnRef.current = false;
-        updateAndPersistStreamingState(activeConvId);
+        // Don't persist to sessionStorage — delete it instead so refresh doesn't auto-restore
       }
       try {
         sessionStorage.removeItem(CTX_USAGE_KEY(activeConvId));
-        // Also clear streaming state from sessionStorage so it doesn't auto-restore on refresh
+        // Completely remove streaming state so cancel is permanent even after refresh
         sessionStorage.removeItem(STREAMING_STATE_KEY(activeConvId));
+      } catch {
+        /* ignore */
+      }
+      // Tell the backend to cancel processing
+      try {
+        api.cancelProcessing(activeConvId).catch(() => {
+          // Ignore if cancel fails — frontend is already stopped
+        });
       } catch {
         /* ignore */
       }
@@ -776,7 +784,7 @@ export function useChat(
     setStreamTokenUsage({ tokens: 0, pct: 0 });
     setServerProcessing(false);
     setProcessingConvId(null);
-  }, [activeConvId, getConvStreamingState, updateAndPersistStreamingState]);
+  }, [activeConvId, getConvStreamingState]);
 
   const isViewingProcessing =
     !!processingConvId && activeConvId === processingConvId;

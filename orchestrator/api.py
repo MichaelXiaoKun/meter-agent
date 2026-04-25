@@ -464,6 +464,8 @@ def get_plot(filename: str):
 # ---------------------------------------------------------------------------
 
 _active_conversations: set[str] = set()
+_cancelled_conversations: set[str] = set()
+_cancel_events: dict[str, threading.Event] = {}  # Per-conversation cancel events
 _streams: dict[str, dict] = {}
 _streams_lock = threading.Lock()
 # Stream sessions live at most this long after completion (or if no
@@ -505,6 +507,26 @@ def _rewrite_plot_paths(event: dict) -> dict:
 def conversation_status(conv_id: str):
     """Check whether the server is actively processing this conversation."""
     return {"processing": conv_id in _active_conversations}
+
+
+@app.post("/api/conversations/{conv_id}/cancel")
+def cancel_processing(conv_id: str):
+    """Request cancellation of an active conversation turn.
+
+    Sets an event flag that the worker thread checks periodically during
+    tool execution and immediately removes the conversation from the active set
+    so checkProcessing returns false. The cancellation is cooperative — the thread
+    may take a few seconds to notice and stop if it's in the middle of a tool execution.
+    """
+    with _streams_lock:
+        _cancelled_conversations.add(conv_id)
+        # Immediately remove from active so checkProcessing returns false
+        # (the worker thread will clean up the finally block)
+        _active_conversations.discard(conv_id)
+        # Signal the worker thread to stop (if it has a cancel event)
+        if conv_id in _cancel_events:
+            _cancel_events[conv_id].set()
+    return {"cancelled": True}
 
 
 @app.post("/api/conversations/{conv_id}/chat")
@@ -651,8 +673,16 @@ async def chat_init(
         return out
 
     captured_events: list[dict] = []
+    cancel_event = threading.Event()
+
+    # Register cancel event for this conversation
+    with _streams_lock:
+        _cancel_events[conv_id] = cancel_event
 
     def _emit_event_with_capture(event: dict) -> None:
+        # Check for cancellation on every event emission
+        if cancel_event.is_set():
+            raise RuntimeError("Turn cancelled by user")
         _emit_event(event)
         with _streams_lock:
             sess = _streams.get(stream_id)
@@ -669,6 +699,12 @@ async def chat_init(
 
     def _run():
         try:
+            # Check if this conversation was already marked for cancellation
+            with _streams_lock:
+                if conv_id in _cancelled_conversations:
+                    _emit_event({"type": "error", "error": "Turn was cancelled before it started."})
+                    return
+
             acquire_run_turn_slot(
                 on_wait=lambda: _emit_event(
                     {
@@ -726,6 +762,10 @@ async def chat_init(
             finally:
                 _active_conversations.discard(conv_id)
         finally:
+            # Clean up cancellation flag and event
+            with _streams_lock:
+                _cancelled_conversations.discard(conv_id)
+                _cancel_events.pop(conv_id, None)
             release_run_turn_slot()
             _mark_done()
 

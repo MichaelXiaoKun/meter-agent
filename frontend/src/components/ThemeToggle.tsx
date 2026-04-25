@@ -1,3 +1,4 @@
+import { motion, AnimatePresence } from "framer-motion";
 import { useTheme } from "../context/useTheme";
 
 function IconMoon({ className }: { className?: string }) {
@@ -45,7 +46,29 @@ export default function ThemeToggle({ size = "md", className = "" }: ThemeToggle
       title={isDark ? "Switch to light mode" : "Switch to dark mode"}
       aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
     >
-      {isDark ? <IconSun className="h-5 w-5" /> : <IconMoon className="h-5 w-5" />}
+      <AnimatePresence mode="wait">
+        {isDark ? (
+          <motion.div
+            key="sun"
+            initial={{ opacity: 0, rotate: -30 }}
+            animate={{ opacity: 1, rotate: 0 }}
+            exit={{ opacity: 0, rotate: 30 }}
+            transition={{ duration: 0.2 }}
+          >
+            <IconSun className="h-5 w-5" />
+          </motion.div>
+        ) : (
+          <motion.div
+            key="moon"
+            initial={{ opacity: 0, rotate: 30 }}
+            animate={{ opacity: 1, rotate: 0 }}
+            exit={{ opacity: 0, rotate: -30 }}
+            transition={{ duration: 0.2 }}
+          >
+            <IconMoon className="h-5 w-5" />
+          </motion.div>
+        )}
+      </AnimatePresence>
     </button>
   );
 }
