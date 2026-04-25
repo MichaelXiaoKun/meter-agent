@@ -244,6 +244,11 @@ export function reduceTurnActivity(
       });
     }
     case "thinking": {
+      // Once reply streaming has started, ignore late/replayed thinking events so
+      // "Thought for …" does not regress back to "Reasoning".
+      if (streamOpened.current) {
+        return base;
+      }
       const hasRate =
         typeof event.rate_limit_wait_seconds === "number" && event.rate_limit_wait_seconds > 0;
       const last = base[base.length - 1];
@@ -401,20 +406,45 @@ export function reduceTurnActivity(
       return push({ kind: "stream", title: "Generating the reply", detail: undefined });
     }
     case "tool_round_limit": {
+      const finalized = applyThinkingElapsed(base, 0.1);
       const lim = typeof event.limit === "number" ? event.limit : 0;
-      return push({
-        kind: "error",
-        title: "Step limit reached",
-        detail:
-          lim > 0
-            ? `This reply stopped after ${lim} assistant steps (safety limit). Send a shorter request or continue in a new message.`
-            : "This reply hit the assistant step safety limit. Continue in a new message.",
-      });
+      return [
+        ...finalized,
+        {
+          seq,
+          kind: "error",
+          title: "Step limit reached",
+          detail:
+            lim > 0
+              ? `This reply stopped after ${lim} assistant steps (safety limit). Send a shorter request or continue in a new message.`
+              : "This reply hit the assistant step safety limit. Continue in a new message.",
+        },
+      ];
     }
-    case "error":
-      return push({ kind: "error", title: "Something went wrong", detail: event.error });
-    case "done":
-      return push({ kind: "done", title: "Complete", detail: undefined });
+    case "error": {
+      const finalized = applyThinkingElapsed(base, 0.1);
+      return [
+        ...finalized,
+        {
+          seq,
+          kind: "error",
+          title: "Something went wrong",
+          detail: event.error,
+        },
+      ];
+    }
+    case "done": {
+      const finalized = applyThinkingElapsed(base, 0.1);
+      return [
+        ...finalized,
+        {
+          seq,
+          kind: "done",
+          title: "Complete",
+          detail: undefined,
+        },
+      ];
+    }
     default:
       return prev;
   }

@@ -501,6 +501,8 @@ export function useChat(
               event.type === "text_delta" ||
               event.type === "text_stream" ||
               event.type === "tool_call" ||
+              event.type === "tool_progress" ||
+              event.type === "tool_result" ||
               event.type === "error" ||
               event.type === "tool_round_limit" ||
               event.type === "done";

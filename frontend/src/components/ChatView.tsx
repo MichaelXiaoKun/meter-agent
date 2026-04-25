@@ -425,30 +425,36 @@ export default function ChatView({
   ]);
 
   /**
-   * Window-switch behaviour: whenever the active conversation changes, force
-   * the transcript back to "stuck at bottom" so the user always lands on the
-   * most recent message — never frozen partway through some prior scroll
-   * position. We use ``useLayoutEffect`` so the snap happens before the
-   * browser paints the newly-rendered transcript, avoiding a one-frame flash
-   * of mid-history content.
-   *
-   * The actual ``scrollIntoView`` is queued in ``requestAnimationFrame``
-   * because on conversation switch the new messages arrive asynchronously
-   * (``historyLoading`` flips true → false) and the scroll container itself
-   * remounts; rAF lets the new DOM settle so the bottom anchor is in its
-   * final position before we snap to it.
+   * Window-switch behaviour:
+   * - idle/history view: start at top (first message first), ChatGPT-style
+   * - active generation: stay pinned to bottom so fresh output remains visible
    */
   useLayoutEffect(() => {
-    stickToBottomRef.current = true;
-    setShowJumpToLatest(false);
+    const el = scrollElRef.current;
+    if (!el) return;
+
+    const shouldLandAtBottom = isProcessing || serverProcessing;
+    stickToBottomRef.current = shouldLandAtBottom;
     setTranscriptOverflowsViewport(false);
-    scrollContainerToBottom();
-    const raf = requestAnimationFrame(() => {
+
+    if (shouldLandAtBottom) {
+      setShowJumpToLatest(false);
       scrollContainerToBottom();
-      scrollRecomputeRef.current?.();
+    } else {
+      el.scrollTo({ top: 0, behavior: "auto" });
+    }
+
+    const raf = requestAnimationFrame(() => {
+      if (shouldLandAtBottom) {
+        scrollContainerToBottom();
+        scrollRecomputeRef.current?.();
+        return;
+      }
+      const meaningful = scrollRecomputeRef.current?.() ?? false;
+      setShowJumpToLatest(meaningful);
     });
     return () => cancelAnimationFrame(raf);
-  }, [conversationId, historyLoading]);
+  }, [conversationId, historyLoading, isProcessing, serverProcessing]);
 
   useEffect(
     () => () => {
@@ -940,7 +946,6 @@ export default function ChatView({
             className={`relative flex min-h-0 flex-1 flex-col overscroll-y-contain [-webkit-overflow-scrolling:touch] ${transcriptOverflowsViewport ? "overflow-y-auto" : "overflow-y-hidden"
               }`}
           >
-            <div className="min-h-0 flex-1" aria-hidden />
             <div
               ref={setTranscriptInnerEl}
               className="mx-auto w-full max-w-3xl flex-shrink-0 space-y-3 px-4 py-4 sm:px-6"
@@ -955,31 +960,31 @@ export default function ChatView({
                     exit={{ opacity: 0, y: -8 }}
                     transition={{ duration: 0.25 }}
                   >
-                  <div className="px-4 py-3 space-y-2">
-                    <div className="flex items-start gap-3">
-                      <span className="text-xl shrink-0 mt-0.5">⚠️</span>
-                      <div className="min-w-0 flex-1">
-                        <p className="font-semibold text-red-950 dark:text-red-100 text-sm">
-                          Oops! Something went wrong
-                        </p>
-                        <p className="mt-1 text-xs text-red-800/85 dark:text-red-200/80 whitespace-pre-wrap break-words leading-relaxed">
-                          {status.error}
-                        </p>
+                    <div className="px-4 py-3 space-y-2">
+                      <div className="flex items-start gap-3">
+                        <span className="text-xl shrink-0 mt-0.5">⚠️</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="font-semibold text-red-950 dark:text-red-100 text-sm">
+                            Oops! Something went wrong
+                          </p>
+                          <p className="mt-1 text-xs text-red-800/85 dark:text-red-200/80 whitespace-pre-wrap break-words leading-relaxed">
+                            {status.error}
+                          </p>
+                        </div>
                       </div>
+                      {onDismissAssistantError && (
+                        <div className="flex gap-2 justify-end pt-1">
+                          <button
+                            type="button"
+                            onClick={onDismissAssistantError}
+                            className="text-xs font-medium px-3 py-1.5 rounded-md bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200 hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors"
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      )}
                     </div>
-                    {onDismissAssistantError && (
-                      <div className="flex gap-2 justify-end pt-1">
-                        <button
-                          type="button"
-                          onClick={onDismissAssistantError}
-                          className="text-xs font-medium px-3 py-1.5 rounded-md bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200 hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors"
-                        >
-                          Dismiss
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </motion.div>
+                  </motion.div>
                 )}
               </AnimatePresence>
               {historyLoading && messages.length === 0 ? (
@@ -1070,6 +1075,7 @@ export default function ChatView({
 
               <div ref={bottomRef} />
             </div>
+            <div className="min-h-0 flex-1" aria-hidden />
             {/*
               Sticky composer dock — lives INSIDE the scroll container so
               scrolled transcript can flow behind its transparent
@@ -1097,20 +1103,20 @@ export default function ChatView({
                       className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-brand-border bg-white/95 px-3 py-1.5 text-xs font-medium text-brand-700 shadow-md backdrop-blur transition-opacity hover:bg-white dark:border-brand-border dark:bg-brand-50/95 dark:text-brand-muted dark:hover:bg-white/10 dark:hover:text-brand-900"
                       aria-label="Jump to latest message"
                     >
-                    <svg
-                      className="h-3.5 w-3.5"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      aria-hidden
-                    >
-                      <path d="M12 5v14M5 12l7 7 7-7" />
-                    </svg>
-                    Jump to latest
-                  </button>
+                      <svg
+                        className="h-3.5 w-3.5"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden
+                      >
+                        <path d="M12 5v14M5 12l7 7 7-7" />
+                      </svg>
+                      Jump to latest
+                    </button>
                   </motion.div>
                 )}
               </AnimatePresence>
