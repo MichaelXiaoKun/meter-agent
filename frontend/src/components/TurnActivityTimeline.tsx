@@ -65,9 +65,13 @@ const STEP_COLORS: Record<TurnActivityStep["kind"], { bg: string; text: string }
   error: { bg: "bg-red-50 dark:bg-red-950/30", text: "text-red-700 dark:text-red-300" },
 };
 
-function mainLineText(step: TurnActivityStep, compact: boolean): string {
-  if (!compact) return step.title;
+function mainLineText(step: TurnActivityStep, compact: boolean, active: boolean): string {
+  if (!compact) {
+    if (!active && step.kind === "stream") return "Generated the reply";
+    return step.title;
+  }
   if (step.kind === "thinking") return step.title;
+  if (!active && step.kind === "stream") return "Generated";
   if (step.kind === "tool" && step.title) {
     return step.title.replace(/…\s*$/u, "").trim() || COMPACT_MAIN.tool;
   }
@@ -143,7 +147,7 @@ function StepRow({
   compact: boolean;
 }) {
   const responding = isResponding(step, isLast, active);
-  const main = mainLineText(step, compact);
+  const main = mainLineText(step, compact, active);
   const body = bodyLineText(step, compact);
 
   const isError = step.kind === "error" || (step.kind === "tool" && step.phase === "done" && step.ok === false);
