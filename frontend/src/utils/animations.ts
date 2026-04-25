@@ -1,7 +1,9 @@
+import type { Variants } from "framer-motion";
+
 /**
  * Message appearance animation - slide in from right + fade
  */
-export const messageVariants = {
+export const messageVariants: Variants = {
   hidden: { opacity: 0, y: 10, x: 20 },
   visible: {
     opacity: 1,
@@ -22,7 +24,7 @@ export const messageVariants = {
 /**
  * Tool result expand animation
  */
-export const expandVariants = {
+export const expandVariants: Variants = {
   hidden: { opacity: 0, height: 0, marginBottom: 0 },
   visible: {
     opacity: 1,
@@ -44,7 +46,7 @@ export const expandVariants = {
 /**
  * Plot/Image fade-in animation
  */
-export const imageVariants = {
+export const imageVariants: Variants = {
   hidden: { opacity: 0 },
   visible: {
     opacity: 1,
@@ -58,7 +60,7 @@ export const imageVariants = {
 /**
  * Activity timeline step animation
  */
-export const stepVariants = {
+export const stepVariants: Variants = {
   hidden: { opacity: 0, x: -8 },
   visible: (index: number) => ({
     opacity: 1,
@@ -74,7 +76,7 @@ export const stepVariants = {
 /**
  * Status badge/pill animation
  */
-export const badgeVariants = {
+export const badgeVariants: Variants = {
   initial: { scale: 0.8, opacity: 0 },
   animate: {
     scale: 1,
@@ -94,7 +96,7 @@ export const badgeVariants = {
 /**
  * Tooltip/Popover animation
  */
-export const popoverVariants = {
+export const popoverVariants: Variants = {
   hidden: { opacity: 0, scale: 0.95, y: -8 },
   visible: {
     opacity: 1,
@@ -116,7 +118,7 @@ export const popoverVariants = {
 /**
  * Error shake animation
  */
-export const shakeVariants = {
+export const shakeVariants: Variants = {
   shake: {
     x: [0, -10, 10, -10, 10, 0],
     transition: {
@@ -129,7 +131,7 @@ export const shakeVariants = {
 /**
  * Loading pulse animation (alternative to Tailwind animate-pulse)
  */
-export const pulseVariants = {
+export const pulseVariants: Variants = {
   pulse: {
     opacity: [1, 0.5, 1],
     transition: {
@@ -143,7 +145,7 @@ export const pulseVariants = {
 /**
  * Success checkmark animation
  */
-export const checkmarkVariants = {
+export const checkmarkVariants: Variants = {
   hidden: { scale: 0, opacity: 0 },
   visible: {
     scale: 1,
@@ -160,7 +162,7 @@ export const checkmarkVariants = {
 /**
  * Stagger container for lists
  */
-export const containerVariants = {
+export const containerVariants: Variants = {
   hidden: { opacity: 0 },
   visible: {
     opacity: 1,
