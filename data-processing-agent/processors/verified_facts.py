@@ -23,6 +23,11 @@ from processors.sampling_physics import (
 from processors.coverage_buckets import compute_coverage_buckets, slim_coverage_for_prompt
 from processors.descriptive import compute_descriptive_stats
 from processors.flatline import summarize_flatline
+from processors.change_point import compute_cusum_facts
+from processors.anomaly_attribution import (
+    build_anomaly_attribution,
+    slim_anomaly_attribution_for_prompt,
+)
 from processors.quality import detect_low_quality_readings
 from processors.quiet_baseline import summarize_quiet_flow_baseline
 from processors.reasoning_schema import build_reasoning_schema
@@ -90,6 +95,7 @@ def build_verified_facts(df: pd.DataFrame) -> Dict[str, Any]:
     out["quiet_flow_baseline"] = summarize_quiet_flow_baseline(ts, values, quality)
 
     out["flatline"] = summarize_flatline(values)
+    out["cusum_drift"] = compute_cusum_facts(ts, values)
     low_ratio = 0.22 if out["sampling_irregular"] else 0.30
     out["coverage_6h"] = compute_coverage_buckets(
         ts, interval_coverage, low_ratio_threshold=low_ratio
@@ -104,6 +110,11 @@ def build_verified_facts(df: pd.DataFrame) -> Dict[str, Any]:
     # Pipeline is not wired yet; stub keeps the output schema stable so
     # downstream consumers (report, orchestrator) can rely on the key.
     out["filter_applied"] = _filter_not_requested()
+
+    # Deterministic diagnostic interpretation: classify the dominant anomaly
+    # type after every processor signal is available. Reasoning schema and the
+    # LLM prompt treat this as the priority explanation anchor.
+    out["anomaly_attribution"] = build_anomaly_attribution(out)
 
     # Compact evidence/hypothesis/next_checks anchor derived from the same
     # facts above. Bounded in size (≤ 6 evidence, ≤ 3 hypotheses, ≤ 3 checks)
@@ -141,5 +152,9 @@ def slim_verified_facts_for_prompt(facts: Dict[str, Any]) -> Dict[str, Any]:
     fa = slim.get("filter_applied")
     if isinstance(fa, dict) and fa.get("state") == "not_requested":
         slim.pop("filter_applied", None)
+
+    attribution = slim.get("anomaly_attribution")
+    if isinstance(attribution, dict):
+        slim["anomaly_attribution"] = slim_anomaly_attribution_for_prompt(attribution)
 
     return slim

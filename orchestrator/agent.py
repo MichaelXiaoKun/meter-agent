@@ -29,6 +29,15 @@ _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 
 
 import httpx
 
+from config_workflow import (
+    PendingConfigAction,
+    clear_pending_actions_for_tests,
+    consume_pending_action,
+    create_pending_action,
+    get_pending_action,
+    user_scope_from_token,
+    validate_pending_action,
+)
 from llm import get_provider, LLMRateLimitError
 from llm.registry import MODEL_CATALOG, get_cheap_model
 
@@ -817,6 +826,7 @@ def _run_analyze_flow_with_progress(
                     anthropic_api_key=anthropic_api_key,
                     network_type=inputs.get("network_type"),
                     meter_timezone=inputs.get("meter_timezone"),
+                    analysis_mode=inputs.get("analysis_mode"),
                 )
             )
         except BaseException as e:
@@ -884,6 +894,141 @@ def _clip_activity(text: str, max_len: int) -> str:
     if len(s) <= max_len:
         return s
     return s[: max_len - 1] + "…"
+
+
+def _flow_report_excerpt_max_chars() -> int:
+    raw = os.environ.get("ORCHESTRATOR_FLOW_REPORT_EXCERPT_CHARS", "1800")
+    try:
+        n = int(raw)
+    except ValueError:
+        return 1800
+    return max(0, min(n, 6000))
+
+
+def _compact_report_excerpt(report: object) -> str | None:
+    if not isinstance(report, str):
+        return None
+    text = report.strip()
+    if not text:
+        return None
+    limit = _flow_report_excerpt_max_chars()
+    if limit <= 0:
+        return None
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    nl = cut.rfind("\n\n")
+    if nl > limit * 0.55:
+        cut = cut[:nl]
+    return cut.rstrip() + "\n\n…*(report excerpt truncated; use report_path for the full artifact)*"
+
+
+def _compact_analysis_metadata(meta: object) -> dict:
+    if not isinstance(meta, dict):
+        return {}
+    keep = (
+        "analysis_mode",
+        "requested_analysis_mode",
+        "mode_selection_reasons",
+        "fetch",
+        "report_path",
+    )
+    return {k: meta.get(k) for k in keep if meta.get(k) is not None}
+
+
+def _compact_download_artifacts(artifacts: object) -> list[dict]:
+    if not isinstance(artifacts, list):
+        return []
+    out: list[dict] = []
+    for item in artifacts:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("kind")
+        filename = item.get("filename")
+        if kind != "csv" or not isinstance(filename, str) or not filename.endswith(".csv"):
+            continue
+        clean = {
+            "kind": "csv",
+            "title": item.get("title") if isinstance(item.get("title"), str) else "Flow data CSV",
+            "filename": filename,
+        }
+        row_count = item.get("row_count")
+        if isinstance(row_count, int):
+            clean["row_count"] = row_count
+        url = item.get("url")
+        if isinstance(url, str) and url.startswith("/api/"):
+            clean["url"] = url
+        out.append(clean)
+    return out
+
+
+def _compact_flow_result_for_history(result: dict) -> dict:
+    """Bound the analyze_flow_data payload that is appended to LLM history."""
+    compact = {
+        "success": result.get("success"),
+        "error": result.get("error"),
+        "display_range": result.get("display_range"),
+        "plot_timezone": result.get("plot_timezone"),
+        "analysis_mode": result.get("analysis_mode"),
+        "report_truncated": result.get("report_truncated"),
+        "analysis_json_path": result.get("analysis_json_path"),
+        "report_path": result.get("report_path"),
+        "reasoning_schema": result.get("reasoning_schema"),
+        "analysis_details": result.get("analysis_details"),
+        "analysis_metadata": _compact_analysis_metadata(result.get("analysis_metadata")),
+    }
+    plot_paths = result.get("plot_paths")
+    if isinstance(plot_paths, list):
+        compact["plot_paths"] = plot_paths[:12]
+        if len(plot_paths) > 12:
+            compact["plot_paths_omitted"] = len(plot_paths) - 12
+    plot_summaries = result.get("plot_summaries")
+    if isinstance(plot_summaries, list):
+        compact["plot_summaries"] = plot_summaries[:12]
+        if len(plot_summaries) > 12:
+            compact["plot_summaries_omitted"] = len(plot_summaries) - 12
+    excerpt = _compact_report_excerpt(result.get("report"))
+    if excerpt:
+        compact["report_excerpt"] = excerpt
+    artifacts = _compact_download_artifacts(result.get("download_artifacts"))
+    if artifacts:
+        compact["download_artifacts"] = artifacts
+    return {k: v for k, v in compact.items() if v is not None}
+
+
+def _compact_tool_result_for_history(tool_name: str, result_dict: dict) -> dict:
+    """
+    Full tool results can be huge. SSE events and per-turn dedupe keep the full
+    dict, but persisted LLM history receives a bounded shape.
+    """
+    if tool_name == "analyze_flow_data":
+        return _compact_flow_result_for_history(result_dict)
+    if tool_name == "batch_analyze_flow":
+        compact = {
+            "success": result_dict.get("success"),
+            "error": result_dict.get("error"),
+            "display_range": result_dict.get("display_range"),
+            "failed_serials": result_dict.get("failed_serials"),
+        }
+        meters = []
+        for m in result_dict.get("meters", []):
+            if isinstance(m, dict):
+                meters.append(
+                    {
+                        "serial_number": m.get("serial_number"),
+                        **_compact_flow_result_for_history(m),
+                    }
+                )
+        compact["meters"] = meters
+        return {k: v for k, v in compact.items() if v is not None}
+    return result_dict
+
+
+def _compact_tool_result_json_for_history(tool_name: str, result_dict: dict) -> str:
+    return json.dumps(
+        _compact_tool_result_for_history(tool_name, result_dict),
+        default=str,
+    )
 
 
 def _coerce_tool_input(inp: object) -> dict:
@@ -970,6 +1115,360 @@ def _tool_activity_line(
     return None
 
 
+def _compact_signal(signal: object) -> dict | None:
+    if not isinstance(signal, dict):
+        return None
+    return {
+        k: signal.get(k)
+        for k in ("score", "level", "reliable", "snr", "rssi")
+        if signal.get(k) is not None
+    }
+
+
+def _compact_pipe_config(pipe_config: object) -> dict | None:
+    if not isinstance(pipe_config, dict):
+        return None
+    keep = (
+        "material",
+        "standard",
+        "nominal_size",
+        "pipe_size",
+        "inner_diameter_mm",
+        "outer_diameter_mm",
+        "wall_thickness_mm",
+        "transducer_angle",
+    )
+    return {k: pipe_config.get(k) for k in keep if pipe_config.get(k) is not None}
+
+
+def _cusum_adequacy_explanation(cusum: dict) -> str:
+    actual = cusum.get("actual_points")
+    target = cusum.get("target_min")
+    gap = cusum.get("gap_pct")
+    actual_s = f"{int(actual):,}" if isinstance(actual, (int, float)) else None
+    target_s = f"{int(target):,}" if isinstance(target, (int, float)) else None
+    gap_s = f"{round(float(gap), 1)}%" if isinstance(gap, (int, float)) else None
+    if cusum.get("skipped") is True or cusum.get("adequacy_ok") is False:
+        reason = str(cusum.get("adequacy_reason") or "not enough usable data")
+        bits = []
+        if actual_s and target_s:
+            bits.append(f"{actual_s} samples available, {target_s} required")
+        if gap_s:
+            bits.append(f"{gap_s} gaps")
+        suffix = f": {', '.join(bits)}" if bits else ""
+        return f"CUSUM was skipped because {reason}{suffix}."
+    bits = []
+    if actual_s and target_s:
+        bits.append(f"{actual_s} samples available, {target_s} required")
+    if gap_s:
+        bits.append(f"{gap_s} gaps")
+    suffix = f": {', '.join(bits)}" if bits else "."
+    return f"Data is sufficient for drift detection{suffix}"
+
+
+def _meter_context_from_result(tool_name: str, inp: dict, result: dict) -> dict | None:
+    serial = str(result.get("serial_number") or inp.get("serial_number") or "").strip()
+    ctx: dict = {"serial_number": serial} if serial else {}
+
+    if tool_name == "get_meter_profile":
+        profile = result.get("profile")
+        if isinstance(profile, dict):
+            ctx.update(
+                {
+                    "label": profile.get("label"),
+                    "network_type": result.get("network_type"),
+                    "timezone": profile.get("deviceTimeZone"),
+                    "installed": profile.get("installed"),
+                    "commissioned": profile.get("commissioned"),
+                    "active": profile.get("active"),
+                }
+            )
+        elif result.get("network_type"):
+            ctx["network_type"] = result.get("network_type")
+    elif tool_name == "check_meter_status":
+        status = result.get("status_data")
+        if isinstance(status, dict):
+            ctx.update(
+                {
+                    "serial_number": status.get("serial_number") or serial,
+                    "online": status.get("online"),
+                    "last_message_at": status.get("last_message_at"),
+                    "signal": _compact_signal(status.get("signal")),
+                    "pipe_config": _compact_pipe_config(status.get("pipe_config")),
+                }
+            )
+    elif tool_name in {"analyze_flow_data", "configure_meter_pipe", "set_transducer_angle_only"}:
+        if inp.get("network_type"):
+            ctx["network_type"] = inp.get("network_type")
+        if inp.get("meter_timezone"):
+            ctx["timezone"] = inp.get("meter_timezone")
+
+    clean = {k: v for k, v in ctx.items() if v is not None and v != ""}
+    return clean or None
+
+
+def _diagnostic_summary_from_result(tool_name: str, result: dict, event: dict) -> dict | None:
+    if tool_name == "check_meter_status":
+        status = result.get("status_data")
+        if not isinstance(status, dict):
+            return None
+        return {
+            "kind": "status",
+            "online": status.get("online"),
+            "last_message_at": status.get("last_message_at"),
+            "communication_status": (
+                status.get("staleness", {}).get("communication_status")
+                if isinstance(status.get("staleness"), dict)
+                else None
+            ),
+            "signal": _compact_signal(status.get("signal")),
+            "pipe_config": _compact_pipe_config(status.get("pipe_config")),
+            "next_actions": [
+                "Analyze recent flow" if status.get("online") is not False else "Check connectivity",
+                "Review pipe setup",
+            ],
+        }
+
+    if tool_name != "analyze_flow_data":
+        return None
+
+    details = event.get("analysis_details")
+    cusum = details.get("cusum_drift") if isinstance(details, dict) else None
+    attribution = details.get("attribution") if isinstance(details, dict) else None
+    summary: dict = {
+        "kind": "flow",
+        "range": result.get("display_range") or event.get("display_range"),
+        "plot_count": len(result.get("plot_paths") or []),
+        "next_actions": ["Check current meter health", "Compare with a nearby window"],
+    }
+    plot_summaries = result.get("plot_summaries")
+    if isinstance(plot_summaries, list):
+        for item in plot_summaries:
+            if not isinstance(item, dict):
+                continue
+            caption = item.get("caption")
+            if item.get("plot_type") != "diagnostic_timeline" or not isinstance(caption, dict):
+                continue
+            markers = caption.get("diagnostic_markers")
+            if isinstance(markers, list):
+                summary["plot_explanation"] = {
+                    "summary": caption.get("summary"),
+                    "markers": markers,
+                    "next_actions": caption.get("next_actions") if isinstance(caption.get("next_actions"), list) else [],
+                }
+            break
+    if isinstance(attribution, dict):
+        summary["attribution"] = attribution
+        checks = attribution.get("next_checks")
+        if isinstance(checks, list) and checks:
+            summary["next_actions"] = [str(item) for item in checks if item][:4]
+    if isinstance(cusum, dict):
+        skipped = cusum.get("skipped") is True or cusum.get("adequacy_ok") is False
+        summary["adequacy"] = {
+            "ok": cusum.get("adequacy_ok"),
+            "reason": cusum.get("adequacy_reason"),
+            "actual_points": cusum.get("actual_points"),
+            "target_min": cusum.get("target_min"),
+            "gap_pct": cusum.get("gap_pct"),
+            "explanation": _cusum_adequacy_explanation(cusum),
+        }
+        summary["drift"] = {
+            "cusum_ran": not skipped,
+            "direction": None if skipped else (cusum.get("drift_detected") or "none"),
+            "skipped": skipped,
+            "reason": cusum.get("adequacy_reason") if skipped else None,
+        }
+        summary["alarms"] = {
+            "up": cusum.get("positive_alarm_count"),
+            "down": cusum.get("negative_alarm_count"),
+            "first_alarm_timestamp": cusum.get("first_alarm_timestamp"),
+        }
+        if skipped and not isinstance(attribution, dict):
+            summary["next_actions"] = ["Widen the analysis window", "Check meter connectivity"]
+        elif (
+            not isinstance(attribution, dict)
+            and cusum.get("drift_detected")
+            and cusum.get("drift_detected") != "none"
+        ):
+            summary["next_actions"] = ["Check signal quality now", "Compare against the previous day"]
+    return summary
+
+
+def _current_values_for_config_confirmation(tool_name: str, inp: dict, token: str) -> dict | None:
+    serial = str(inp.get("serial_number") or "").strip()
+    if not serial:
+        return None
+    profile = get_meter_profile(serial, token)
+    current: dict = {
+        "serial_number": serial,
+        "profile_success": profile.get("success"),
+        "network_type": profile.get("network_type"),
+        "transducer_angle_options": profile.get("transducer_angle_options"),
+        "change_type": (
+            "full_pipe_configuration"
+            if tool_name == "configure_meter_pipe"
+            else "transducer_angle_only"
+        ),
+    }
+    prof = profile.get("profile")
+    if isinstance(prof, dict):
+        current.update(
+            {
+                "label": prof.get("label"),
+                "timezone": prof.get("deviceTimeZone"),
+                "model": prof.get("model"),
+                "active": prof.get("active"),
+            }
+        )
+    if not profile.get("success"):
+        current["profile_error"] = profile.get("error")
+    return current
+
+
+def _confirmation_required_payload(
+    *,
+    conversation_id: str,
+    user_scope: str,
+    tool_name: str,
+    inp: dict,
+    token: str,
+) -> tuple[dict, dict]:
+    current_values = _current_values_for_config_confirmation(tool_name, inp, token)
+    action = create_pending_action(
+        conversation_id=conversation_id,
+        user_scope=user_scope,
+        tool_name=tool_name,
+        inputs=inp,
+        current_values=current_values,
+    )
+    workflow = action.as_workflow()
+    workflow["message"] = "Review and confirm before any device configuration is sent."
+    workflow["risk"] = "This will send configuration to the physical meter. No change has been made yet."
+    meter_context = {
+        "serial_number": str(inp.get("serial_number") or ""),
+        "network_type": (current_values or {}).get("network_type"),
+        "label": (current_values or {}).get("label"),
+        "timezone": (current_values or {}).get("timezone"),
+    }
+    return workflow, {k: v for k, v in meter_context.items() if v}
+
+
+def _confirmation_prompt(workflow: dict) -> str:
+    serial = str(workflow.get("serial_number") or "the meter")
+    proposed = workflow.get("proposed_values") if isinstance(workflow.get("proposed_values"), dict) else {}
+    label = ""
+    current = workflow.get("current_values") if isinstance(workflow.get("current_values"), dict) else {}
+    if isinstance(current, dict) and current.get("label"):
+        label = f" ({current.get('label')})"
+    if workflow.get("tool") == "set_transducer_angle_only":
+        change = f"transducer angle to {proposed.get('transducer_angle')}"
+    else:
+        parts = [
+            proposed.get("pipe_material"),
+            proposed.get("pipe_standard"),
+            proposed.get("pipe_size"),
+            f"angle {proposed.get('transducer_angle')}" if proposed.get("transducer_angle") else None,
+        ]
+        change = " / ".join(str(p) for p in parts if p)
+    return (
+        f"I prepared a configuration change for meter {serial}{label}: {change}.\n\n"
+        "Choose Yes to apply it, No to cancel it, or type another value."
+    )
+
+
+def _status_line_from_status_result(result: dict) -> str:
+    status = result.get("status_data")
+    if not isinstance(status, dict):
+        return "Status verification ran, but no structured status summary was returned."
+    online = status.get("online")
+    online_s = "online" if online is True else "offline" if online is False else "unknown online state"
+    signal = status.get("signal")
+    signal_s = ""
+    if isinstance(signal, dict):
+        level = signal.get("level")
+        score = signal.get("score")
+        if level is not None and score is not None:
+            signal_s = f", signal {level} ({score})"
+        elif level is not None:
+            signal_s = f", signal {level}"
+    last = status.get("last_message_at")
+    last_s = f", last message {last}" if last else ""
+    return f"Verification: meter is {online_s}{signal_s}{last_s}."
+
+
+def _emit_tool_result_event(
+    *,
+    emit,
+    tool_name: str,
+    inp: dict,
+    result_dict: dict,
+    ok: bool,
+    from_cache: bool = False,
+    config_workflow: dict | None = None,
+) -> dict:
+    event: dict = {"type": "tool_result", "tool": tool_name, "success": ok}
+    if from_cache:
+        event["deduped"] = True
+    dr = result_dict.get("display_range")
+    if isinstance(dr, str) and dr.strip():
+        event["display_range"] = dr.strip()
+    if isinstance(result_dict.get("report_truncated"), bool):
+        event["report_truncated"] = result_dict.get("report_truncated")
+    details = result_dict.get("analysis_details")
+    if isinstance(details, dict) and details:
+        event["analysis_details"] = details
+    metadata = result_dict.get("analysis_metadata")
+    if isinstance(metadata, dict) and metadata:
+        event["analysis_metadata"] = metadata
+    if result_dict.get("analysis_mode"):
+        event["analysis_mode"] = result_dict.get("analysis_mode")
+    artifacts = result_dict.get("download_artifacts")
+    if isinstance(artifacts, list) and artifacts:
+        event["download_artifacts"] = artifacts
+    activity = _tool_activity_line(tool_name, inp, result_dict, ok=ok)
+    if activity:
+        event["tool_activity"] = activity
+    meter_context = _meter_context_from_result(tool_name, inp, result_dict)
+    if meter_context:
+        event["meter_context"] = meter_context
+    diagnostic = _diagnostic_summary_from_result(tool_name, result_dict, event)
+    if diagnostic:
+        event["diagnostic_summary"] = diagnostic
+    if config_workflow:
+        event["config_workflow"] = config_workflow
+    if not ok:
+        emsg = result_dict.get("error")
+        if emsg not in (None, ""):
+            event["message"] = str(emsg)[:500]
+    if tool_name == "analyze_flow_data":
+        event["plot_paths"] = result_dict.get("plot_paths", [])
+        ptz = result_dict.get("plot_timezone")
+        if ptz:
+            event["plot_timezone"] = ptz
+        sums = result_dict.get("plot_summaries")
+        if sums:
+            event["plot_summaries"] = sums
+        aj = result_dict.get("analysis_json_path")
+        if aj:
+            event["analysis_json_path"] = aj
+        rp = result_dict.get("report_path")
+        if rp:
+            event["report_path"] = rp
+    elif tool_name == "batch_analyze_flow":
+        all_paths: list[str] = []
+        all_summaries: list[dict] = []
+        for m in result_dict.get("meters", []):
+            all_paths.extend(m.get("plot_paths", []))
+            all_summaries.extend(m.get("plot_summaries", []))
+        if all_paths:
+            event["plot_paths"] = all_paths
+        if all_summaries:
+            event["plot_summaries"] = all_summaries
+        event["meters"] = result_dict.get("meters", [])
+    emit(event)
+    return event
+
+
 def _dispatch(
     name: str,
     inputs: dict,
@@ -1023,6 +1522,7 @@ def _dispatch(
             anthropic_api_key=anthropic_api_key,
             network_type=inputs.get("network_type"),
             meter_timezone=inputs.get("meter_timezone"),
+            analysis_mode=inputs.get("analysis_mode"),
         )
 
     elif name == "batch_analyze_flow":
@@ -1067,6 +1567,8 @@ def _dispatch_tool_batch(
     token: str,
     client_timezone: str | None,
     anthropic_api_key: str | None,
+    conversation_id: str,
+    user_scope: str,
     dedupe_cache: dict,
     counters: dict,
     emit,
@@ -1083,13 +1585,87 @@ def _dispatch_tool_batch(
         and not any(tc.name in _SERIAL_ONLY_TOOLS for tc in tool_calls)
     )
 
+    # Write tools are guarded by an action-time confirmation card. If the model
+    # proposes any write in this batch, stop at the first write and do not run
+    # additional read tools from the same tool_use response.
+    for write_index, tc in enumerate(tool_calls):
+        if tc.name not in _WRITE_TOOLS:
+            continue
+        inp_d = _coerce_tool_input(tc.input)
+        emit({"type": "tool_call", "tool": tc.name, "input": inp_d})
+        counters["tool_calls"] += 1
+        workflow, meter_context = _confirmation_required_payload(
+            conversation_id=conversation_id,
+            user_scope=user_scope,
+            tool_name=tc.name,
+            inp=inp_d,
+            token=token,
+        )
+        emit(
+            {
+                "type": "config_confirmation_required",
+                "tool": tc.name,
+                "input": inp_d,
+                "config_workflow": workflow,
+                "meter_context": meter_context,
+            }
+        )
+        result_json = json.dumps(
+            {
+                "success": True,
+                "requires_confirmation": True,
+                "confirmation_required": True,
+                "action_id": workflow.get("action_id"),
+                "config_workflow": workflow,
+                "message": "Configuration change is pending confirmation. No device changes were sent.",
+            },
+            default=str,
+        )
+        hidden_results: list[dict] = []
+        for j, other in enumerate(tool_calls):
+            if j == write_index:
+                content = result_json
+            else:
+                content = json.dumps(
+                    {
+                        "success": True,
+                        "skipped_due_to_confirmation": True,
+                        "message": (
+                            "Skipped because a configuration change is waiting for user confirmation. "
+                            "No additional tools were run."
+                        ),
+                    },
+                    default=str,
+                )
+            hidden_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": other.id,
+                    "content": content,
+                }
+            )
+        return hidden_results, workflow
+
     # Phase 1: cache check + emit tool_call events — always serial and ordered.
     call_infos: list[tuple] = []
+    batch_owner_by_key: dict[str, int] = {}
     for tc in tool_calls:
         inp_d = _coerce_tool_input(tc.input)
         dedupe_key = _per_turn_tool_dedupe_key(tc.name, inp_d)
-        from_cache = bool(dedupe_key and dedupe_key in dedupe_cache)
-        cached_json: str | None = dedupe_cache[dedupe_key][0] if from_cache else None
+        duplicate_of = (
+            batch_owner_by_key.get(dedupe_key)
+            if dedupe_key
+            else None
+        )
+        from_cache = bool(
+            (dedupe_key and dedupe_key in dedupe_cache)
+            or duplicate_of is not None
+        )
+        cached_json: str | None = (
+            dedupe_cache[dedupe_key][0]
+            if dedupe_key and dedupe_key in dedupe_cache
+            else None
+        )
         call_ev: dict = {"type": "tool_call", "tool": tc.name, "input": inp_d}
         if from_cache:
             call_ev["deduped"] = True
@@ -1101,7 +1677,10 @@ def _dispatch_tool_batch(
             )
         emit(call_ev)
         counters["tool_calls"] += 1
-        call_infos.append((tc, inp_d, dedupe_key, from_cache, cached_json))
+        idx = len(call_infos)
+        if dedupe_key and duplicate_of is None:
+            batch_owner_by_key[dedupe_key] = idx
+        call_infos.append((tc, inp_d, dedupe_key, from_cache, cached_json, duplicate_of))
 
     # Phase 2: execute — each slot writes to its own index (GIL-safe).
     exec_results: list = [None] * len(call_infos)
@@ -1130,22 +1709,26 @@ def _dispatch_tool_batch(
                 _end["error"] = str(result_dict.get("error") or "")[:500]
         exec_results[idx] = (result_json, result_dict)
 
-    if use_parallel:
+    has_batch_duplicates = any(info[5] is not None for info in call_infos)
+    if use_parallel and not has_batch_duplicates:
         n = min(len(call_infos), _MAX_PARALLEL_TOOL_WORKERS)
         with ThreadPoolExecutor(max_workers=n) as pool:
             futs = [
                 pool.submit(_execute, i, tc, inp_d, fc, cj)
-                for i, (tc, inp_d, _, fc, cj) in enumerate(call_infos)
+                for i, (tc, inp_d, _, fc, cj, _) in enumerate(call_infos)
             ]
             for f in as_completed(futs):
                 f.result()
     else:
-        for i, (tc, inp_d, _, fc, cj) in enumerate(call_infos):
+        for i, (tc, inp_d, _, fc, cj, duplicate_of) in enumerate(call_infos):
+            if duplicate_of is not None:
+                exec_results[i] = exec_results[duplicate_of]
+                continue
             _execute(i, tc, inp_d, fc, cj)
 
     # Phase 3: cache update, write-invalidation, emit tool_result — serial and ordered.
     tool_results: list[dict] = []
-    for i, (tc, inp_d, dedupe_key, from_cache, _) in enumerate(call_infos):
+    for i, (tc, inp_d, dedupe_key, from_cache, _, _) in enumerate(call_infos):
         result_json, result_dict = exec_results[i]
         ok = _sse_tool_succeeded(result_dict)
 
@@ -1167,46 +1750,110 @@ def _dispatch_tool_batch(
                     round=round_ix,
                 )
 
-        event: dict = {"type": "tool_result", "tool": tc.name, "success": ok}
-        if from_cache:
-            event["deduped"] = True
-        activity = _tool_activity_line(tc.name, inp_d, result_dict, ok=ok)
-        if activity:
-            event["tool_activity"] = activity
-        if not ok:
-            emsg = result_dict.get("error")
-            if emsg not in (None, ""):
-                event["message"] = str(emsg)[:500]
-        if tc.name == "analyze_flow_data":
-            event["plot_paths"] = result_dict.get("plot_paths", [])
-            ptz = result_dict.get("plot_timezone")
-            if ptz:
-                event["plot_timezone"] = ptz
-            sums = result_dict.get("plot_summaries")
-            if sums:
-                event["plot_summaries"] = sums
-            aj = result_dict.get("analysis_json_path")
-            if aj:
-                event["analysis_json_path"] = aj
-        elif tc.name == "batch_analyze_flow":
-            all_paths: list[str] = []
-            all_summaries: list[dict] = []
-            for m in result_dict.get("meters", []):
-                all_paths.extend(m.get("plot_paths", []))
-                all_summaries.extend(m.get("plot_summaries", []))
-            if all_paths:
-                event["plot_paths"] = all_paths
-            if all_summaries:
-                event["plot_summaries"] = all_summaries
-            event["meters"] = result_dict.get("meters", [])
-        emit(event)
+        workflow = result_dict.get("config_workflow")
+        _emit_tool_result_event(
+            emit=emit,
+            tool_name=tc.name,
+            inp=inp_d,
+            result_dict=result_dict,
+            ok=ok,
+            from_cache=from_cache,
+            config_workflow=workflow if isinstance(workflow, dict) else None,
+        )
         tool_results.append({
             "type": "tool_result",
             "tool_use_id": tc.id,
-            "content": result_json,
+            "content": _compact_tool_result_json_for_history(tc.name, result_dict),
         })
 
-    return tool_results
+    return tool_results, None
+
+
+def _execute_confirmed_config_action(
+    *,
+    action: PendingConfigAction,
+    messages: list,
+    token: str,
+    client_timezone: str | None,
+    anthropic_api_key: str | None,
+    emit,
+) -> tuple[str, bool]:
+    tool_name = action.tool_name
+    inp = dict(action.inputs)
+    workflow_base = action.as_workflow(status="confirmed")
+    emit({"type": "tool_call", "tool": tool_name, "input": inp})
+    result_json = _dispatch(
+        tool_name,
+        inp,
+        token,
+        client_timezone=client_timezone,
+        anthropic_api_key=anthropic_api_key,
+    )
+    result = json.loads(result_json)
+    ok = _sse_tool_succeeded(result)
+    workflow_status = "executed" if ok else "failed"
+    workflow = {**workflow_base, "status": workflow_status}
+    _emit_tool_result_event(
+        emit=emit,
+        tool_name=tool_name,
+        inp=inp,
+        result_dict=result,
+        ok=ok,
+        config_workflow=workflow,
+    )
+    serial = str(inp.get("serial_number") or "").strip()
+    if not ok:
+        msg = (
+            f"I could not apply the confirmed configuration for meter {serial or 'the meter'}. "
+            f"{result.get('error') or 'The configuration tool reported a failure.'}"
+        )
+        messages.append({"role": "assistant", "content": [{"type": "text", "text": msg}]})
+        return msg, False
+
+    verification_line = ""
+    verification: dict | None = None
+    if serial:
+        status_inp = {"serial_number": serial}
+        emit({"type": "tool_call", "tool": "check_meter_status", "input": status_inp})
+        status_json = _dispatch(
+            "check_meter_status",
+            status_inp,
+            token,
+            client_timezone=client_timezone,
+            anthropic_api_key=anthropic_api_key,
+        )
+        status_result = json.loads(status_json)
+        status_ok = _sse_tool_succeeded(status_result)
+        verification = {
+            **workflow_base,
+            "status": "verified" if status_ok else "verification_failed",
+            "verification": status_result.get("status_data"),
+        }
+        _emit_tool_result_event(
+            emit=emit,
+            tool_name="check_meter_status",
+            inp=status_inp,
+            result_dict=status_result,
+            ok=status_ok,
+            config_workflow=verification,
+        )
+        verification_line = _status_line_from_status_result(status_result)
+
+    if tool_name == "configure_meter_pipe":
+        changed = (
+            f"{inp.get('pipe_material')} {inp.get('pipe_standard')} {inp.get('pipe_size')}, "
+            f"angle {inp.get('transducer_angle')}"
+        )
+        msg = f"Confirmed. I applied the pipe configuration for meter {serial}: {changed}."
+    else:
+        msg = (
+            f"Confirmed. I set the transducer angle for meter {serial} "
+            f"to {inp.get('transducer_angle')}."
+        )
+    if verification_line:
+        msg = f"{msg}\n\n{verification_line}"
+    messages.append({"role": "assistant", "content": [{"type": "text", "text": msg}]})
+    return msg, False
 
 
 def run_turn(
@@ -1217,6 +1864,11 @@ def run_turn(
     client_timezone: str | None = None,
     anthropic_api_key: str | None = None,
     model: str | None = None,
+    conversation_id: str = "default",
+    user_scope: str | None = None,
+    confirmed_action_id: str | None = None,
+    cancelled_action_id: str | None = None,
+    superseded_action_id: str | None = None,
 ) -> str:
     """
     Process one conversational turn.
@@ -1254,17 +1906,24 @@ def run_turn(
         if on_event:
             on_event(event)
 
+    effective_user_scope = user_scope or user_scope_from_token(token)
     api_key_override = _resolve_api_key_override(anthropic_api_key)
     # Resolve once; subsequent iterations / rate-limit retries all use the
     # same model so a user-picked model turn doesn't silently downgrade.
     active_model = resolve_orchestrator_model(model)
-    provider = get_provider(active_model, api_key_override=api_key_override)
     cheap_model = get_cheap_model(active_model)
     model_ctx = int(MODEL_CATALOG.get(active_model, {}).get("context_window", 200_000))
     history_replaced = False
-    active_tools, _intent_label, _intent_src = _resolve_routed_tools(
-        provider, cheap_model, messages, emit=_emit
-    )
+    provider = None
+    if confirmed_action_id or cancelled_action_id:
+        active_tools = []
+        _intent_label = "config"
+        _intent_src = "confirmed_action" if confirmed_action_id else "cancelled_action"
+    else:
+        provider = get_provider(active_model, api_key_override=api_key_override)
+        active_tools, _intent_label, _intent_src = _resolve_routed_tools(
+            provider, cheap_model, messages, emit=_emit
+        )
     max_rounds = _max_tool_rounds_per_turn()
     # key -> (result_json, serial_number_tag | None). The tag lets
     # :func:`_invalidate_dedupe_for_write` drop cached reads for a serial that
@@ -1294,6 +1953,116 @@ def run_turn(
         return reply, replaced
 
     try:
+      if confirmed_action_id:
+        action = consume_pending_action(
+            conversation_id,
+            effective_user_scope,
+            confirmed_action_id,
+        )
+        if action is None:
+            msg = (
+                "I could not find that pending configuration action, or it expired. "
+                "Please review the configuration values again before applying them."
+            )
+            messages.append({"role": "assistant", "content": [{"type": "text", "text": msg}]})
+            _emit(
+                {
+                    "type": "error",
+                    "error": "Pending configuration action was not found or expired.",
+                }
+            )
+            return _finish("config_confirmation_missing", msg, history_replaced)
+        ok, err = validate_pending_action(
+            action,
+            tool_name=action.tool_name,
+            inputs=dict(action.inputs),
+        )
+        if not ok:
+            msg = err or "The pending configuration action could not be validated."
+            messages.append({"role": "assistant", "content": [{"type": "text", "text": msg}]})
+            _emit({"type": "error", "error": msg})
+            return _finish("config_confirmation_invalid", msg, history_replaced)
+        reply, replaced = _execute_confirmed_config_action(
+            action=action,
+            messages=messages,
+            token=token,
+            client_timezone=client_timezone,
+            anthropic_api_key=anthropic_api_key,
+            emit=_emit,
+        )
+        return _finish("config_confirmed", reply, replaced)
+
+      if cancelled_action_id:
+        action = consume_pending_action(
+            conversation_id,
+            effective_user_scope,
+            cancelled_action_id,
+        )
+        if action is None:
+            msg = (
+                "I could not find that pending configuration action, or it already expired. "
+                "No device changes were sent."
+            )
+            messages.append({"role": "assistant", "content": [{"type": "text", "text": msg}]})
+            _emit(
+                {
+                    "type": "config_confirmation_cancelled",
+                    "config_workflow": {
+                        "action_id": cancelled_action_id,
+                        "status": "cancel_missing",
+                    },
+                    "message": msg,
+                }
+            )
+            return _finish("config_cancel_missing", msg, history_replaced)
+        workflow = action.as_workflow(status="cancelled")
+        workflow["message"] = "Cancelled. No device changes were sent."
+        msg = "Cancelled. No device changes were sent."
+        messages.append({"role": "assistant", "content": [{"type": "text", "text": msg}]})
+        _emit(
+            {
+                "type": "config_confirmation_cancelled",
+                "tool": action.tool_name,
+                "config_workflow": workflow,
+                "message": msg,
+            }
+        )
+        return _finish("config_cancelled", msg, history_replaced)
+
+      if superseded_action_id:
+        action = consume_pending_action(
+            conversation_id,
+            effective_user_scope,
+            superseded_action_id,
+        )
+        if action is None:
+            msg = (
+                "I could not find the pending configuration action you wanted to replace, "
+                "or it already expired. Please review the configuration values again."
+            )
+            messages.append({"role": "assistant", "content": [{"type": "text", "text": msg}]})
+            _emit(
+                {
+                    "type": "config_confirmation_superseded",
+                    "config_workflow": {
+                        "action_id": superseded_action_id,
+                        "status": "supersede_missing",
+                    },
+                    "message": msg,
+                }
+            )
+            return _finish("config_supersede_missing", msg, history_replaced)
+        workflow = action.as_workflow(status="superseded")
+        workflow["message"] = "Replaced by your new request. No device change was sent."
+        _emit(
+            {
+                "type": "config_confirmation_superseded",
+                "tool": action.tool_name,
+                "config_workflow": workflow,
+                "message": workflow["message"],
+            }
+        )
+
       while True:
         round_ix += 1
         if round_ix > max_rounds:
@@ -1436,17 +2205,23 @@ def run_turn(
 
         if response.stop_reason == "tool_use":
             messages.append({"role": "assistant", "content": response.assistant_content})
-            tool_results = _dispatch_tool_batch(
+            tool_results, pending_workflow = _dispatch_tool_batch(
                 response.tool_calls,
                 token=token,
                 client_timezone=client_timezone,
                 anthropic_api_key=anthropic_api_key,
+                conversation_id=conversation_id,
+                user_scope=effective_user_scope,
                 dedupe_cache=dedupe_cache,
                 counters=_counters,
                 emit=_emit,
                 round_ix=round_ix,
             )
             messages.append({"role": "user", "content": tool_results})
+            if pending_workflow:
+                reply = _confirmation_prompt(pending_workflow)
+                messages.append({"role": "assistant", "content": [{"type": "text", "text": reply}]})
+                return _finish("config_confirmation_required", reply, history_replaced)
 
         else:
             break

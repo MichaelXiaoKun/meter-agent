@@ -137,6 +137,25 @@ def _ensure_ready() -> None:
                 ALTER TABLE conversations
                     ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT ''
             """)
+            cur.execute("""
+                ALTER TABLE conversations
+                    ADD COLUMN IF NOT EXISTS context_summary TEXT
+            """)
+            cur.execute("""
+                ALTER TABLE conversations
+                    ADD COLUMN IF NOT EXISTS context_summary_covers INTEGER DEFAULT 0
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS shares (
+                    token            TEXT   PRIMARY KEY,
+                    conversation_id  TEXT   NOT NULL,
+                    owner_user_id    TEXT   NOT NULL,
+                    title            TEXT   NOT NULL DEFAULT '',
+                    messages_json    TEXT   NOT NULL,
+                    created_at       BIGINT NOT NULL,
+                    revoked          INTEGER NOT NULL DEFAULT 0
+                )
+            """)
     else:
         with _conn() as (conn, cur):
             cur.executescript("""
@@ -154,15 +173,27 @@ def _ensure_ready() -> None:
                     content         TEXT    NOT NULL,
                     created_at      INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS shares (
+                    token            TEXT    PRIMARY KEY,
+                    conversation_id  TEXT    NOT NULL,
+                    owner_user_id    TEXT    NOT NULL,
+                    title            TEXT    NOT NULL DEFAULT '',
+                    messages_json    TEXT    NOT NULL,
+                    created_at      INTEGER NOT NULL,
+                    revoked          INTEGER NOT NULL DEFAULT 0
+                );
             """)
-            # Migration: add user_id if an older schema exists (SQLite ALTER TABLE
+            # Migration: add columns if an older schema exists (SQLite ALTER TABLE
             # doesn't support IF NOT EXISTS, so we catch the error)
-            try:
-                cur.execute(
-                    "ALTER TABLE conversations ADD COLUMN user_id TEXT NOT NULL DEFAULT ''"
-                )
-            except Exception:
-                pass  # column already exists
+            for _col_sql in (
+                "ALTER TABLE conversations ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE conversations ADD COLUMN context_summary TEXT",
+                "ALTER TABLE conversations ADD COLUMN context_summary_covers INTEGER DEFAULT 0",
+            ):
+                try:
+                    cur.execute(_col_sql)
+                except Exception:
+                    pass  # column already exists
 
     _bootstrapped[key] = True
 
@@ -344,6 +375,30 @@ def append_messages(conversation_id: str, messages: list[dict]) -> None:
         )
 
 
+def get_api_context_info(conversation_id: str) -> tuple[str | None, int]:
+    """Return (context_summary, context_summary_covers) cached from the last compression."""
+    _ensure_ready()
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q("SELECT context_summary, context_summary_covers FROM conversations WHERE id = ?"),
+            (conversation_id,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None, 0
+    return row["context_summary"], int(row["context_summary_covers"] or 0)
+
+
+def set_api_context_info(conversation_id: str, summary: str, covers: int) -> None:
+    """Persist a compressed context summary so the next turn skips re-compression."""
+    _ensure_ready()
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q("UPDATE conversations SET context_summary = ?, context_summary_covers = ? WHERE id = ?"),
+            (summary, covers, conversation_id),
+        )
+
+
 def _plot_png_basenames_from_content(content: Any) -> set[str]:
     """Extract plot PNG basenames from tool_result blocks in a message content value."""
     out: set[str] = set()
@@ -370,10 +425,16 @@ def _plot_png_basenames_from_content(content: Any) -> set[str]:
 
 
 def _plot_filename_referenced_outside_conversation(cur, filename: str, exclude_id: str) -> bool:
-    """True if any message in a *different* conversation references *filename* (content substring)."""
+    """True if *filename* appears in other conversations' messages or in any non-revoked share."""
     cur.execute(
         _q("SELECT 1 FROM messages WHERE conversation_id != ? AND content LIKE ? LIMIT 1"),
         (exclude_id, f"%{filename}%"),
+    )
+    if cur.fetchone() is not None:
+        return True
+    cur.execute(
+        _q("SELECT 1 FROM shares WHERE messages_json LIKE ? AND revoked = 0 LIMIT 1"),
+        (f"%{filename}%",),
     )
     return cur.fetchone() is not None
 
@@ -429,3 +490,78 @@ def delete_conversation(conversation_id: str, user_id: str) -> None:
         )
 
     _unlink_orphan_plot_files(orphan_pngs)
+
+
+# ---------------------------------------------------------------------------
+# Public share links (read-only snapshot)
+# ---------------------------------------------------------------------------
+
+
+def create_share(conversation_id: str, user_id: str) -> str:
+    """
+    Snapshot the conversation into a new share row. Verifies *user_id* owns
+    the conversation. Returns a 32-hex *token* for public URLs.
+    """
+    _ensure_ready()
+    messages = load_messages(conversation_id)
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q("SELECT id, title FROM conversations WHERE id = ? AND user_id = ?"),
+            (conversation_id, user_id),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError("Conversation not found or access denied")
+        title_raw = row["title"]
+        title = (title_raw or "") if title_raw is not None else ""
+    token = uuid.uuid4().hex
+    now = int(time.time())
+    messages_json = json.dumps(messages, default=str)
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q(
+                "INSERT INTO shares (token, conversation_id, owner_user_id, title, "
+                "messages_json, created_at, revoked) VALUES (?, ?, ?, ?, ?, ?, 0)"
+            ),
+            (token, conversation_id, user_id, title, messages_json, now),
+        )
+    return token
+
+
+def load_share(token: str) -> dict[str, Any] | None:
+    """
+    Return ``{title, messages, revoked}`` for *token*, or ``None`` if missing.
+    """
+    _ensure_ready()
+    t = (token or "").strip()
+    if not t or len(t) < 8:
+        return None
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q("SELECT title, messages_json, revoked FROM shares WHERE token = ?"),
+            (t,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    revoked = int(row["revoked"])
+    return {
+        "title": row["title"] or "",
+        "messages": json.loads(row["messages_json"]),
+        "revoked": bool(revoked),
+    }
+
+
+def revoke_share(token: str, user_id: str) -> bool:
+    """Set *revoked* on a share if *user_id* is the owner. Returns whether a row was updated."""
+    _ensure_ready()
+    t = (token or "").strip()
+    if not t:
+        return False
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q("UPDATE shares SET revoked = 1 WHERE token = ? AND owner_user_id = ?"),
+            (t, user_id),
+        )
+        n = cur.rowcount
+    return bool(n and n > 0)

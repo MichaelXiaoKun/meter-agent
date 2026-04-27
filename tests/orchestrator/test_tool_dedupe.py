@@ -21,6 +21,9 @@ _ORCH_DIR = str(_ORCH_PATH.parent)
 
 def _load_agent():
     sys.path.insert(0, _ORCH_DIR)
+    for name in list(sys.modules):
+        if name == "processors" or name.startswith("processors."):
+            sys.modules.pop(name, None)
     name = "meter_orchestrator_agent_dedupe_tests"
     spec = importlib.util.spec_from_file_location(name, _ORCH_PATH)
     assert spec is not None and spec.loader is not None
@@ -153,7 +156,7 @@ def test_read_only_tool_is_deduped_within_one_turn(
     assert hits[0]["serial_number"] == "BB1"
 
 
-def test_write_tools_are_never_deduped(
+def test_write_tools_require_confirmation_before_dispatch(
     event_log_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     orch = _load_agent()
@@ -166,6 +169,16 @@ def test_write_tools_are_never_deduped(
         return json.dumps({"success": True})
 
     monkeypatch.setattr(orch, "_dispatch", fake_dispatch)
+    monkeypatch.setattr(
+        orch,
+        "get_meter_profile",
+        lambda serial, token: {
+            "success": True,
+            "network_type": "wifi",
+            "profile": {"label": "Test meter"},
+            "transducer_angle_options": ["30", "45"],
+        },
+    )
 
     provider = _ScriptedProvider(
         [
@@ -193,14 +206,15 @@ def test_write_tools_are_never_deduped(
         [{"role": "user", "content": "set angle"}],
         token="tok",
         model=orch._MODEL,
+        conversation_id="conv",
     )
-    assert len(dispatch_calls) == 2
+    assert len(dispatch_calls) == 0
 
     events = _read_events(event_log_path)
     assert not any(e.get("event") == "tool_dedupe_hit" for e in events)
 
 
-def test_write_invalidates_cached_read_for_same_serial(
+def test_unconfirmed_write_does_not_invalidate_cached_read_for_same_serial(
     event_log_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     orch = _load_agent()
@@ -213,6 +227,16 @@ def test_write_invalidates_cached_read_for_same_serial(
         return json.dumps({"success": True, "serial_number": inp.get("serial_number")})
 
     monkeypatch.setattr(orch, "_dispatch", fake_dispatch)
+    monkeypatch.setattr(
+        orch,
+        "get_meter_profile",
+        lambda serial, token: {
+            "success": True,
+            "network_type": "wifi",
+            "profile": {"label": "Test meter"},
+            "transducer_angle_options": ["30", "45"],
+        },
+    )
 
     provider = _ScriptedProvider(
         [
@@ -246,12 +270,12 @@ def test_write_invalidates_cached_read_for_same_serial(
     names = [name for (name, _args) in dispatch_calls]
     assert names == [
         "check_meter_status",
-        "set_transducer_angle_only",
-        "check_meter_status",
     ]
 
     events = _read_events(event_log_path)
-    assert any(e.get("event") == "tool_dedupe_invalidate" for e in events)
+    assert not any(e.get("event") == "tool_dedupe_invalidate" for e in events)
+    # Pending confirmation now short-circuits the turn, so no later read runs
+    # and there is no dedupe hit to report.
     assert not any(e.get("event") == "tool_dedupe_hit" for e in events)
 
 
@@ -300,3 +324,130 @@ def test_dedupe_key_is_canonical_regardless_of_arg_order(
 
     events = _read_events(event_log_path)
     assert any(e.get("event") == "tool_dedupe_hit" for e in events)
+
+
+def test_flow_tool_history_payload_is_compacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    orch = _load_agent()
+    monkeypatch.setenv("ORCHESTRATOR_FLOW_REPORT_EXCERPT_CHARS", "200")
+    result = {
+        "success": True,
+        "report": "A" * 10_000 + "SECRET_TAIL",
+        "display_range": "Jan 1 -> Jan 2",
+        "analysis_mode": "summary",
+        "analysis_json_path": "/tmp/analysis.json",
+        "report_path": "/tmp/report.md",
+        "reasoning_schema": {"regime": "STEADY_FLOW"},
+        "analysis_details": {"rollup_highlights": {"six_hour_problem_window_count": 1}},
+        "download_artifacts": [
+            {
+                "kind": "csv",
+                "title": "Flow data CSV",
+                "filename": "flow_data_BB1_1_2.csv",
+                "path": "/private/flow_data_BB1_1_2.csv",
+                "row_count": 42,
+            }
+        ],
+        "analysis_metadata": {
+            "analysis_mode": "summary",
+            "requested_analysis_mode": "auto",
+            "mode_selection_reasons": ["range_exceeds_threshold"],
+            "fetch": {"chunk_count": 24, "fetch_workers": 8},
+            "report_path": "/tmp/report.md",
+            "mode_selection": {"large": "omitted"},
+        },
+    }
+
+    compact = orch._compact_tool_result_for_history("analyze_flow_data", result)
+    encoded = json.dumps(compact)
+
+    assert "report" not in compact
+    assert compact["report_excerpt"].startswith("A")
+    assert "SECRET_TAIL" not in encoded
+    assert compact["reasoning_schema"] == {"regime": "STEADY_FLOW"}
+    assert compact["analysis_json_path"] == "/tmp/analysis.json"
+    assert "mode_selection" not in compact["analysis_metadata"]
+    assert compact["download_artifacts"] == [
+        {
+            "kind": "csv",
+            "title": "Flow data CSV",
+            "filename": "flow_data_BB1_1_2.csv",
+            "row_count": 42,
+        }
+    ]
+    assert "/private/" not in encoded
+
+
+def test_run_turn_persists_compact_flow_tool_result(
+    event_log_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orch = _load_agent()
+    _stub_common(monkeypatch, orch)
+    monkeypatch.setenv("ORCHESTRATOR_FLOW_REPORT_EXCERPT_CHARS", "200")
+
+    full_result = {
+        "success": True,
+        "report": "LONG_REPORT_START\n" + ("x" * 10_000) + "\nSECRET_TAIL",
+        "display_range": "Jan 1 -> Jan 2",
+        "plot_paths": ["/tmp/p.png"],
+        "plot_summaries": [{"plot_type": "diagnostic_timeline"}],
+        "analysis_mode": "summary",
+        "analysis_json_path": "/tmp/analysis.json",
+        "report_path": "/tmp/report.md",
+        "reasoning_schema": {"regime": "STEADY_FLOW"},
+        "analysis_details": {"rollup_highlights": {"six_hour_problem_window_count": 1}},
+        "analysis_metadata": {"analysis_mode": "summary", "fetch": {"chunk_count": 24}},
+        "download_artifacts": [
+            {
+                "kind": "csv",
+                "title": "Flow data CSV",
+                "filename": "flow_data_BB1_1_2.csv",
+                "path": "/private/flow_data_BB1_1_2.csv",
+                "row_count": 42,
+            }
+        ],
+        "error": None,
+    }
+
+    monkeypatch.setattr(
+        orch,
+        "_run_analyze_flow_with_progress",
+        lambda *a, **k: json.dumps(full_result),
+    )
+    provider = _ScriptedProvider(
+        [
+            _tool_use_response(
+                orch,
+                [
+                    (
+                        "f1",
+                        "analyze_flow_data",
+                        {"serial_number": "BB1", "start": 0, "end": 10},
+                    )
+                ],
+            ),
+            _end_turn_response(),
+        ]
+    )
+    monkeypatch.setattr(orch, "get_provider", lambda *a, **k: provider)
+
+    messages = [{"role": "user", "content": "analyze flow"}]
+    reply, _ = orch.run_turn(messages, token="tok", model=orch._MODEL)
+
+    assert reply == "done"
+    tool_result_messages = [
+        m for m in messages
+        if m.get("role") == "user" and isinstance(m.get("content"), list)
+    ]
+    assert tool_result_messages
+    content = tool_result_messages[-1]["content"][0]["content"]
+    payload = json.loads(content)
+    encoded_history = json.dumps(messages)
+
+    assert "report" not in payload
+    assert payload["report_excerpt"].startswith("LONG_REPORT_START")
+    assert payload["analysis_json_path"] == "/tmp/analysis.json"
+    assert payload["reasoning_schema"] == {"regime": "STEADY_FLOW"}
+    assert payload["download_artifacts"][0]["filename"] == "flow_data_BB1_1_2.csv"
+    assert "path" not in payload["download_artifacts"][0]
+    assert "SECRET_TAIL" not in encoded_history
+    assert "/private/" not in encoded_history

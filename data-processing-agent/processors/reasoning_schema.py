@@ -524,16 +524,27 @@ def build_reasoning_schema(
     evidence = _build_evidence(facts)
     hypotheses = _build_hypotheses(evidence, regime)
     next_checks = _build_next_checks(hypotheses)
+    attribution = facts.get("anomaly_attribution")
+    attribution_anchor = None
+    if isinstance(attribution, dict):
+        attribution_anchor = {
+            "primary_type": attribution.get("primary_type"),
+            "severity": attribution.get("severity"),
+            "confidence": attribution.get("confidence"),
+            "summary": attribution.get("summary"),
+            "next_checks": (attribution.get("next_checks") or [])[:3],
+        }
 
     return {
         "schema_version": 1,
         "regime": regime,
+        "attribution": attribution_anchor,
         "evidence": evidence,
         "hypotheses": hypotheses,
         "next_checks": next_checks,
         "conflict_policy": (
-            "If the narrative disagrees with these codes or with verified_facts, "
-            "trust verified_facts and these codes."
+            "If the narrative disagrees with anomaly_attribution, these codes, or verified_facts, "
+            "trust anomaly_attribution and verified_facts."
         ),
         "context": {
             "n_rows": _safe_int(facts.get("n_rows")),
@@ -570,6 +581,14 @@ def schema_to_compact_markdown(schema: Dict[str, Any]) -> str:
 
     regime = schema.get("regime") or "UNKNOWN"
     lines.append(f"- **regime:** `{regime}`\n")
+
+    attribution = schema.get("attribution")
+    if isinstance(attribution, dict) and attribution.get("primary_type"):
+        ptype = attribution.get("primary_type")
+        sev = attribution.get("severity") or "unknown"
+        conf = attribution.get("confidence") or "unknown"
+        summary = attribution.get("summary") or ""
+        lines.append(f"- **attribution:** `{ptype}` ({sev}, {conf}) — {summary}\n")
 
     evidence = schema.get("evidence") or []
     if evidence:

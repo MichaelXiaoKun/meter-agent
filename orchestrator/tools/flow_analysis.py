@@ -5,6 +5,7 @@ Runs the data-processing-agent as a subprocess using its own virtual environment
 if present, otherwise falls back to the current Python interpreter.
 """
 
+import hashlib
 import json
 import logging
 import math
@@ -12,6 +13,8 @@ import os
 import re
 import subprocess
 import sys
+from collections import OrderedDict
+from copy import deepcopy
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,9 @@ _PLOT_PATHS_MARKER = "__BLUEBOT_PLOT_PATHS__"
 _ANALYSIS_JSON_MARKER = "__BLUEBOT_ANALYSIS_JSON__"
 _PLOT_CAPTIONS_MARKER = "__BLUEBOT_PLOT_CAPTIONS__"
 _REASONING_SCHEMA_MARKER = "__BLUEBOT_REASONING_SCHEMA__"
+_ANALYSIS_DETAILS_MARKER = "__BLUEBOT_ANALYSIS_DETAILS__"
+_ANALYSIS_METADATA_MARKER = "__BLUEBOT_ANALYSIS_METADATA__"
+_DOWNLOAD_ARTIFACTS_MARKER = "__BLUEBOT_DOWNLOAD_ARTIFACTS__"
 
 _TRUNCATION_NOTE = "\n\n…*(Report truncated for length; increase `BLUEBOT_FLOW_REPORT_MAX_CHARS` if needed.)*"
 
@@ -40,7 +46,61 @@ _PLOT_TYPE_TITLES: dict[str, str] = {
     "flow_duration_curve": "Flow duration curve",
     "peaks_annotated": "Demand peaks",
     "signal_quality": "Signal quality",
+    "diagnostic_timeline": "Diagnostic timeline",
 }
+
+# 3A TimeseriesContext result cache: avoids rerunning the specialist subprocess
+# when the same high-res window is requested repeatedly in a short session.
+_RESULT_CACHE: OrderedDict[
+    tuple[str, int, int, str, str | None, str, str, str], dict
+] = OrderedDict()
+_RESULT_CACHE_RESOLUTION = "high-res"
+
+
+def _result_cache_max_entries() -> int:
+    raw = os.environ.get("BLUEBOT_FLOW_RESULT_CACHE_SIZE", "16")
+    try:
+        n = int(raw)
+    except ValueError:
+        return 16
+    return max(0, n)
+
+
+def _token_cache_scope(token: str | None) -> str:
+    if not token:
+        return "none"
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+def _result_cache_get(
+    key: tuple[str, int, int, str, str | None, str, str, str],
+) -> dict | None:
+    if _result_cache_max_entries() <= 0:
+        return None
+    hit = _RESULT_CACHE.get(key)
+    if hit is None:
+        return None
+    _RESULT_CACHE.move_to_end(key)
+    return deepcopy(hit)
+
+
+def _result_cache_put(
+    key: tuple[str, int, int, str, str | None, str, str, str],
+    value: dict,
+) -> None:
+    max_entries = _result_cache_max_entries()
+    if max_entries <= 0:
+        _RESULT_CACHE.clear()
+        return
+    _RESULT_CACHE[key] = deepcopy(value)
+    _RESULT_CACHE.move_to_end(key)
+    while len(_RESULT_CACHE) > max_entries:
+        _RESULT_CACHE.popitem(last=False)
+
+
+def clear_result_cache() -> None:
+    """Test/ops hook: clear cached analyze_flow_data results."""
+    _RESULT_CACHE.clear()
 
 
 def _plot_summaries(
@@ -88,17 +148,23 @@ def _plot_summaries(
     return out
 
 
-def _flow_report_max_chars() -> int:
-    raw = os.environ.get("BLUEBOT_FLOW_REPORT_MAX_CHARS", "10000")
+def _flow_report_max_chars(analysis_mode: str | None = None) -> int:
+    env_name = (
+        "BLUEBOT_FLOW_SUMMARY_REPORT_MAX_CHARS"
+        if analysis_mode == "summary"
+        else "BLUEBOT_FLOW_REPORT_MAX_CHARS"
+    )
+    default = "5000" if analysis_mode == "summary" else "10000"
+    raw = os.environ.get(env_name, default)
     try:
         n = int(raw)
     except ValueError:
-        return 10000
+        return int(default)
     return n if n > 0 else 0
 
 
-def _maybe_truncate_report(text: str) -> tuple[str, bool]:
-    limit = _flow_report_max_chars()
+def _maybe_truncate_report(text: str, analysis_mode: str | None = None) -> tuple[str, bool]:
+    limit = _flow_report_max_chars(analysis_mode)
     if limit <= 0 or len(text) <= limit:
         return text, False
     budget = max(0, limit - len(_TRUNCATION_NOTE))
@@ -226,6 +292,76 @@ def _collect_reasoning_schema(stderr: str) -> dict | None:
     return None
 
 
+def _collect_analysis_details(stderr: str) -> dict:
+    """Small processor summaries emitted for the activity timeline."""
+    if not stderr:
+        return {}
+    idx = stderr.find(_ANALYSIS_DETAILS_MARKER)
+    if idx == -1:
+        return {}
+    tail = stderr[idx + len(_ANALYSIS_DETAILS_MARKER) :].strip()
+    line = tail.splitlines()[0] if tail else ""
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _collect_analysis_metadata(stderr: str) -> dict:
+    """Small execution metadata emitted by data-processing-agent main.py."""
+    if not stderr:
+        return {}
+    idx = stderr.find(_ANALYSIS_METADATA_MARKER)
+    if idx == -1:
+        return {}
+    tail = stderr[idx + len(_ANALYSIS_METADATA_MARKER) :].strip()
+    line = tail.splitlines()[0] if tail else ""
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _collect_download_artifacts(stderr: str) -> list[dict]:
+    """Downloadable analysis artifacts emitted by data-processing-agent main.py."""
+    if not stderr:
+        return []
+    idx = stderr.find(_DOWNLOAD_ARTIFACTS_MARKER)
+    if idx == -1:
+        return []
+    tail = stderr[idx + len(_DOWNLOAD_ARTIFACTS_MARKER) :].strip()
+    line = tail.splitlines()[0] if tail else ""
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    out: list[dict] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("kind")
+        filename = item.get("filename")
+        path = item.get("path")
+        if kind != "csv" or not isinstance(filename, str) or not filename.endswith(".csv"):
+            continue
+        if not isinstance(path, str) or ".." in path or "\x00" in path:
+            continue
+        clean = {
+            "kind": "csv",
+            "title": item.get("title") if isinstance(item.get("title"), str) else "Flow data CSV",
+            "filename": filename,
+            "path": path,
+        }
+        if isinstance(item.get("row_count"), int):
+            clean["row_count"] = item["row_count"]
+        out.append(clean)
+    return out
+
+
 TOOL_DEFINITION = {
     "name": "analyze_flow_data",
     "description": (
@@ -275,6 +411,15 @@ TOOL_DEFINITION = {
                     "``deviceTimeZone`` field returned by get_meter_profile so plot "
                     "x-axes render in the meter's local clock (matching the verified-"
                     "facts report). Falls back to the user's browser timezone, then UTC."
+                ),
+            },
+            "analysis_mode": {
+                "type": "string",
+                "enum": ["auto", "detailed", "summary"],
+                "description": (
+                    "auto (default) uses deterministic summary for long or very large "
+                    "windows; detailed forces the full internal LLM analysis loop; "
+                    "summary forces the compact deterministic rollup path."
                 ),
             },
         },
@@ -336,7 +481,12 @@ def analyze_flow_inputs_error_payload(
         "plot_paths": [],
         "plot_summaries": [],
         "reasoning_schema": None,
+        "analysis_details": {},
+        "analysis_metadata": {},
+        "analysis_mode": None,
         "analysis_json_path": None,
+        "report_path": None,
+        "download_artifacts": [],
         "display_range": "",
         "plot_timezone": plot_tz,
         "error": err,
@@ -344,6 +494,7 @@ def analyze_flow_inputs_error_payload(
 
 
 _ALLOWED_NETWORK_TYPES = {"wifi", "lorawan", "unknown"}
+_ALLOWED_ANALYSIS_MODES = {"auto", "detailed", "summary"}
 
 
 def _normalize_network_type(value: str | None) -> str | None:
@@ -351,6 +502,13 @@ def _normalize_network_type(value: str | None) -> str | None:
         return None
     v = value.strip().lower()
     return v if v in _ALLOWED_NETWORK_TYPES else None
+
+
+def _normalize_analysis_mode(value: str | None) -> str:
+    if not value:
+        return "auto"
+    v = value.strip().lower()
+    return v if v in _ALLOWED_ANALYSIS_MODES else "auto"
 
 
 def _coerce_unix_seconds(field: str, value: object) -> int:
@@ -386,6 +544,7 @@ def analyze_flow_data(
     anthropic_api_key: str | None = None,
     network_type: str | None = None,
     meter_timezone: str | None = None,
+    analysis_mode: str | None = None,
 ) -> dict:
     """
     Run the data-processing-agent for a meter (by serial number) over a time range.
@@ -398,6 +557,9 @@ def analyze_flow_data(
             "plot_paths":        list[str],     # absolute PNG paths embedded in the report
             "plot_summaries":  list[dict],   # one entry per plot_paths item (filename, title, tz, type)
             "analysis_json_path": str | None, # absolute path to analysis_*.json (verified_facts bundle)
+            "report_path": str | None,       # absolute markdown report artifact when emitted
+            "analysis_mode": str | None,     # resolved mode from the subprocess
+            "analysis_metadata": dict,       # fetch/mode metadata
             "display_range": str,          # wall times for start/end (user TZ when set)
             "plot_timezone": str,          # IANA zone the plot x-axes were rendered in
             "error":         str | None,
@@ -419,7 +581,12 @@ def analyze_flow_data(
             "plot_paths": [],
             "plot_summaries": [],
             "reasoning_schema": None,
+            "analysis_details": {},
             "analysis_json_path": None,
+            "report_path": None,
+            "download_artifacts": [],
+            "analysis_mode": None,
+            "analysis_metadata": {},
             "display_range": "",
             "plot_timezone": plot_tz,
             "error": err,
@@ -437,7 +604,12 @@ def analyze_flow_data(
             "plot_paths": [],
             "plot_summaries": [],
             "reasoning_schema": None,
+            "analysis_details": {},
             "analysis_json_path": None,
+            "report_path": None,
+            "download_artifacts": [],
+            "analysis_mode": None,
+            "analysis_metadata": {},
             "display_range": "",
             "plot_timezone": plot_tz,
             "error": err,
@@ -447,8 +619,29 @@ def analyze_flow_data(
     plot_tz = _resolve_plot_tz_name(
         meter_timezone=meter_timezone, display_timezone=tz_name
     )
-    env = tool_subprocess_env(token, anthropic_api_key)
     nt = _normalize_network_type(network_type)
+    mode = _normalize_analysis_mode(analysis_mode)
+    cache_key = (
+        str(serial_number),
+        int(start),
+        int(end),
+        _RESULT_CACHE_RESOLUTION,
+        nt,
+        plot_tz,
+        _token_cache_scope(token),
+        mode,
+    )
+    cached = _result_cache_get(cache_key)
+    if cached is not None:
+        logger.info(
+            "analyze_flow_data cache hit serial=%r start=%s end=%s",
+            serial_number,
+            start,
+            end,
+        )
+        return cached
+
+    env = tool_subprocess_env(token, anthropic_api_key)
     if nt:
         env["BLUEBOT_METER_NETWORK_TYPE"] = nt
     env["BLUEBOT_PLOT_TZ"] = plot_tz
@@ -464,6 +657,7 @@ def analyze_flow_data(
             "--serial", serial_number,
             "--start", str(start),
             "--end", str(end),
+            "--analysis-mode", mode,
         ],
         cwd=_AGENT_DIR,
         capture_output=True,
@@ -473,31 +667,53 @@ def analyze_flow_data(
     if result.returncode == 0:
         raw_report = result.stdout.strip()
         stderr = result.stderr or ""
+        analysis_metadata = _collect_analysis_metadata(stderr)
+        resolved_mode = analysis_metadata.get("analysis_mode")
         plot_paths = _collect_plot_paths(raw_report, stderr, _AGENT_DIR)
-        report, truncated = _maybe_truncate_report(raw_report)
+        report, truncated = _maybe_truncate_report(
+            raw_report,
+            resolved_mode if isinstance(resolved_mode, str) else mode,
+        )
         if truncated:
             plot_paths = _collect_plot_paths(report, stderr, _AGENT_DIR)
         plot_captions = _collect_plot_captions(stderr)
         summaries = _plot_summaries(plot_paths, plot_tz, plot_captions=plot_captions)
         reasoning_schema = _collect_reasoning_schema(stderr)
+        analysis_details = _collect_analysis_details(stderr)
+        report_path = analysis_metadata.get("report_path")
+        download_artifacts = _collect_download_artifacts(stderr)
+        if not download_artifacts:
+            meta_artifacts = analysis_metadata.get("download_artifacts")
+            if isinstance(meta_artifacts, list):
+                download_artifacts = [
+                    a for a in meta_artifacts if isinstance(a, dict)
+                ]
         logger.info(
-            "analyze_flow_data ok serial=%r returncode=0 plots=%s report_truncated=%s",
+            "analyze_flow_data ok serial=%r returncode=0 plots=%s report_truncated=%s mode=%s",
             serial_number,
             len(plot_paths),
             truncated,
+            resolved_mode or mode,
         )
-        return {
+        payload = {
             "success": True,
             "report": report,
             "report_truncated": truncated,
             "plot_paths": plot_paths,
             "plot_summaries": summaries,
             "reasoning_schema": reasoning_schema,
+            "analysis_details": analysis_details,
+            "analysis_metadata": analysis_metadata,
+            "analysis_mode": resolved_mode or mode,
             "analysis_json_path": _collect_analysis_json_path(stderr),
+            "report_path": report_path if isinstance(report_path, str) else None,
+            "download_artifacts": download_artifacts,
             "display_range": display_range,
             "plot_timezone": plot_tz,
             "error": None,
         }
+        _result_cache_put(cache_key, payload)
+        return payload
     err_text = result.stderr.strip() or f"Process exited with code {result.returncode}"
     # Subprocess stderr was only in the tool JSON; surface it in server logs for ops debugging.
     _tail = err_text if len(err_text) <= 8000 else f"{err_text[:8000]}\n…[stderr truncated for log]"
@@ -529,7 +745,12 @@ def analyze_flow_data(
         "plot_paths": [],
         "plot_summaries": [],
         "reasoning_schema": None,
+        "analysis_details": {},
+        "analysis_metadata": {},
+        "analysis_mode": None,
         "analysis_json_path": None,
+        "report_path": None,
+        "download_artifacts": [],
         "display_range": display_range,
         "plot_timezone": plot_tz,
         "error": err_text,

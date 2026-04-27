@@ -10,6 +10,38 @@ from typing import Any, Dict, Optional
 from processors.reasoning_schema import schema_to_compact_markdown
 
 
+def _attribution_markdown(facts: Dict[str, Any]) -> str:
+    attr = facts.get("anomaly_attribution")
+    if not isinstance(attr, dict) or not attr:
+        return ""
+    lines = [
+        "\n## Diagnostic interpretation (code-generated)\n\n",
+        "This is the deterministic attribution layer combining drift, adequacy, gaps, quality, flatline, and baseline signals.\n\n",
+    ]
+    primary = attr.get("primary_type") or "unknown"
+    severity = attr.get("severity") or "unknown"
+    confidence = attr.get("confidence") or "unknown"
+    summary = attr.get("summary") or ""
+    cause = attr.get("primary_cause") or ""
+    lines.append(f"- **Primary interpretation:** `{primary}` ({severity} severity, {confidence} confidence)\n")
+    if summary:
+        lines.append(f"- **Summary:** {summary}\n")
+    if cause:
+        lines.append(f"- **Primary cause:** {cause}\n")
+    evidence = attr.get("evidence") if isinstance(attr.get("evidence"), list) else []
+    if evidence:
+        ev_bits = []
+        for ev in evidence[:3]:
+            if isinstance(ev, dict):
+                ev_bits.append(str(ev.get("message") or ev.get("code") or "evidence"))
+        if ev_bits:
+            lines.append(f"- **Evidence:** {'; '.join(ev_bits)}\n")
+    checks = attr.get("next_checks") if isinstance(attr.get("next_checks"), list) else []
+    if checks:
+        lines.append(f"- **Next checks:** {'; '.join(str(c) for c in checks[:4])}\n")
+    return "".join(lines)
+
+
 def _verified_facts_markdown(facts: Dict[str, Any]) -> str:
     """Append-only block of deterministic metrics (same processors as the agent tools)."""
     lines = [
@@ -92,6 +124,32 @@ def _verified_facts_markdown(facts: Dict[str, Any]) -> str:
             )
         elif flat.get("note"):
             lines.append(f"- **Flow variability:** {flat['note']}\n")
+
+    cusum = facts.get("cusum_drift")
+    if isinstance(cusum, dict):
+        adequacy = cusum.get("adequacy") if isinstance(cusum.get("adequacy"), dict) else {}
+        if cusum.get("skipped"):
+            actual = adequacy.get("actual_points")
+            target = adequacy.get("target_min")
+            gap = adequacy.get("gap_pct")
+            reason = adequacy.get("reason") or "insufficient_data"
+            bits = []
+            if actual is not None and target is not None:
+                bits.append(f"{actual}/{target} points")
+            if gap is not None:
+                bits.append(f"{float(gap):.3g}% gap coverage")
+            suffix = f" ({'; '.join(bits)})" if bits else ""
+            lines.append(f"- **CUSUM drift:** skipped — `{reason}`{suffix}\n")
+        else:
+            drift = cusum.get("drift_detected") or "none"
+            pos = int(cusum.get("positive_alarm_count") or 0)
+            neg = int(cusum.get("negative_alarm_count") or 0)
+            first_alarm = cusum.get("first_alarm_timestamp")
+            first_s = f"; first alarm unix {first_alarm}" if first_alarm is not None else ""
+            lines.append(
+                f"- **CUSUM drift:** `{drift}` "
+                f"(upward alarms={pos}, downward alarms={neg}{first_s})\n"
+            )
 
     bq = facts.get("baseline_quality")
     if isinstance(bq, dict):
@@ -203,6 +261,7 @@ def format_report(
     body = header + analysis
     if verified_facts:
         body += _verified_facts_markdown(verified_facts)
+        body += _attribution_markdown(verified_facts)
         schema = verified_facts.get("reasoning_schema")
         if isinstance(schema, dict) and schema:
             body += schema_to_compact_markdown(schema)

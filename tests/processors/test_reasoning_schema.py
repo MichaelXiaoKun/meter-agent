@@ -71,6 +71,7 @@ def test_schema_shape_is_stable():
     for key in (
         "schema_version",
         "regime",
+        "attribution",
         "evidence",
         "hypotheses",
         "next_checks",
@@ -306,6 +307,23 @@ def test_markdown_rendering_contains_headline_codes():
     assert "next_checks:" in md
     # The codes themselves should appear literally so the LLM can cite them.
     assert "E_GAP_LONG" in md or "E_QUALITY_DROP" in md
+
+
+def test_markdown_rendering_includes_attribution_anchor():
+    facts = _base_facts(
+        anomaly_attribution={
+            "primary_type": "real_flow_change",
+            "severity": "medium",
+            "confidence": "high",
+            "summary": "CUSUM detected sustained upward drift.",
+            "next_checks": ["Compare against the previous day"],
+        }
+    )
+    schema = build_reasoning_schema(facts)
+    md = schema_to_compact_markdown(schema)
+    assert schema["attribution"]["primary_type"] == "real_flow_change"
+    assert "attribution:" in md
+    assert "real_flow_change" in md
 
 
 def test_markdown_rendering_handles_empty_schema():

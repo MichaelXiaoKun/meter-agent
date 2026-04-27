@@ -28,20 +28,26 @@ const QUICK_ACTIONS: QuickAction[] = [
     message: (s) => `Run a health check on meter ${s}`,
   },
   {
-    id: "flow-7d",
-    label: "7-day flow",
-    message: (s) => `Analyse the last 7 days of flow data for meter ${s}`,
+    id: "flow-anomaly",
+    label: "Flow anomaly",
+    message: (s) => `Analyze the last 24 hours of flow data for meter ${s} and explain any anomalies`,
   },
   {
-    id: "online",
-    label: "Online?",
-    message: (s) => `Is meter ${s} online and transmitting?`,
+    id: "compare-range",
+    label: "Compare range",
+    message: (s) => `Compare the last 24 hours of flow data for meter ${s} against the previous 24 hours`,
   },
   {
-    id: "pipe",
-    label: "Configure pipe",
+    id: "safe-config",
+    label: "Configure safely",
     message: (s) =>
-      `Configure pipe for serial ${s}: PVC, Schedule 40, 2 inch nominal, transducer angle 45º`,
+      `Configure pipe for serial ${s}: PVC, Schedule 40, 2 inch nominal, transducer angle 45º. Ask me to confirm before applying.`,
+  },
+  {
+    id: "angle-sweep",
+    label: "Angle sweep",
+    message: (s) =>
+      `Try all allowed transducer angles for meter ${s} and compare signal quality after each setting`,
   },
 ];
 

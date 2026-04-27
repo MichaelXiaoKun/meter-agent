@@ -5,6 +5,7 @@ type SummaryEntry = {
   title?: string;
   plot_timezone?: string;
   plot_type?: string;
+  caption?: PlotAttachment["caption"];
 };
 
 function resolveAttachment(
@@ -23,6 +24,7 @@ function resolveAttachment(
     title: typeof s?.title === "string" ? s.title : undefined,
     plotTimezone: (typeof s?.plot_timezone === "string" ? s.plot_timezone : undefined) ?? fallbackTz,
     plotType: typeof s?.plot_type === "string" ? s.plot_type : undefined,
+    caption: s?.caption,
     groupLabel,
   };
 }
