@@ -226,6 +226,12 @@ class ChatRequest(BaseModel):
     client_timezone: str | None = None  # IANA, e.g. America/New_York (browser local zone)
     # Optional UUID from the client so SSE events can be correlated and stale streams ignored.
     client_turn_id: str | None = None
+    # Optional pending configuration action id from the Meter Workspace confirm button.
+    confirmed_action_id: str | None = None
+    # Optional pending configuration action id to cancel from the inline confirmation card.
+    cancelled_action_id: str | None = None
+    # Optional pending configuration action id replaced by a new user request.
+    superseded_action_id: str | None = None
     # Optional per-turn model override from the UI's picker. Validated against
     # the server allowlist in run_turn → resolve_orchestrator_model; unknown
     # values silently fall back to the server default.
@@ -233,6 +239,10 @@ class ChatRequest(BaseModel):
 
 class UpdateTitleRequest(BaseModel):
     title: str
+
+
+class CreateShareRequest(BaseModel):
+    user_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -395,12 +405,57 @@ def patch_conversation(conv_id: str, body: UpdateTitleRequest):
     return {"ok": True}
 
 
+@app.post("/api/conversations/{conv_id}/share")
+def create_conversation_share(conv_id: str, body: CreateShareRequest, authorization: str = Header(...)):
+    """
+    Create a one-time public snapshot of the conversation. Requires a logged-in
+    user (Bearer) who owns the conversation (``user_id`` in the body must match
+    the conversation's owner; same scoping as other conv endpoints).
+    """
+    _bearer_token(authorization)
+    try:
+        token = store.create_share(conv_id, body.user_id)
+    except LookupError as e:
+        raise HTTPException(404, str(e) or "Conversation not found or access denied") from e
+    return {"token": token}
+
+
+@app.delete("/api/shares/{token}")
+def delete_share(
+    token: str,
+    user_id: str = Query(...),
+    authorization: str = Header(...),
+):
+    """Revoke a share; only the owner (``user_id`` + Bearer) can revoke."""
+    _bearer_token(authorization)
+    ok = store.revoke_share(token, user_id)
+    if not ok:
+        raise HTTPException(404, "Share not found or access denied")
+    return {"ok": True}
+
+
+@app.get("/api/public/shares/{token}")
+def get_public_share(token: str):
+    """Read-only snapshot for anonymous visitors. No auth header required."""
+    data = store.load_share(token)
+    if data is None or data["revoked"]:
+        raise HTTPException(404, "Share not found or revoked")
+    return {"title": data["title"], "messages": data["messages"]}
+
+
 # ---------------------------------------------------------------------------
 # Static assets
 # ---------------------------------------------------------------------------
 
 _PLOTS_DIR = resolved_plots_dir()
 logger.info("PLOTS_DIR=%s (exists=%s)", _PLOTS_DIR, _PLOTS_DIR.is_dir())
+_ANALYSES_DIR = Path(
+    os.environ.get(
+        "BLUEBOT_ANALYSES_DIR",
+        str(Path(__file__).parent.parent / "data-processing-agent" / "analyses"),
+    )
+).expanduser().resolve()
+logger.info("ANALYSES_DIR=%s (exists=%s)", _ANALYSES_DIR, _ANALYSES_DIR.is_dir())
 _LOGO_PATH = Path(os.environ.get(
     "LOGO_PATH",
     str(Path(__file__).parent.parent / "bluebot.jpg"),
@@ -436,6 +491,26 @@ def get_plot(filename: str):
         )
         raise HTTPException(404, "Plot not found")
     return FileResponse(path, media_type="image/png")
+
+
+@app.get("/api/analysis-artifacts/{filename}")
+def get_analysis_artifact(filename: str, authorization: str = Header(...)):
+    """Serve a generated analysis artifact by filename."""
+    _bearer_token(authorization)
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(400, "Invalid filename")
+    path = (_ANALYSES_DIR / filename).resolve()
+    try:
+        path.relative_to(_ANALYSES_DIR)
+    except ValueError:
+        raise HTTPException(400, "Invalid filename") from None
+    if not path.is_file() or path.suffix.lower() != ".csv":
+        raise HTTPException(404, "Analysis artifact not found")
+    return FileResponse(
+        path,
+        media_type="text/csv",
+        filename=filename,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +578,49 @@ def _rewrite_plot_paths(event: dict) -> dict:
     return event
 
 
+def _rewrite_download_artifacts(event: dict) -> dict:
+    """Replace absolute artifact paths with authenticated download URLs."""
+    def _clean(item: object) -> dict | None:
+        if not isinstance(item, dict):
+            return None
+        kind = item.get("kind")
+        raw_name = item.get("filename") or item.get("path") or item.get("url")
+        if kind != "csv" or not isinstance(raw_name, str):
+            return None
+        filename = Path(raw_name).name
+        if not filename.endswith(".csv"):
+            return None
+        out = {
+            "kind": "csv",
+            "title": item.get("title") if isinstance(item.get("title"), str) else "Flow data CSV",
+            "filename": filename,
+            "url": f"/api/analysis-artifacts/{filename}",
+        }
+        row_count = item.get("row_count")
+        if isinstance(row_count, int):
+            out["row_count"] = row_count
+        return out
+
+    if "download_artifacts" in event:
+        event["download_artifacts"] = [
+            clean for a in event.get("download_artifacts") or []
+            if (clean := _clean(a)) is not None
+        ]
+    meters = event.get("meters")
+    if isinstance(meters, list):
+        for meter in meters:
+            if isinstance(meter, dict) and "download_artifacts" in meter:
+                meter["download_artifacts"] = [
+                    clean for a in meter.get("download_artifacts") or []
+                    if (clean := _clean(a)) is not None
+                ]
+    return event
+
+
+def _rewrite_artifact_urls(event: dict) -> dict:
+    return _rewrite_download_artifacts(_rewrite_plot_paths(event))
+
+
 @app.get("/api/conversations/{conv_id}/status")
 def conversation_status(conv_id: str):
     """Check whether the server is actively processing this conversation."""
@@ -555,9 +673,18 @@ async def chat_init(
 
     user_msg = {"role": "user", "content": body.message}
     messages.append(user_msg)
-    # Messages only appended after this point belong to this turn (append vs replace on compress).
+    # n_messages_after_user used to calculate how many DB messages the summary covers on compress.
     n_messages_after_user = len(messages)
     store.append_messages(conv_id, [user_msg])
+
+    # Build api_messages from the cached context summary so we don't re-call the compression
+    # model on every turn of a long conversation. messages (full history) stays untouched for
+    # display and DB; api_messages is what we pass to Claude.
+    context_summary, summary_covers = store.get_api_context_info(conv_id)
+    if context_summary and 0 < summary_covers < len(messages):
+        api_messages: list = [{"role": "user", "content": context_summary}] + messages[summary_covers:]
+    else:
+        api_messages = messages
 
     if len(messages) == 1:
         store.set_title(conv_id, body.message[:60])
@@ -631,6 +758,14 @@ async def chat_init(
             "success",
             "message",
             "tool_activity",
+            "display_range",
+            "report_truncated",
+            "plot_timezone",
+            "download_artifacts",
+            "analysis_details",
+            "meter_context",
+            "diagnostic_summary",
+            "config_workflow",
             "tokens",
             "pct",
             "model",
@@ -669,6 +804,13 @@ async def chat_init(
             s.setdefault("seq", ev.get("seq", 0))
             if t == "tool_result" and "plot_paths" in ev and ev.get("plot_paths"):
                 s["plot_paths"] = [str(p).split("/")[-1] for p in (ev.get("plot_paths") or [])[:8]]
+            if t == "tool_result" and "download_artifacts" in ev and ev.get("download_artifacts"):
+                s["download_artifacts"] = [
+                    a for a in (_rewrite_download_artifacts({
+                        "download_artifacts": ev.get("download_artifacts") or []
+                    }).get("download_artifacts") or [])[:8]
+                    if isinstance(a, dict)
+                ]
             out.append(s)
         return out
 
@@ -721,12 +863,16 @@ async def chat_init(
                 from message_sanitize import append_turn_activity_block
 
                 _, history_replaced = run_turn(
-                    messages,
+                    api_messages,
                     token,
                     on_event=_emit_event_with_capture,
                     client_timezone=body.client_timezone,
                     anthropic_api_key=user_anthropic_key,
                     model=body.model,
+                    conversation_id=conv_id,
+                    confirmed_action_id=body.confirmed_action_id,
+                    cancelled_action_id=body.cancelled_action_id,
+                    superseded_action_id=body.superseded_action_id,
                 )
                 slim = _slim_turn_events_persisted(captured_events, turn_id)
                 if slim:
@@ -738,23 +884,34 @@ async def chat_init(
                         }
                     )
                 if (
-                    messages
-                    and messages[-1].get("role") == "assistant"
+                    api_messages
+                    and api_messages[-1].get("role") == "assistant"
                     and slim
                 ):
-                    append_turn_activity_block(messages[-1], slim)
+                    append_turn_activity_block(api_messages[-1], slim)
+                # Locate user_msg by identity — compression keeps it in the recent tail.
+                user_idx = next(
+                    (i for i, m in enumerate(api_messages) if m is user_msg), None
+                )
+                new_tail = api_messages[user_idx + 1:] if user_idx is not None else []
                 if history_replaced:
-                    # In-place summarization (e.g. 429) — DB must match compressed thread.
-                    store.replace_conversation_messages(conv_id, messages)
-                else:
-                    new_tail = messages[n_messages_after_user:]
-                    if not new_tail:
-                        logger.warning(
-                            "chat turn produced no new messages after user (conv=%s)",
-                            conv_id,
-                        )
-                    store.append_messages(conv_id, new_tail)
-                update_title(conv_id, messages, anthropic_api_key=user_anthropic_key)
+                    # Compression restructured api_messages for this API call.
+                    # Update the cached summary so the next turn skips re-compression;
+                    # original DB records are preserved — only the new reply is appended.
+                    first_content = api_messages[0].get("content", "") if api_messages else ""
+                    if (
+                        isinstance(first_content, str)
+                        and first_content.startswith("[Context summary")
+                        and user_idx is not None
+                    ):
+                        new_covers = n_messages_after_user - user_idx
+                        store.set_api_context_info(conv_id, first_content, new_covers)
+                if not new_tail:
+                    logger.warning(
+                        "chat turn produced no new messages after user (conv=%s)", conv_id
+                    )
+                store.append_messages(conv_id, new_tail)
+                update_title(conv_id, api_messages, anthropic_api_key=user_anthropic_key)
                 _emit_event({"type": "done"})
             except Exception as exc:
                 logger.exception("run_turn failed for conv %s", conv_id)
@@ -828,7 +985,7 @@ async def chat_stream(stream_id: str, request: Request):
             new_events, done_flag, total_len = _snapshot(cursor)
             for ev in new_events:
                 yield {
-                    "data": json.dumps(_rewrite_plot_paths(dict(ev))),
+                    "data": json.dumps(_rewrite_artifact_urls(dict(ev))),
                     "comment": _PER_EVENT_PAD,
                 }
             cursor += len(new_events)
@@ -935,7 +1092,7 @@ async def chat_stream_poll(
     # empty-events reply and never processes the events the server
     # actually emitted in between.
     body = {
-        "events": [_rewrite_plot_paths(dict(ev)) for ev in events_out],
+        "events": [_rewrite_artifact_urls(dict(ev)) for ev in events_out],
         "done": done and length == cursor + len(events_out),
         "next_cursor": cursor + len(events_out),
     }

@@ -37,7 +37,7 @@ function CopyButton({ text }: { text: string }) {
 }
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Message, ContentBlock, PlotAttachment } from "../types";
+import type { DownloadArtifact, Message, ContentBlock, PlotAttachment, SSEEvent } from "../types";
 import {
   rebuildStepsFromStoredEvents,
   splitActivityAtFirstTool,
@@ -45,7 +45,16 @@ import {
   type TurnActivityStep,
 } from "../turnActivity";
 import PlotImage, { PlotGrouped } from "./PlotImage";
+import ArtifactLinks from "./ArtifactLinks";
 import TurnActivityTimeline from "./TurnActivityTimeline";
+import ConfigConfirmationCard from "./ConfigConfirmationCard";
+
+type ConfigWorkflow = NonNullable<SSEEvent["config_workflow"]>;
+type ToastFn = (a: {
+  kind: "success" | "error";
+  title: string;
+  message?: string;
+}) => void;
 
 function extractText(content: string | ContentBlock[]): string {
   if (typeof content === "string") return content;
@@ -96,6 +105,55 @@ function turnActivityFromMessage(
   return rebuildStepsFromStoredEvents(
     block.events as Array<Record<string, unknown>>
   );
+}
+
+function configWorkflowFromMessage(content: string | ContentBlock[]): ConfigWorkflow | null {
+  const workflows = configWorkflowsFromContent(content);
+  return workflows[workflows.length - 1] ?? null;
+}
+
+function configWorkflowsFromContent(
+  content: string | ContentBlock[]
+): ConfigWorkflow[] {
+  if (typeof content === "string") return [];
+  const block = content.find(
+    (b) => b.type === "turn_activity" && Array.isArray((b as ContentBlock).events)
+  ) as ContentBlock | undefined;
+  const events = block?.events ?? [];
+  const workflows: ConfigWorkflow[] = [];
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const workflow = (events[i] as unknown as SSEEvent | undefined)?.config_workflow;
+    if (workflow?.action_id) workflows.unshift(workflow);
+  }
+  return workflows;
+}
+
+function latestConfigWorkflowForAction(
+  workflow: ConfigWorkflow | null,
+  transcript: Message[] | undefined,
+  messageIndex: number | undefined,
+  liveEvents?: SSEEvent[],
+): ConfigWorkflow | null {
+  if (!workflow?.action_id) return workflow;
+  let latest = workflow;
+  if (transcript != null && messageIndex != null) {
+    for (let i = messageIndex + 1; i < transcript.length; i += 1) {
+      const msg = transcript[i];
+      if (!msg || msg.role !== "assistant") continue;
+      for (const candidate of configWorkflowsFromContent(msg.content)) {
+        if (candidate.action_id === workflow.action_id) {
+          latest = { ...latest, ...candidate };
+        }
+      }
+    }
+  }
+  for (const ev of liveEvents ?? []) {
+    const candidate = ev.config_workflow;
+    if (candidate?.action_id === workflow.action_id) {
+      latest = { ...latest, ...candidate };
+    }
+  }
+  return latest;
 }
 
 function rewritePlotPaths(text: string): string {
@@ -165,16 +223,35 @@ interface MessageBubbleProps {
   message: Message;
   /** Plots to show after this assistant message (from prior ``tool_result`` rows). */
   plots?: PlotAttachment[];
+  /** Download artifacts to show after this assistant message. */
+  artifacts?: DownloadArtifact[];
   /** Same-conversation messages (server order) — enables pre-tool / tool / post-tool layout. */
   transcript?: Message[];
   messageIndex?: number;
+  onConfirmConfig?: (workflow: ConfigWorkflow) => void;
+  onCancelConfig?: (workflow: ConfigWorkflow) => void;
+  onTypeOtherConfig?: (workflow: ConfigWorkflow) => void;
+  configActionsDisabled?: boolean;
+  liveConfigEvents?: SSEEvent[];
+  accessToken?: string | null;
+  anthropicApiKey?: string | null;
+  onToast?: ToastFn;
 }
 
 export default function MessageBubble({
   message,
   plots,
+  artifacts,
   transcript,
   messageIndex,
+  onConfirmConfig,
+  onCancelConfig,
+  onTypeOtherConfig,
+  configActionsDisabled,
+  liveConfigEvents,
+  accessToken,
+  anthropicApiKey,
+  onToast,
 }: MessageBubbleProps) {
   if (isToolResultRow(message.content)) return null;
 
@@ -202,12 +279,25 @@ export default function MessageBubble({
   const trimmed = rawText.trim();
   const isUser = message.role === "user";
   const hasPlots = !!(plots && plots.length > 0);
+  const hasArtifacts = !!(artifacts && artifacts.length > 0);
   const hasHistoryActivity =
     !!(historyTurnActivity && historyTurnActivity.length > 0);
+  const configWorkflow = useMemo(
+    () =>
+      message.role === "assistant"
+        ? latestConfigWorkflowForAction(
+            configWorkflowFromMessage(message.content),
+            transcript,
+            messageIndex,
+            liveConfigEvents,
+          )
+        : null,
+    [message.role, message.content, transcript, messageIndex, liveConfigEvents]
+  );
 
-  // User bubbles need text. Assistant bubbles need text, plots, and/or persisted turn activity.
+  // User bubbles need text. Assistant bubbles need text, artifacts, and/or persisted turn activity.
   if (isUser && !trimmed) return null;
-  if (!isUser && !trimmed && !hasPlots && !hasHistoryActivity) return null;
+  if (!isUser && !trimmed && !hasPlots && !hasArtifacts && !hasHistoryActivity) return null;
 
   // When tool_result provides plot_paths, render images only from those URLs — not from
   // markdown (the model often echoes a different timestamp than int(timestamps[0]) in filenames).
@@ -221,10 +311,10 @@ export default function MessageBubble({
 
   // Assistant: only show the markdown/plot card when there is content inside it
   // (turn-only timeline with no text needs no empty card).
-  const showAssistantBubble = isUser || Boolean(trimmed) || hasPlots;
+  const showAssistantBubble = isUser || Boolean(trimmed) || hasPlots || hasArtifacts;
 
   const hasBodyForActivitySplit =
-    message.role === "assistant" && (Boolean(trimmed) || hasPlots);
+    message.role === "assistant" && (Boolean(trimmed) || hasPlots || hasArtifacts);
   const { above: activityAboveBody, below: activityBelowBody } = useMemo(
     () =>
       splitTurnActivityAroundStreamBody(
@@ -253,7 +343,7 @@ export default function MessageBubble({
     return rewritePlotPaths(preToolRaw);
   }, [preToolRaw]);
 
-  const showPostBubble = Boolean(trimmed) || hasPlots;
+  const showPostBubble = Boolean(trimmed) || hasPlots || hasArtifacts;
 
   const assistantMarkdownBlock =
     !isUser && text ? (
@@ -280,6 +370,17 @@ export default function MessageBubble({
       <PlotGrouped
         plots={plots}
         className={`w-full rounded-lg shadow-sm ${text ? "mt-3" : ""}`}
+      />
+    ) : null;
+
+  const assistantArtifactsBlock =
+    !isUser && artifacts?.length ? (
+      <ArtifactLinks
+        artifacts={artifacts}
+        accessToken={accessToken}
+        anthropicApiKey={anthropicApiKey}
+        onToast={onToast}
+        className={text || hasPlots ? "mt-3" : ""}
       />
     ) : null;
 
@@ -337,6 +438,7 @@ export default function MessageBubble({
             <div className={proseCard}>
               {assistantMarkdownBlock}
               {assistantPlotsBlock}
+              {assistantArtifactsBlock}
             </div>
             {text && <CopyButton text={text} />}
           </div>
@@ -346,6 +448,16 @@ export default function MessageBubble({
             steps={activityBelowBody}
             active={false}
             announce={false}
+          />
+        ) : null}
+        {configWorkflow?.status === "pending_confirmation" ||
+        configWorkflow?.status === "superseded" ? (
+          <ConfigConfirmationCard
+            workflow={configWorkflow}
+            disabled={configActionsDisabled}
+            onConfirm={onConfirmConfig}
+            onCancel={onCancelConfig}
+            onTypeOther={onTypeOtherConfig}
           />
         ) : null}
       </div>
@@ -360,6 +472,7 @@ export default function MessageBubble({
         <div className="max-w-2xl min-w-0 w-full py-1">
           {assistantMarkdownBlock}
           {assistantPlotsBlock}
+          {assistantArtifactsBlock}
         </div>
         {text && <CopyButton text={text} />}
       </div>

@@ -9,11 +9,13 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Message, PlotAttachment } from "../types";
+import type { DownloadArtifact, Message, PlotAttachment, SSEEvent } from "../types";
 import type { AgentStatus } from "../hooks/useChat";
 import AnimatedMessageBubble from "./AnimatedMessageBubble";
 import { extractPlotAttachments } from "./plotAttachments";
+import { extractDownloadArtifacts } from "../artifactAttachments";
 import { PlotGrouped } from "./PlotImage";
+import ArtifactLinks from "./ArtifactLinks";
 import WelcomeCard from "./WelcomeCard";
 import WelcomeBluebotLogo from "./WelcomeBluebotLogo";
 import TurnActivityTimeline from "./TurnActivityTimeline";
@@ -22,6 +24,8 @@ import { TokenBudgetPopover } from "./TokenBudget";
 import ModelPicker from "./ModelPicker";
 import MicButton from "./MicButton";
 import ThemeToggle from "./ThemeToggle";
+import SharePopover from "./SharePopover";
+import ConfigConfirmationCard from "./ConfigConfirmationCard";
 import { IconSidebarDock } from "./SidebarIconRail";
 import type { OrchestratorModelOption } from "../api";
 import {
@@ -31,6 +35,18 @@ import {
 } from "../turnActivity";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
+
+type ConfigWorkflow = NonNullable<SSEEvent["config_workflow"]>;
+type ToastFn = (a: {
+  kind: "success" | "error";
+  title: string;
+  message?: string;
+}) => void;
+type ChatSendOptions = {
+  confirmedActionId?: string | null;
+  cancelledActionId?: string | null;
+  supersededActionId?: string | null;
+};
 
 function SendArrowIcon({ className }: { className?: string }) {
   return (
@@ -82,6 +98,7 @@ interface ChatViewProps {
   /** Assistant markdown after tools (main streamed reply). */
   streamingTail: string;
   pendingPlots: PlotAttachment[];
+  pendingArtifacts: DownloadArtifact[];
   tokenUsage: { tokens: number; pct: number };
   /** True while fetching messages for the active conversation (empty transcript). */
   historyLoading: boolean;
@@ -95,8 +112,11 @@ interface ChatViewProps {
   maxInputTokensTarget: number;
   turnActivity: TurnActivityStep[];
   turnActivityActive: boolean;
+  workspaceEvents: SSEEvent[];
   serverProcessing: boolean;
-  onSend: (text: string) => void;
+  onSend: (text: string, options?: ChatSendOptions) => void;
+  onConfirmConfig: (workflow: ConfigWorkflow) => void;
+  onCancelConfig: (workflow: ConfigWorkflow) => void;
   onCancel?: () => void;
   onDismissAssistantError?: () => void;
   disabled: boolean;
@@ -115,6 +135,19 @@ interface ChatViewProps {
   selectedModel?: string | null;
   /** Called with the new model ID when the user picks one. */
   onSelectModel?: (modelId: string) => void;
+  accessToken?: string | null;
+  anthropicApiKey?: string | null;
+  onToast?: ToastFn;
+  /**
+   * When set, shows Share in the header (export PDF + public snapshot link).
+   * Gated by the parent: only pass when a conversation is selected and has messages.
+   */
+  share?: {
+    userId: string;
+    accessToken: string;
+    conversationTitle: string;
+    onToast: (a: { kind: "success" | "error"; title: string; message?: string }) => void;
+  };
 }
 
 export default function ChatView({
@@ -124,6 +157,7 @@ export default function ChatView({
   streamingLead,
   streamingTail,
   pendingPlots,
+  pendingArtifacts,
   tokenUsage,
   historyLoading,
   tpmInputGuideTokens,
@@ -132,8 +166,11 @@ export default function ChatView({
   maxInputTokensTarget,
   turnActivity,
   turnActivityActive,
+  workspaceEvents,
   serverProcessing,
   onSend,
+  onConfirmConfig,
+  onCancelConfig,
   onCancel,
   onDismissAssistantError,
   disabled,
@@ -141,8 +178,13 @@ export default function ChatView({
   availableModels,
   selectedModel,
   onSelectModel,
+  accessToken,
+  anthropicApiKey,
+  onToast,
+  share,
 }: ChatViewProps) {
   const [input, setInput] = useState("");
+  const [replacingConfigActionId, setReplacingConfigActionId] = useState<string | null>(null);
   /**
    * Voice-to-text dictation state. See :hook:`useSpeechRecognition`.
    *
@@ -422,6 +464,7 @@ export default function ChatView({
     turnActivity,
     turnActivityActive,
     pendingPlots,
+    workspaceEvents,
   ]);
 
   /**
@@ -454,7 +497,42 @@ export default function ChatView({
       setShowJumpToLatest(meaningful);
     });
     return () => cancelAnimationFrame(raf);
-  }, [conversationId, historyLoading, isProcessing, serverProcessing]);
+  }, [conversationId, historyLoading]);
+
+  // A running turn should always bring the user back to the latest activity,
+  // but finishing that same turn must not snap the transcript back to the top.
+  useEffect(() => {
+    if (!isProcessing && !serverProcessing) return;
+    stickToBottomRef.current = true;
+    setShowJumpToLatest(false);
+    scrollContainerToBottom();
+    const raf = requestAnimationFrame(() => {
+      scrollContainerToBottom();
+      scrollRecomputeRef.current?.();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [isProcessing, serverProcessing]);
+
+  // Confirmation cards are high-priority user interactions. When one appears,
+  // keep it visible instead of preserving an older scrolled-up position.
+  useEffect(() => {
+    const pendingConfirmation = (() => {
+      for (let i = workspaceEvents.length - 1; i >= 0; i -= 1) {
+        const workflow = workspaceEvents[i]?.config_workflow;
+        if (workflow?.action_id) return workflow.status === "pending_confirmation";
+      }
+      return false;
+    })();
+    if (!pendingConfirmation) return;
+    stickToBottomRef.current = true;
+    setShowJumpToLatest(false);
+    scrollContainerToBottom();
+    const raf = requestAnimationFrame(() => {
+      scrollContainerToBottom();
+      scrollRecomputeRef.current?.();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [workspaceEvents]);
 
   useEffect(
     () => () => {
@@ -509,6 +587,24 @@ export default function ChatView({
     scrollContainerToBottom(true);
   }
 
+  function forceBottomNow() {
+    stickToBottomRef.current = true;
+    setShowJumpToLatest(false);
+    requestAnimationFrame(() => scrollContainerToBottom());
+  }
+
+  function confirmConfig(workflow: ConfigWorkflow) {
+    setReplacingConfigActionId(null);
+    forceBottomNow();
+    onConfirmConfig(workflow);
+  }
+
+  function cancelConfig(workflow: ConfigWorkflow) {
+    setReplacingConfigActionId(null);
+    forceBottomNow();
+    onCancelConfig(workflow);
+  }
+
   function handleSubmit(text?: string) {
     const msg = text ?? input;
     if (!msg.trim() || disabled) return;
@@ -516,7 +612,10 @@ export default function ChatView({
     // otherwise the recogniser's trailing ``onresult`` could re-populate the
     // textarea after the user has already submitted.
     if (speech.listening) speech.stop();
-    onSend(msg);
+    const supersededActionId = replacingConfigActionId;
+    setReplacingConfigActionId(null);
+    forceBottomNow();
+    onSend(msg, supersededActionId ? { supersededActionId } : undefined);
     setInput("");
     lastAppliedFinalRef.current = "";
     inputRef.current?.focus();
@@ -601,6 +700,8 @@ export default function ChatView({
     messages.length > 0 ||
     !!streamingLead.trim() ||
     !!streamingTail.trim() ||
+    pendingArtifacts.length > 0 ||
+    pendingPlots.length > 0 ||
     statusActive ||
     status.kind === "error" ||
     (turnActivityActive && turnActivity.length > 0);
@@ -621,19 +722,34 @@ export default function ChatView({
     );
   const hasToolSegment = activityFromFirstTool.length > 0;
 
+  const showShare =
+    share &&
+    conversationId != null &&
+    messages.length > 0;
+
   // Pair plot paths with assistant messages: collect from tool_result rows,
   // attach to the next assistant message (same logic as the Streamlit app).
   const plotsByIndex = new Map<number, PlotAttachment[]>();
+  const artifactsByIndex = new Map<number, DownloadArtifact[]>();
   {
     let queued: PlotAttachment[] = [];
+    let queuedArtifacts: DownloadArtifact[] = [];
     messages.forEach((msg, i) => {
       const next = extractPlotAttachments(msg.content);
       if (next.length > 0) {
         queued.push(...next);
       }
+      const nextArtifacts = extractDownloadArtifacts(msg.content);
+      if (nextArtifacts.length > 0) {
+        queuedArtifacts.push(...nextArtifacts);
+      }
       if (msg.role === "assistant" && queued.length > 0) {
         plotsByIndex.set(i, [...queued]);
         queued = [];
+      }
+      if (msg.role === "assistant" && queuedArtifacts.length > 0) {
+        artifactsByIndex.set(i, [...queuedArtifacts]);
+        queuedArtifacts = [];
       }
     });
   }
@@ -645,6 +761,32 @@ export default function ChatView({
     modelContextMax: modelContextWindowTokens,
     inputBudgetTarget: maxInputTokensTarget,
   } as const;
+
+  const liveConfigWorkflow = useMemo(() => {
+    for (let i = workspaceEvents.length - 1; i >= 0; i -= 1) {
+      const workflow = workspaceEvents[i]?.config_workflow;
+      if (workflow?.action_id) return workflow;
+    }
+    return null;
+  }, [workspaceEvents]);
+
+  function composeAlternativeConfig(workflow: NonNullable<SSEEvent["config_workflow"]>) {
+    const serial = workflow.serial_number || workflow.proposed_values?.serial_number;
+    const angle = workflow.proposed_values?.transducer_angle;
+    setReplacingConfigActionId(workflow.action_id ?? null);
+    const text =
+      typeof angle === "string" || typeof angle === "number"
+        ? `Instead, set meter ${serial || "<METER SERIAL>"} transducer angle to `
+        : `Instead, configure meter ${serial || "<METER SERIAL>"} with `;
+    setInput(text);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      const pos = text.length;
+      el.setSelectionRange(pos, pos);
+    });
+  }
 
   /** Same pill + field styling for welcome and active conversation (all viewports). */
   const composerShellClass =
@@ -854,9 +996,10 @@ export default function ChatView({
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 min-w-0 flex-col lg:flex-row">
+      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
       {/* Header — full width of main pane, inset from sidebar via px-6 */}
-      <header className="shrink-0 border-b border-brand-border/90 bg-gradient-to-b from-white to-brand-50/40 pt-[env(safe-area-inset-top,0px)] shadow-[0_1px_0_0_rgba(15,23,42,0.04)] backdrop-blur-md dark:from-brand-100 dark:to-brand-50 dark:shadow-[0_1px_0_0_rgba(0,0,0,0.2)]">
+      <header className="relative z-20 shrink-0 border-b border-brand-border/90 bg-gradient-to-b from-white to-brand-50/40 pt-[env(safe-area-inset-top,0px)] shadow-[0_1px_0_0_rgba(15,23,42,0.04)] backdrop-blur-md dark:from-brand-100 dark:to-brand-50 dark:shadow-[0_1px_0_0_rgba(0,0,0,0.2)]">
         <div
           className={`text-left sm:px-6 ${narrowNav
             ? "flex min-h-[2.75rem] items-center gap-3 px-4 py-3.5"
@@ -881,22 +1024,46 @@ export default function ChatView({
                   bluebot Assistant
                 </h1>
               </div>
-              <ThemeToggle size="md" className="shrink-0" />
+              <div className="flex shrink-0 items-center gap-2">
+                {showShare && (
+                  <SharePopover
+                    conversationId={conversationId!}
+                    userId={share.userId}
+                    accessToken={share.accessToken}
+                    conversationTitle={share.conversationTitle}
+                    messages={messages}
+                    onToast={share.onToast}
+                  />
+                )}
+                <ThemeToggle size="md" className="shrink-0" />
+              </div>
             </>
           ) : (
-            <div className="min-w-0 flex-1">
-              <h1 className="text-lg font-bold tracking-tight text-brand-900 sm:text-[1.0625rem]">
-                bluebot Assistant
-              </h1>
-              <p className="hidden max-w-[40rem] text-sm leading-relaxed text-brand-muted lg:mt-0.5 lg:block lg:text-xs lg:leading-snug">
-                Flow analysis, meter health, and pipe configuration — ask with a serial number.
-              </p>
+            <div className="flex w-full min-w-0 items-start justify-between gap-3 sm:items-center">
+              <div className="min-w-0 flex-1">
+                <h1 className="text-lg font-bold tracking-tight text-brand-900 sm:text-[1.0625rem]">
+                  bluebot Assistant
+                </h1>
+                <p className="hidden max-w-[40rem] text-sm leading-relaxed text-brand-muted lg:mt-0.5 lg:block lg:text-xs lg:leading-snug">
+                  Flow analysis, meter health, and pipe configuration — ask with a serial number.
+                </p>
+              </div>
+              {showShare && (
+                <SharePopover
+                  conversationId={conversationId!}
+                  userId={share.userId}
+                  accessToken={share.accessToken}
+                  conversationTitle={share.conversationTitle}
+                  messages={messages}
+                  onToast={share.onToast}
+                />
+              )}
             </div>
           )}
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col bg-brand-50">
+      <div className="relative z-0 flex min-h-0 flex-1 flex-col bg-brand-50">
         {historyLoading && messages.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-16 text-brand-muted sm:px-6">
             <svg
@@ -1000,8 +1167,17 @@ export default function ChatView({
                       key={i}
                       message={msg}
                       plots={plotsByIndex.get(i)}
+                      artifacts={artifactsByIndex.get(i)}
                       transcript={messages}
                       messageIndex={i}
+                      onConfirmConfig={confirmConfig}
+                      onCancelConfig={cancelConfig}
+                      onTypeOtherConfig={composeAlternativeConfig}
+                      configActionsDisabled={isProcessing}
+                      liveConfigEvents={workspaceEvents}
+                      accessToken={accessToken}
+                      anthropicApiKey={anthropicApiKey}
+                      onToast={onToast}
                     />
                   ))}
                 </AnimatePresence>
@@ -1046,6 +1222,28 @@ export default function ChatView({
                     />
                   </div>
                 </div>
+              )}
+
+              {pendingArtifacts.length > 0 && (
+                <div className="flex justify-start">
+                  <ArtifactLinks
+                    artifacts={pendingArtifacts}
+                    accessToken={accessToken}
+                    anthropicApiKey={anthropicApiKey}
+                    onToast={onToast}
+                    className="max-w-2xl"
+                  />
+                </div>
+              )}
+
+              {liveConfigWorkflow?.status === "pending_confirmation" && (
+                <ConfigConfirmationCard
+                  workflow={liveConfigWorkflow}
+                  disabled={isProcessing}
+                  onConfirm={confirmConfig}
+                  onCancel={cancelConfig}
+                  onTypeOther={composeAlternativeConfig}
+                />
               )}
 
               {serverProcessing && status.kind === "idle" && (
@@ -1204,6 +1402,7 @@ export default function ChatView({
           </div>
         )}
       </div>
+    </div>
     </div>
   );
 }

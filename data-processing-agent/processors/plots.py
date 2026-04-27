@@ -27,6 +27,7 @@ from processors.plot_captions import (
     caption_signal_quality,
     caption_time_series,
 )
+from processors.plot_diagnostics import build_diagnostic_markers, diagnostic_caption
 from processors.sampling_physics import max_healthy_inter_arrival_seconds
 
 # data-processing-agent/ (parent of processors/)
@@ -480,6 +481,162 @@ def _signal_quality(
 
 
 # ---------------------------------------------------------------------------
+# Plot type: diagnostic_timeline
+# ---------------------------------------------------------------------------
+
+def _dedup_legend(ax) -> None:
+    handles, labels = ax.get_legend_handles_labels()
+    seen = set()
+    kept_handles = []
+    kept_labels = []
+    for handle, label in zip(handles, labels):
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        kept_handles.append(handle)
+        kept_labels.append(label)
+    if kept_handles:
+        ax.legend(kept_handles, kept_labels, fontsize=8, loc="upper left")
+
+
+def _diagnostic_timeline(
+    timestamps: np.ndarray,
+    values: np.ndarray,
+    quality: np.ndarray,
+    serial_number: str,
+    start: float,
+    tz_name: str | None = None,
+    verified_facts: dict | None = None,
+) -> dict:
+    if len(timestamps) == 0:
+        return {"error": "No flow values to plot."}
+
+    tz_info = describe_plot_tz(tz_name)
+    tz = tz_info["tzinfo"]
+    markers = build_diagnostic_markers(timestamps, values, quality, verified_facts)
+
+    fig, ax = plt.subplots(figsize=(12, 4.6))
+    line_ts, line_v = _series_with_gap_breaks(timestamps, values)
+    ax.plot(
+        _to_datetimes_nan_aware(line_ts),
+        line_v,
+        color="#2563eb",
+        linewidth=0.85,
+        label="Flow rate",
+    )
+
+    valid_values = values[~np.isnan(values)]
+    y_min = float(np.nanmin(valid_values)) if len(valid_values) else 0.0
+    y_max = float(np.nanmax(valid_values)) if len(valid_values) else 1.0
+    if y_min == y_max:
+        y_max = y_min + 1.0
+    y_span = max(y_max - y_min, 1.0)
+    text_y = y_max + y_span * 0.04
+
+    for marker in markers:
+        kind = marker.get("type")
+        severity = str(marker.get("severity") or "low")
+        alpha = {"high": 0.22, "medium": 0.16, "low": 0.10}.get(severity, 0.10)
+
+        if kind == "gap":
+            s = marker.get("start")
+            e = marker.get("end")
+            if s is not None and e is not None:
+                ax.axvspan(
+                    datetime.fromtimestamp(float(s), tz=timezone.utc),
+                    datetime.fromtimestamp(float(e), tz=timezone.utc),
+                    color="#64748b",
+                    alpha=alpha,
+                    label="Missing data",
+                )
+        elif kind == "low_quality":
+            s = marker.get("start")
+            e = marker.get("end")
+            if s is not None and e is not None:
+                ax.axvspan(
+                    datetime.fromtimestamp(float(s), tz=timezone.utc),
+                    datetime.fromtimestamp(float(e), tz=timezone.utc),
+                    color="#dc2626",
+                    alpha=alpha,
+                    label="Low signal quality",
+                )
+        elif kind == "drift":
+            ts = marker.get("timestamp")
+            if ts is not None:
+                dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+                ax.axvline(dt, color="#f97316", linewidth=1.5, linestyle="--", label="Drift alarm")
+                ax.annotate(
+                    str(marker.get("label") or "Drift alarm"),
+                    xy=(dt, text_y),
+                    xytext=(4, 0),
+                    textcoords="offset points",
+                    fontsize=8,
+                    color="#9a3412",
+                    va="bottom",
+                )
+        elif kind in {"flatline", "baseline"}:
+            s = marker.get("start")
+            e = marker.get("end")
+            if s is not None and e is not None:
+                color = "#8b5cf6" if kind == "flatline" else "#0891b2"
+                label = "Near-constant flow" if kind == "flatline" else "Possible baseline rise"
+                ax.axvspan(
+                    datetime.fromtimestamp(float(s), tz=timezone.utc),
+                    datetime.fromtimestamp(float(e), tz=timezone.utc),
+                    color=color,
+                    alpha=0.08 if kind == "flatline" else 0.10,
+                    label=label,
+                )
+                if kind == "baseline":
+                    quiet = (verified_facts or {}).get("quiet_flow_baseline")
+                    if isinstance(quiet, dict) and quiet.get("quiet_flow_median") is not None:
+                        try:
+                            median = float(quiet["quiet_flow_median"])
+                            ax.axhline(
+                                median,
+                                color=color,
+                                linewidth=1.0,
+                                linestyle=":",
+                                label="Quiet-flow baseline",
+                            )
+                        except (TypeError, ValueError):
+                            pass
+
+    if not markers:
+        ax.text(
+            0.5,
+            0.92,
+            "No diagnostic markers in this window",
+            transform=ax.transAxes,
+            ha="center",
+            va="top",
+            fontsize=9,
+            color="#64748b",
+        )
+
+    ax.set_title(f"Diagnostic Timeline — {serial_number}", fontsize=11)
+    ax.set_xlabel(_xaxis_label(tz, float(timestamps[0]), tz_info["label"]))
+    ax.set_ylabel("Flow Rate (gal/min)")
+    ax.set_ylim(y_min - y_span * 0.05, y_max + y_span * 0.16)
+    ax.grid(True, alpha=0.28)
+    _format_xaxis(ax, timestamps, tz=tz)
+    _dedup_legend(ax)
+    fig.tight_layout()
+
+    path = _save(fig, serial_number, start, "diagnostic_timeline")
+    _pending.append((fig, path))
+    caption = diagnostic_caption(markers, verified_facts)
+    _pending_captions[path] = caption
+    return {
+        "path": path,
+        "title": "Diagnostic Timeline",
+        "marker_count": len(markers),
+        "tz": tz_info["zone"],
+        "caption": caption,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Public dispatcher
 # ---------------------------------------------------------------------------
 
@@ -488,10 +645,13 @@ _HANDLERS = {
     "flow_duration_curve": _flow_duration_curve,
     "peaks_annotated":     _peaks_annotated,
     "signal_quality":      _signal_quality,
+    "diagnostic_timeline": _diagnostic_timeline,
 }
 
 
-_TZ_AWARE_PLOT_TYPES = frozenset({"time_series", "peaks_annotated", "signal_quality"})
+_TZ_AWARE_PLOT_TYPES = frozenset(
+    {"time_series", "peaks_annotated", "signal_quality", "diagnostic_timeline"}
+)
 
 
 def generate_plot(
@@ -502,6 +662,7 @@ def generate_plot(
     serial_number: str,
     start: float,
     tz_name: str | None = None,
+    verified_facts: dict | None = None,
 ) -> dict:
     """
     Generate and save a chart as a PNG file.
@@ -522,6 +683,16 @@ def generate_plot(
                 f"Valid options: {list(_HANDLERS)}"
             )
         }
+    if plot_type == "diagnostic_timeline":
+        return handler(
+            timestamps,
+            values,
+            quality,
+            serial_number,
+            start,
+            tz_name=tz_name,
+            verified_facts=verified_facts,
+        )
     if plot_type in _TZ_AWARE_PLOT_TYPES:
         return handler(timestamps, values, quality, serial_number, start, tz_name=tz_name)
     return handler(timestamps, values, quality, serial_number, start)

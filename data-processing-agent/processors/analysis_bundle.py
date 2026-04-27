@@ -16,6 +16,10 @@ def build_analysis_bundle(
     plot_paths: List[str],
     *,
     plot_captions: Optional[Dict[str, Dict[str, Any]]] = None,
+    analysis_mode: Optional[str] = None,
+    long_range_summary: Optional[Dict[str, Any]] = None,
+    analysis_metadata: Optional[Dict[str, Any]] = None,
+    download_artifacts: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Machine-readable audit bundle.
 
@@ -34,4 +38,12 @@ def build_analysis_bundle(
     }
     if plot_captions:
         bundle["plot_captions"] = plot_captions
+    if analysis_mode:
+        bundle["analysis_mode"] = analysis_mode
+    if long_range_summary:
+        bundle["long_range_summary"] = long_range_summary
+    if analysis_metadata:
+        bundle["analysis_metadata"] = analysis_metadata
+    if download_artifacts:
+        bundle["download_artifacts"] = download_artifacts
     return bundle

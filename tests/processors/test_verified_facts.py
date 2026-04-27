@@ -44,9 +44,11 @@ def test_build_verified_facts_core_keys(synthetic_df):
         "signal_quality",
         "quiet_flow_baseline",
         "flatline",
+        "cusum_drift",
         "coverage_6h",
         "baseline_quality",
         "filter_applied",
+        "anomaly_attribution",
     ]:
         assert key in facts, f"missing key: {key}"
 
@@ -54,6 +56,15 @@ def test_build_verified_facts_core_keys(synthetic_df):
     assert facts["sampling_median_interval_seconds"] == pytest.approx(2.0)
     assert facts["gap_event_count"] == 0
     assert facts["zero_flow_period_count"] >= 1
+    assert facts["cusum_drift"]["skipped"] is False
+    assert facts["anomaly_attribution"]["primary_type"] in {
+        "normal",
+        "real_flow_change",
+        "possible_leak_or_baseline_rise",
+        "sensor_or_install_issue",
+        "communications_or_sampling_issue",
+        "insufficient_data",
+    }
 
 
 def test_empty_dataframe_short_circuits():
@@ -101,6 +112,18 @@ def test_slim_drops_not_requested_filter_applied(synthetic_df):
     slim = slim_verified_facts_for_prompt(facts)
     assert "filter_applied" in facts
     assert "filter_applied" not in slim
+
+
+def test_slim_keeps_compact_anomaly_attribution(synthetic_df):
+    facts = build_verified_facts(synthetic_df)
+    facts["anomaly_attribution"]["evidence"] = [
+        {"code": f"E{i}", "message": f"evidence {i}", "source": "test"}
+        for i in range(10)
+    ]
+    slim = slim_verified_facts_for_prompt(facts)
+    attr = slim["anomaly_attribution"]
+    assert attr["primary_type"] == facts["anomaly_attribution"]["primary_type"]
+    assert len(attr["evidence"]) == 3
 
 
 def test_slim_keeps_non_default_filter_applied(synthetic_df):

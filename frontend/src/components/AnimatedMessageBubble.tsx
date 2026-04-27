@@ -1,13 +1,29 @@
 import { motion } from "framer-motion";
 import { messageVariants, imageVariants } from "../utils/animations";
 import MessageBubble from "./MessageBubble";
-import type { Message, PlotAttachment } from "../types";
+import type { DownloadArtifact, Message, PlotAttachment, SSEEvent } from "../types";
+
+type ConfigWorkflow = NonNullable<SSEEvent["config_workflow"]>;
+type ToastFn = (a: {
+  kind: "success" | "error";
+  title: string;
+  message?: string;
+}) => void;
 
 interface AnimatedMessageBubbleProps {
   message: Message;
   plots?: PlotAttachment[];
+  artifacts?: DownloadArtifact[];
   transcript?: Message[];
   messageIndex?: number;
+  onConfirmConfig?: (workflow: ConfigWorkflow) => void;
+  onCancelConfig?: (workflow: ConfigWorkflow) => void;
+  onTypeOtherConfig?: (workflow: ConfigWorkflow) => void;
+  configActionsDisabled?: boolean;
+  liveConfigEvents?: SSEEvent[];
+  accessToken?: string | null;
+  anthropicApiKey?: string | null;
+  onToast?: ToastFn;
 }
 
 /**
@@ -16,8 +32,17 @@ interface AnimatedMessageBubbleProps {
 export default function AnimatedMessageBubble({
   message,
   plots,
+  artifacts,
   transcript,
   messageIndex,
+  onConfirmConfig,
+  onCancelConfig,
+  onTypeOtherConfig,
+  configActionsDisabled,
+  liveConfigEvents,
+  accessToken,
+  anthropicApiKey,
+  onToast,
 }: AnimatedMessageBubbleProps) {
   return (
     <motion.div
@@ -30,8 +55,17 @@ export default function AnimatedMessageBubble({
       <MessageBubble
         message={message}
         plots={plots}
+        artifacts={artifacts}
         transcript={transcript}
         messageIndex={messageIndex}
+        onConfirmConfig={onConfirmConfig}
+        onCancelConfig={onCancelConfig}
+        onTypeOtherConfig={onTypeOtherConfig}
+        configActionsDisabled={configActionsDisabled}
+        liveConfigEvents={liveConfigEvents}
+        accessToken={accessToken}
+        anthropicApiKey={anthropicApiKey}
+        onToast={onToast}
       />
     </motion.div>
   );

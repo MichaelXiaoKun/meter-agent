@@ -123,8 +123,6 @@ def _install_processors_time_range_stub() -> None:
     we stub here are not on the code path we're asserting against (we only
     care about ``BLUEBOT_PLOT_TZ`` ending up in the subprocess env).
     """
-    if "processors.time_range" in sys.modules:
-        return
     proc = sys.modules.get("processors")
     if proc is None:
         proc = ModuleType("processors")
@@ -165,6 +163,7 @@ def flow_analysis_mod():
     """The ``tools.flow_analysis`` module (stubs installed before first import)."""
     _install_processors_time_range_stub()
     _ensure_subprocess_env_module()
+    sys.modules.pop("tools.flow_analysis", None)
     import tools.flow_analysis as fa  # noqa: WPS433
     return fa
 
@@ -186,12 +185,16 @@ class TestAnalyzeFlowDataExportsPlotTz:
         monkeypatch.delenv("BLUEBOT_PLOT_TZ", raising=False)
         monkeypatch.delenv("DISPLAY_TZ", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        import tools.flow_analysis as fa  # noqa: WPS433
+
+        fa.clear_result_cache()
 
     def _run(self, analyze_flow_data, **kwargs):
         captured: dict = {}
 
         def fake_run(*_args, **subprocess_kwargs):
             captured.update(subprocess_kwargs.get("env") or {})
+            captured["args"] = _args[0] if _args else []
             return _fake_completed()
 
         import tools.flow_analysis as fa  # noqa: WPS433
@@ -239,6 +242,13 @@ class TestAnalyzeFlowDataExportsPlotTz:
         assert env.get("BLUEBOT_METER_NETWORK_TYPE") == "lorawan"
         assert env.get("BLUEBOT_PLOT_TZ") == "America/Denver"
 
+    def test_analysis_mode_is_passed_to_subprocess(self, analyze_flow_data):
+        env, result = self._run(analyze_flow_data, analysis_mode="summary")
+        assert "--analysis-mode" in env["args"]
+        idx = env["args"].index("--analysis-mode")
+        assert env["args"][idx + 1] == "summary"
+        assert result["analysis_mode"] == "summary"
+
     def test_failure_path_still_returns_plot_timezone(self, analyze_flow_data):
         import tools.flow_analysis as fa  # noqa: WPS433
 
@@ -268,6 +278,8 @@ class TestAnalyzeFlowDataTimestampCoercion:
         monkeypatch.delenv("BLUEBOT_PLOT_TZ", raising=False)
         monkeypatch.delenv("DISPLAY_TZ", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        flow_analysis_mod = __import__("tools.flow_analysis", fromlist=["clear_result_cache"])
+        flow_analysis_mod.clear_result_cache()
 
     def test_string_start_end_reaches_subprocess_as_int_strings(
         self, analyze_flow_data
@@ -426,6 +438,20 @@ class TestPlotSummaries:
         assert r[0]["plot_type"] == "unknown"
         assert r[0]["title"] == "Analysis plot"
 
+    def test_diagnostic_timeline_title_and_caption(self, flow_analysis_mod):
+        cap = {
+            "plot_type": "diagnostic_timeline",
+            "diagnostic_markers": [{"type": "drift", "label": "Drift alarm"}],
+        }
+        r = flow_analysis_mod._plot_summaries(
+            ["/tmp/BBX_1700000000_diagnostic_timeline.png"],
+            "UTC",
+            plot_captions={"/tmp/BBX_1700000000_diagnostic_timeline.png": cap},
+        )
+        assert r[0]["plot_type"] == "diagnostic_timeline"
+        assert r[0]["title"] == "Diagnostic timeline"
+        assert r[0]["caption"]["diagnostic_markers"][0]["type"] == "drift"
+
 
 class TestCollectPlotPathsAndAnalysisJson:
     def test_stderr_plot_paths_wins(self, flow_analysis_mod):
@@ -456,6 +482,21 @@ class TestCollectPlotPathsAndAnalysisJson:
             {"path": "/a/../b.json"}
         )
         assert flow_analysis_mod._collect_analysis_json_path(line) is None
+
+    def test_collect_analysis_details_happy(self, flow_analysis_mod):
+        line = flow_analysis_mod._ANALYSIS_DETAILS_MARKER + json.dumps(
+            {
+                "cusum_drift": {"drift_detected": "upward"},
+                "attribution": {"primary_type": "real_flow_change"},
+            }
+        )
+        assert flow_analysis_mod._collect_analysis_details(line)["cusum_drift"][
+            "drift_detected"
+        ] == "upward"
+        assert (
+            flow_analysis_mod._collect_analysis_details(line)["attribution"]["primary_type"]
+            == "real_flow_change"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +533,12 @@ class TestAnalyzeFlowDataIntegration:
             + json.dumps({"path": "/tmp/analysis.json"})
             + "\n"
         )
+        stderr += flow_analysis_mod._ANALYSIS_DETAILS_MARKER + json.dumps(
+            {
+                "cusum_drift": {"drift_detected": "none", "skipped": False},
+                "attribution": {"primary_type": "normal", "severity": "none"},
+            }
+        ) + "\n"
         stderr += flow_analysis_mod._PLOT_PATHS_MARKER + json.dumps(
             ["/tmp/BBX_1700000000_time_series.png"]
         )
@@ -511,6 +558,8 @@ class TestAnalyzeFlowDataIntegration:
             )
         assert r["success"] is True
         assert r["analysis_json_path"] == "/tmp/analysis.json"
+        assert r["analysis_details"]["cusum_drift"]["drift_detected"] == "none"
+        assert r["analysis_details"]["attribution"]["primary_type"] == "normal"
         assert r["plot_paths"] == ["/tmp/BBX_1700000000_time_series.png"]
         assert len(r["plot_summaries"]) == 1
         assert r["display_range"] == "[1,2]@UTC"
@@ -585,6 +634,91 @@ class TestAnalyzeFlowDataIntegration:
                 network_type="WIFI",
             )
         assert cap.get("BLUEBOT_METER_NETWORK_TYPE") == "wifi"
+
+    def test_success_result_cache_reuses_identical_window(self, flow_analysis_mod):
+        flow_analysis_mod.clear_result_cache()
+        calls = 0
+
+        def fake_run(_cmd, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return _fake_completed("# Cached report")
+
+        with patch.object(flow_analysis_mod.subprocess, "run", side_effect=fake_run):
+            first = flow_analysis_mod.analyze_flow_data(
+                serial_number="BBCACHE",
+                start=10,
+                end=20,
+                token="tok-a",
+                meter_timezone="UTC",
+            )
+            second = flow_analysis_mod.analyze_flow_data(
+                serial_number="BBCACHE",
+                start=10,
+                end=20,
+                token="tok-a",
+                meter_timezone="UTC",
+            )
+
+        assert calls == 1
+        assert first == second
+        assert second["report"] == "# Cached report"
+        flow_analysis_mod.clear_result_cache()
+
+    def test_result_cache_can_be_disabled(self, flow_analysis_mod, monkeypatch):
+        flow_analysis_mod.clear_result_cache()
+        monkeypatch.setenv("BLUEBOT_FLOW_RESULT_CACHE_SIZE", "0")
+        calls = 0
+
+        def fake_run(_cmd, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return _fake_completed(f"# Report {calls}")
+
+        with patch.object(flow_analysis_mod.subprocess, "run", side_effect=fake_run):
+            flow_analysis_mod.analyze_flow_data(
+                serial_number="BBCACHE-OFF",
+                start=10,
+                end=20,
+                token="tok",
+            )
+            flow_analysis_mod.analyze_flow_data(
+                serial_number="BBCACHE-OFF",
+                start=10,
+                end=20,
+                token="tok",
+            )
+
+        assert calls == 2
+        flow_analysis_mod.clear_result_cache()
+
+    def test_result_cache_is_scoped_by_token(self, flow_analysis_mod):
+        flow_analysis_mod.clear_result_cache()
+        calls = 0
+
+        def fake_run(_cmd, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return _fake_completed(f"# Token report {calls}")
+
+        with patch.object(flow_analysis_mod.subprocess, "run", side_effect=fake_run):
+            first = flow_analysis_mod.analyze_flow_data(
+                serial_number="BBCACHE-SCOPE",
+                start=10,
+                end=20,
+                token="tok-a",
+            )
+            second = flow_analysis_mod.analyze_flow_data(
+                serial_number="BBCACHE-SCOPE",
+                start=10,
+                end=20,
+                token="tok-b",
+            )
+
+        assert calls == 2
+        assert first["report"] == "# Token report 1"
+        assert second["report"] == "# Token report 2"
+        flow_analysis_mod.clear_result_cache()
 
 
 class TestAnalyzeFlowInputsErrorPayload:

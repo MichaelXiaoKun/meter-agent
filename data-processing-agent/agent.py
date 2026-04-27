@@ -31,6 +31,7 @@ from processors.quality import detect_low_quality_readings
 from processors.quiet_baseline import summarize_quiet_flow_baseline
 from processors.plots import generate_plot, pop_figures
 from processors.verified_facts import build_verified_facts, slim_verified_facts_for_prompt
+from processors.change_point import compute_cusum
 
 TOOLS = [
     {
@@ -192,6 +193,37 @@ TOOLS = [
         },
     },
     {
+        "name": "detect_drift_cusum",
+        "description": (
+            "Detect persistent upward/downward drift in flow rate using bidirectional CUSUM. "
+            "Runs only when the series meets the processor's DATA_REQUIREMENTS; otherwise returns "
+            "a structured skipped result with an adequacy report. Defaults use median target mean "
+            "and MAD-derived sigma, with k=0.5 sigma and h=5 sigma."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target_mean": {
+                    "type": "number",
+                    "description": "Optional reference mean. Default: in-window median flow rate.",
+                },
+                "target_std": {
+                    "type": "number",
+                    "description": "Optional reference standard deviation. Default: robust MAD-derived sigma.",
+                },
+                "k_sigma": {
+                    "type": "number",
+                    "description": "CUSUM slack in sigma units. Default: 0.5.",
+                },
+                "h_sigma": {
+                    "type": "number",
+                    "description": "CUSUM alarm threshold in sigma units. Default: 5.0.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "generate_plot",
         "description": (
             "Generate and save a chart of the flow rate data as a PNG file. "
@@ -205,12 +237,19 @@ TOOLS = [
             "properties": {
                 "plot_type": {
                     "type": "string",
-                    "enum": ["time_series", "flow_duration_curve", "peaks_annotated", "signal_quality"],
+                    "enum": [
+                        "time_series",
+                        "flow_duration_curve",
+                        "peaks_annotated",
+                        "signal_quality",
+                        "diagnostic_timeline",
+                    ],
                     "description": (
                         "time_series: flow rate over time with low-quality readings highlighted in red. "
                         "flow_duration_curve: exceedance probability chart (Q10/Q50/Q90 marked). "
                         "peaks_annotated: time series with detected peaks labelled. "
-                        "signal_quality: quality score over time with threshold line at 60 and low-quality zone shaded."
+                        "signal_quality: quality score over time with threshold line at 60 and low-quality zone shaded. "
+                        "diagnostic_timeline: flow timeline with deterministic drift, gap, quality, flatline, and baseline markers."
                     ),
                 }
             },
@@ -238,6 +277,7 @@ def _dispatch_tool(
     values: np.ndarray,
     quality: np.ndarray,
     serial_number: str,
+    verified_facts: Optional[Dict[str, Any]] = None,
 ) -> Any:
     """Route a tool call to the correct processor function."""
     if name == "compute_descriptive_stats":
@@ -283,12 +323,23 @@ def _dispatch_tool(
             quiet_percentile=float(inputs.get("quiet_percentile", 10.0)),
         )
 
+    elif name == "detect_drift_cusum":
+        return compute_cusum(
+            timestamps,
+            values,
+            target_mean=inputs.get("target_mean"),
+            target_std=inputs.get("target_std"),
+            k_sigma=float(inputs.get("k_sigma", 0.5)),
+            h_sigma=float(inputs.get("h_sigma", 5.0)),
+        )
+
     elif name == "generate_plot":
         return generate_plot(
             inputs["plot_type"],
             timestamps, values, quality,
             serial_number=serial_number,
             start=timestamps[0] if len(timestamps) else 0,
+            verified_facts=verified_facts,
         )
 
     else:
@@ -354,8 +405,16 @@ def analyze(df: pd.DataFrame, serial_number: str, verified_facts: Optional[Dict[
         "always anchored to those tool-backed values, not generic boilerplate. "
         "When you cite a headline figure (median/mean/min/max flow, gap counts, zero-flow periods, "
         "low-quality share, quiet-flow median), use the value from `verified_facts_precomputed` or the matching tool result. "
-        "`verified_facts_precomputed` may include `flatline` (constant or near-constant flow) and `coverage_6h` "
-        "(per-window sample density); use them when discussing variability and time coverage. "
+        "`verified_facts_precomputed` may include `flatline` (constant or near-constant flow), `coverage_6h` "
+        "(per-window sample density), and `cusum_drift` (bidirectional CUSUM persistent drift detection); "
+        "use them when discussing variability, time coverage, and sustained upward/downward shifts. "
+        "When the user asks about drift, change points, or sustained shifts, explicitly cite `cusum_drift` "
+        "or call `detect_drift_cusum` if you need full alarm rows. If `cusum_drift.skipped=true`, explain the "
+        "adequacy reason instead of making a drift claim. "
+        "`verified_facts_precomputed` may also include `anomaly_attribution`, a deterministic diagnosis with "
+        "`primary_type`, `severity`, `confidence`, `summary`, `evidence[]`, `counter_evidence[]`, and `next_checks[]`. "
+        "Use that attribution as the first explanation anchor for anomaly type and likely cause. Do not invent causes "
+        "or evidence outside that attribution; you may only explain, qualify, or translate its provided evidence. "
         "It also includes `reasoning_schema` with fields `regime`, `evidence[]`, `hypotheses[]`, and `next_checks[]` — "
         "treat these as the primary anchor for your conclusions and recommendations: cite the codes "
         "(e.g. `E_GAP_LONG`, `H_COMMS_INSTABILITY`) rather than re-deriving the same story in prose, and keep the "
@@ -374,6 +433,8 @@ def analyze(df: pd.DataFrame, serial_number: str, verified_facts: Optional[Dict[
         "After calling all relevant tools, always call generate_plot with "
         "plot_type='time_series'. Always also call it with plot_type='signal_quality' "
         "when quality scores are present (has_quality_scores=true). "
+        "The CLI also adds a deterministic diagnostic_timeline plot from verified facts; "
+        "do not invent visual markers beyond that plot's caption metadata. "
         "Also call it with 'peaks_annotated' when peaks are present, "
         "and 'flow_duration_curve' for a complete analysis. "
         "Embed each returned path in the report as a Markdown image using the "
@@ -420,7 +481,15 @@ def analyze(df: pd.DataFrame, serial_number: str, verified_facts: Optional[Dict[
 
             tool_results = []
             for tc in response.tool_calls:
-                result = _dispatch_tool(tc.name, tc.input, timestamps, values, quality, serial_number)
+                result = _dispatch_tool(
+                    tc.name,
+                    tc.input,
+                    timestamps,
+                    values,
+                    quality,
+                    serial_number,
+                    verified_facts=verified_facts,
+                )
                 tool_results.append(
                     {
                         "type": "tool_result",

@@ -14,6 +14,11 @@ import { useChat } from "./hooks/useChat";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 import { fetchOrchestratorConfig } from "./api";
 import type { OrchestratorModelOption } from "./api";
+import {
+  cancellationUserMessage,
+  confirmationUserMessage,
+  type ConfigWorkflow,
+} from "./configWorkflowCopy";
 
 function useLocalStorage(key: string, fallback: string) {
   const [value, setValue] = useState(
@@ -263,6 +268,11 @@ export default function App() {
   const { conversations, listLoaded, refresh, create, remove, removeMany, rename } =
     useConversations(user);
 
+  const activeConversationTitle = useMemo(() => {
+    if (!activeConvId) return "Conversation";
+    return conversations.find((c) => c.id === activeConvId)?.title?.trim() || "Conversation";
+  }, [conversations, activeConvId]);
+
   const {
     messages,
     status,
@@ -271,6 +281,8 @@ export default function App() {
     tokenUsage,
     historyLoading,
     pendingPlots,
+    pendingArtifacts,
+    workspaceEvents,
     turnActivity,
     turnActivityActive,
     processingConvId,
@@ -362,7 +374,14 @@ export default function App() {
     }
   }
 
-  async function handleSend(text: string) {
+  async function handleSend(
+    text: string,
+    options?: {
+      confirmedActionId?: string | null;
+      cancelledActionId?: string | null;
+      supersededActionId?: string | null;
+    },
+  ) {
     let convId = activeConvId;
     if (!convId && user) {
       convId = await create();
@@ -372,7 +391,22 @@ export default function App() {
       }
     }
     if (!convId) return;
-    sendMessage(text, convId).then(() => refresh());
+    sendMessage(text, convId, options).then(() => refresh());
+  }
+
+  function handleConfirmConfig(workflow: ConfigWorkflow) {
+    const actionId = workflow.action_id;
+    if (!actionId) return;
+    const message = confirmationUserMessage(workflow);
+    void handleSend(message, { confirmedActionId: actionId });
+  }
+
+  function handleCancelConfig(workflow: ConfigWorkflow) {
+    const actionId = workflow.action_id;
+    if (!actionId) return;
+    void handleSend(cancellationUserMessage(), {
+      cancelledActionId: actionId,
+    });
   }
 
   if (!isLoggedIn) {
@@ -471,6 +505,8 @@ export default function App() {
           streamingLead={streamingLead}
           streamingTail={streamingTail}
           pendingPlots={pendingPlots}
+          pendingArtifacts={pendingArtifacts}
+          workspaceEvents={workspaceEvents}
           tokenUsage={tokenUsage}
           historyLoading={historyLoading}
           tpmInputGuideTokens={effectiveTpmGuide}
@@ -481,12 +517,39 @@ export default function App() {
           turnActivityActive={turnActivityActive}
           serverProcessing={serverProcessing}
           onSend={handleSend}
+          onConfirmConfig={handleConfirmConfig}
+          onCancelConfig={handleCancelConfig}
           onCancel={cancel}
           onDismissAssistantError={clearAssistantError}
           disabled={false}
           availableModels={availableModels}
           selectedModel={selectedModel ?? defaultModel}
           onSelectModel={handleSelectModel}
+          accessToken={token}
+          anthropicApiKey={anthropicApiKey}
+          onToast={(a) => {
+            if (a.kind === "success") {
+              toast.success(a.title, a.message);
+            } else {
+              toast.error(a.title, a.message);
+            }
+          }}
+          share={
+            user && token
+              ? {
+                userId: user,
+                accessToken: token,
+                conversationTitle: activeConversationTitle,
+                onToast: (a) => {
+                  if (a.kind === "success") {
+                    toast.success(a.title, a.message);
+                  } else {
+                    toast.error(a.title, a.message);
+                  }
+                },
+              }
+              : undefined
+          }
           narrowNav={
             isNarrow
               ? {

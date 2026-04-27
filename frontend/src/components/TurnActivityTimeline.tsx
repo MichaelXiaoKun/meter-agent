@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from "framer-motion";
-import type { TurnActivityStep } from "../turnActivity";
+import type { TurnActivityDetail, TurnActivityStep } from "../turnActivity";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 
 interface TurnActivityTimelineProps {
@@ -21,7 +21,7 @@ function isResponding(
 ): boolean {
   if (!active || !isLast) return false;
   if (step.kind === "done" || step.kind === "error") return false;
-  if (step.kind === "tool" && step.phase === "done") return false;
+  if (step.kind === "tool" && (step.phase === "done" || step.phase === "waiting_confirmation")) return false;
   if (step.kind === "thinking" && /^Thought for\b/u.test(step.title)) return false;
   return true;
 }
@@ -40,14 +40,14 @@ const COMPACT_MAIN: Record<TurnActivityStep["kind"], string> = {
 };
 
 const STEP_ICONS: Record<TurnActivityStep["kind"], string> = {
-  connecting: "↗",
-  intent_route: "🎯",
-  queued: "⏳",
-  thinking: "💭",
-  context: "📊",
-  compressing: "🗜",
-  tool: "⚙️",
-  stream: "✨",
+  connecting: "→",
+  intent_route: "⌁",
+  queued: "…",
+  thinking: "∙",
+  context: "%",
+  compressing: "⇄",
+  tool: "⚙",
+  stream: "✦",
   done: "✓",
   error: "✕",
 };
@@ -113,6 +113,12 @@ function bodyLineText(step: TurnActivityStep, compact: boolean): string | undefi
         }
         return step.detail?.trim() || undefined;
       }
+      if (step.phase === "waiting_confirmation") {
+        return step.detail?.trim() || "No device change has been sent.";
+      }
+      if (step.phase === "done" && step.ok && step.detail?.trim()) {
+        return step.detail.trim();
+      }
       if (step.phase === "done" && step.ok && step.progressLines?.length) {
         if (compact) {
           return `${step.progressLines.length} update(s)`;
@@ -129,6 +135,81 @@ function bodyLineText(step: TurnActivityStep, compact: boolean): string | undefi
     default:
       return step.detail;
   }
+}
+
+const DETAIL_TONE_CLASS: Record<NonNullable<TurnActivityDetail["tone"]>, string> = {
+  default:
+    "border-neutral-200/80 bg-neutral-50/80 text-neutral-500 dark:border-neutral-700/80 dark:bg-neutral-900/35 dark:text-neutral-400",
+  success:
+    "border-emerald-200/80 bg-emerald-50/80 text-emerald-700 dark:border-emerald-900/70 dark:bg-emerald-950/25 dark:text-emerald-300",
+  warning:
+    "border-amber-200/90 bg-amber-50/80 text-amber-700 dark:border-amber-900/80 dark:bg-amber-950/25 dark:text-amber-300",
+  danger:
+    "border-red-200/90 bg-red-50/80 text-red-700 dark:border-red-900/80 dark:bg-red-950/25 dark:text-red-300",
+};
+
+function DetailChips({
+  details,
+  compact,
+}: {
+  details: TurnActivityDetail[];
+  compact: boolean;
+}) {
+  if (details.length === 0) return null;
+  const priority: Record<string, number> = {
+    CUSUM: 0,
+    Drift: 1,
+    Alarms: 2,
+    Adequacy: 3,
+    Cache: 4,
+    Report: 5,
+    Plots: 6,
+    "Plot types": 7,
+    "Plot TZ": 8,
+    Range: 9,
+    Meter: 10,
+    Window: 11,
+    Network: 12,
+  };
+  const ordered = [...details].sort(
+    (a, b) => (priority[a.label] ?? 50) - (priority[b.label] ?? 50)
+  );
+  const hasCusum = ordered.some((d) => d.label === "CUSUM");
+  const max = compact ? (hasCusum ? 4 : 3) : 8;
+  const visible = ordered.slice(0, max);
+  const hidden = Math.max(0, details.length - visible.length);
+  return (
+    <dl className="mt-1.5 flex max-w-2xl flex-wrap gap-1.5">
+      {visible.map((d, i) => {
+        const tone = d.tone ?? "default";
+        return (
+          <div
+            key={`${d.label}-${d.value}-${i}`}
+            className={[
+              "flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5",
+              compact ? "text-[10px]" : "text-[11px]",
+              DETAIL_TONE_CLASS[tone],
+            ].join(" ")}
+          >
+            <dt className="shrink-0 font-medium uppercase tracking-normal opacity-70">
+              {d.label}
+            </dt>
+            <dd className="min-w-0 truncate">{d.value}</dd>
+          </div>
+        );
+      })}
+      {hidden > 0 ? (
+        <div
+          className={[
+            "rounded-md border border-neutral-200/80 bg-neutral-50/80 px-1.5 py-0.5 text-neutral-500 dark:border-neutral-700/80 dark:bg-neutral-900/35 dark:text-neutral-400",
+            compact ? "text-[10px]" : "text-[11px]",
+          ].join(" ")}
+        >
+          +{hidden}
+        </div>
+      ) : null}
+    </dl>
+  );
 }
 
 /**
@@ -149,9 +230,15 @@ function StepRow({
   const responding = isResponding(step, isLast, active);
   const main = mainLineText(step, compact, active);
   const body = bodyLineText(step, compact);
+  const details = step.details?.filter(
+    (d) => d && d.label.trim() && d.value.trim()
+  ) ?? [];
 
   const isError = step.kind === "error" || (step.kind === "tool" && step.phase === "done" && step.ok === false);
-  const isDone = step.kind === "done" || (step.kind === "tool" && step.phase === "done" && step.ok);
+  const isDone =
+    step.kind === "done" ||
+    (step.kind === "tool" && step.phase === "done" && step.ok) ||
+    (step.kind === "tool" && step.phase === "waiting_confirmation");
 
   const colors = STEP_COLORS[step.kind];
   const icon = STEP_ICONS[step.kind];
@@ -206,6 +293,7 @@ function StepRow({
         <div className="flex justify-center pt-0.5">{rail}</div>
         <div className="min-w-0">
           <p className={mainCls.join(" ")}>{main}</p>
+          <DetailChips details={details} compact={compact} />
           {toolProgressList ? (
             <ul
               className="mt-1.5 max-w-2xl space-y-1.5 border-l-2 border-brand-500/25 py-0.5 pl-2.5 dark:border-brand-500/20"
@@ -246,12 +334,10 @@ export default function TurnActivityTimeline({
   announce = true,
 }: TurnActivityTimelineProps) {
   const compact = useMediaQuery("(max-width: 640px)");
-  // Hide intent_route ("Scoping: …") — implementation detail, not user-facing work.
   const safeSteps = steps.filter(
     (s): s is TurnActivityStep =>
       s != null &&
-      typeof s.kind === "string" &&
-      s.kind !== "intent_route"
+      typeof s.kind === "string"
   );
   if (safeSteps.length === 0) return null;
   const lastIdx = safeSteps.length - 1;
