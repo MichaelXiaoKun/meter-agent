@@ -11,8 +11,10 @@ no single API request exceeds 3600 seconds of data.
 import json
 import os
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import StringIO
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import httpx
 import pandas as pd
@@ -29,6 +31,15 @@ def _flow_base_url() -> str:
 _FLOW_HEADERS_EXTRA = {"x-admin-query": "true"}
 
 CHUNK_SECONDS = 3600
+
+
+def _flow_fetch_workers() -> int:
+    raw = os.environ.get("BLUEBOT_FLOW_FETCH_WORKERS", "8")
+    try:
+        n = int(raw)
+    except ValueError:
+        return 8
+    return max(1, min(n, 32))
 
 
 def _is_no_data_to_export_404(response: httpx.Response) -> bool:
@@ -200,7 +211,9 @@ def fetch_flow_data_range(
     range_end: int,
     token: Optional[str] = None,
     verbose: bool = True,
-) -> pd.DataFrame:
+    *,
+    return_metadata: bool = False,
+) -> pd.DataFrame | tuple[pd.DataFrame, dict[str, Any]]:
     """
     Fetch flow rate data for an arbitrary time range, partitioned into
     hourly chunks (≤ 3600 seconds each) to stay within API limits.
@@ -213,7 +226,9 @@ def fetch_flow_data_range(
         verbose:        Print chunk progress to stderr (default True)
 
     Returns:
-        Combined DataFrame sorted by timestamp with duplicates removed.
+        Combined DataFrame sorted by timestamp with duplicates removed. When
+        ``return_metadata`` is True, returns ``(df, metadata)`` where metadata
+        includes chunk count, worker count, and elapsed seconds.
     """
     token = token or os.environ.get("BLUEBOT_TOKEN")
     if not token:
@@ -222,22 +237,63 @@ def fetch_flow_data_range(
         )
 
     chunks = partition_range(range_start, range_end)
-    frames = []
+    workers = min(_flow_fetch_workers(), len(chunks))
+    frames: list[pd.DataFrame | None] = [None] * len(chunks)
+    t0 = time.monotonic()
 
-    for i, (chunk_start, chunk_end) in enumerate(chunks, 1):
+    def _fetch_one(idx: int, chunk_start: int, chunk_end: int) -> tuple[int, pd.DataFrame]:
+        return idx, fetch_flow_data(
+            serial_number,
+            chunk_start,
+            chunk_end,
+            token,
+            verbose=verbose,
+        )
+
+    if workers <= 1 or len(chunks) <= 1:
+        for i, (chunk_start, chunk_end) in enumerate(chunks, 1):
+            if verbose:
+                print(
+                    f"  Chunk {i}/{len(chunks)}: {chunk_start} → {chunk_end} "
+                    f"({chunk_end - chunk_start}s)",
+                    file=sys.stderr,
+                )
+            _, df_chunk = _fetch_one(i - 1, chunk_start, chunk_end)
+            frames[i - 1] = df_chunk
+    else:
         if verbose:
             print(
-                f"  Chunk {i}/{len(chunks)}: {chunk_start} → {chunk_end} "
-                f"({chunk_end - chunk_start}s)",
-                file=__import__("sys").stderr,
+                f"  Fetching {len(chunks)} chunks with {workers} workers.",
+                file=sys.stderr,
             )
-        df_chunk = fetch_flow_data(serial_number, chunk_start, chunk_end, token, verbose=verbose)
-        frames.append(df_chunk)
+            for i, (chunk_start, chunk_end) in enumerate(chunks, 1):
+                print(
+                    f"  Chunk {i}/{len(chunks)}: {chunk_start} → {chunk_end} "
+                    f"({chunk_end - chunk_start}s)",
+                    file=sys.stderr,
+                )
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {
+                pool.submit(_fetch_one, i, chunk_start, chunk_end): i
+                for i, (chunk_start, chunk_end) in enumerate(chunks)
+            }
+            for fut in as_completed(futs):
+                idx, df_chunk = fut.result()
+                frames[idx] = df_chunk
+
+    elapsed = time.monotonic() - t0
+    materialized = [f for f in frames if f is not None]
 
     combined = (
-        pd.concat(frames, ignore_index=True)
+        pd.concat(materialized, ignore_index=True)
         .drop_duplicates(subset="timestamp")
         .sort_values("timestamp")
         .reset_index(drop=True)
     )[["timestamp", "flow_rate", "flow_amount", "quality"]]
-    return combined
+    if not return_metadata:
+        return combined
+    return combined, {
+        "chunk_count": len(chunks),
+        "fetch_workers": workers,
+        "fetch_elapsed_seconds": round(float(elapsed), 3),
+    }

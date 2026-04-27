@@ -8,6 +8,7 @@ const PLOT_TYPE_LABELS: Record<string, string> = {
   flow_duration_curve: "Flow duration curve",
   peaks_annotated: "Demand peaks",
   signal_quality: "Signal quality",
+  diagnostic_timeline: "Diagnostic timeline",
 };
 
 /** ``basename`` without directory or ``.png`` suffix. */
@@ -15,8 +16,10 @@ function parsePlotFilename(basename: string): { serial: string; plotType: string
   const base = basename.replace(/\.png$/i, "");
   const parts = base.split("_");
   if (parts.length < 3) return null;
-  const plotType = parts[parts.length - 1] ?? "";
-  const serial = parts.slice(0, -2).join("_");
+  const startIdx = parts.findIndex((part) => /^\d+$/.test(part));
+  if (startIdx <= 0 || startIdx >= parts.length - 1) return null;
+  const plotType = parts.slice(startIdx + 1).join("_");
+  const serial = parts.slice(0, startIdx).join("_");
   if (!plotType || !serial) return null;
   return { serial, plotType };
 }

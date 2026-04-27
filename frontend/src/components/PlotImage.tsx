@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import ImageViewer from "./ImageViewer";
 import { plotAltFromMeta, plotCaptionFromMeta } from "../plotLabels";
-import type { PlotAttachment } from "../types";
+import type { DiagnosticMarker, PlotAttachment, PlotCaption } from "../types";
 
 interface PlotImageProps {
   src: string;
@@ -12,6 +12,7 @@ interface PlotImageProps {
   plotTimezone?: string;
   /** When set, suppresses the time-axis line for charts without a time axis (e.g. FDC). */
   plotType?: string;
+  caption?: PlotCaption;
   className?: string;
 }
 
@@ -21,6 +22,7 @@ export default function PlotImage({
   title,
   plotTimezone,
   plotType,
+  caption,
   className,
 }: PlotImageProps) {
   const [open, setOpen] = useState(false);
@@ -81,6 +83,7 @@ export default function PlotImage({
           ) : null}
         </figcaption>
       ) : null}
+      <DiagnosticMarkerPanel caption={caption} />
       {open && !loadError && (
         <ImageViewer src={src} alt={resolvedAlt} onClose={() => setOpen(false)} />
       )}
@@ -93,7 +96,106 @@ const _PLOT_TYPE_LABELS: Record<string, string> = {
   flow_duration_curve: "Flow duration curve",
   peaks_annotated: "Demand peaks",
   signal_quality: "Signal quality",
+  diagnostic_timeline: "Diagnostic timeline",
 };
+
+function severityClass(severity: string | undefined): string {
+  if (severity === "high") {
+    return "border-red-300 bg-red-50 text-red-800 dark:border-red-400/40 dark:bg-red-950/30 dark:text-red-200";
+  }
+  if (severity === "medium") {
+    return "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-400/40 dark:bg-amber-950/30 dark:text-amber-200";
+  }
+  return "border-brand-border bg-brand-50 text-brand-700 dark:border-brand-border dark:bg-white/[0.05] dark:text-brand-300";
+}
+
+function markerTime(marker: DiagnosticMarker): string {
+  const fmt = (v: number | undefined) =>
+    typeof v === "number" && Number.isFinite(v)
+      ? new Date(v * 1000).toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        })
+      : "";
+  if (marker.timestamp != null) return fmt(marker.timestamp);
+  const start = fmt(marker.start);
+  const end = fmt(marker.end);
+  if (start && end) return `${start} to ${end}`;
+  return start || end;
+}
+
+function DiagnosticMarkerPanel({ caption }: { caption?: PlotCaption }) {
+  const markers = Array.isArray(caption?.diagnostic_markers)
+    ? caption.diagnostic_markers
+    : [];
+  if (!markers.length) return null;
+
+  const shown = markers.slice(0, 4);
+  const hidden = markers.length - shown.length;
+  const actions = Array.isArray(caption?.next_actions)
+    ? caption.next_actions.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+    : [];
+
+  return (
+    <div className="mt-3 rounded-lg border border-brand-border bg-brand-50/80 p-3 text-left dark:bg-white/[0.04]">
+      <p className="text-[0.68rem] font-semibold uppercase tracking-wider text-brand-muted">
+        What this chart is showing
+      </p>
+      {typeof caption?.summary === "string" && caption.summary.trim() ? (
+        <p className="mt-1 text-xs leading-relaxed text-brand-800 dark:text-brand-900">
+          {caption.summary}
+        </p>
+      ) : null}
+      <div className="mt-2 space-y-2">
+        {shown.map((marker, idx) => (
+          <div
+            key={`${marker.type}-${marker.timestamp ?? marker.start ?? idx}-${marker.source}`}
+            className="rounded-md border border-brand-border/70 bg-white/70 p-2 dark:bg-brand-100/40"
+          >
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs font-semibold text-brand-900">{marker.label}</span>
+              {marker.severity ? (
+                <span
+                  className={`rounded border px-1.5 py-0.5 text-[0.62rem] font-semibold uppercase tracking-wide ${severityClass(marker.severity)}`}
+                >
+                  {marker.severity}
+                </span>
+              ) : null}
+              <span className="font-mono text-[0.62rem] uppercase tracking-wide text-brand-muted">
+                {marker.source}
+              </span>
+            </div>
+            <p className="mt-1 text-xs leading-snug text-brand-muted">
+              {marker.explanation}
+            </p>
+            {markerTime(marker) ? (
+              <p className="mt-1 font-mono text-[0.65rem] text-brand-muted/90">
+                {markerTime(marker)}
+              </p>
+            ) : null}
+          </div>
+        ))}
+      </div>
+      {hidden > 0 ? (
+        <p className="mt-2 text-[0.7rem] text-brand-muted">+{hidden} more marker(s)</p>
+      ) : null}
+      {actions.length ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {actions.slice(0, 3).map((action) => (
+            <span
+              key={action}
+              className="rounded-full border border-brand-border px-2 py-1 text-[0.68rem] text-brand-muted"
+            >
+              {action}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function plotTypeLabel(type: string): string {
   return _PLOT_TYPE_LABELS[type] ?? type.replace(/_/g, " ");
@@ -141,6 +243,7 @@ export function PlotGrouped({
             title={p.title}
             plotTimezone={p.plotTimezone}
             plotType={p.plotType}
+            caption={p.caption}
             className={className}
           />
         ))}
@@ -169,6 +272,7 @@ export function PlotGrouped({
                   title={p.title}
                   plotTimezone={p.plotTimezone}
                   plotType={p.plotType}
+                  caption={p.caption}
                   className={className ?? "w-full rounded-lg shadow-sm"}
                 />
               </div>

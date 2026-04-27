@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
-import type { Message, PlotAttachment, PlotSummary, SSEEvent } from "../types";
+import type { DownloadArtifact, Message, PlotAttachment, PlotSummary, SSEEvent } from "../types";
 import * as api from "../api";
+import { artifactsFromEvent } from "../artifactAttachments";
 import {
   applyThinkingElapsed,
   isInflightThinkingStep,
@@ -24,13 +25,16 @@ interface ConvStreamingState {
   streamLead: string;
   streamTail: string;
   streamPlots: PlotAttachment[];
+  streamArtifacts: DownloadArtifact[];
   turnActivity: TurnActivityStep[];
+  workspaceEvents: SSEEvent[];
   assistantError: string | null;
   // Accumulation refs for text chunks
   streamLeadAccRef: { current: string };
   streamTailAccRef: { current: string };
   sawToolCallRef: { current: boolean };
   plotsRef: { current: PlotAttachment[] };
+  artifactsRef: { current: DownloadArtifact[] };
   streamOpenedForTurnRef: { current: boolean };
   thinkingSegmentStartMsRef: { current: number | null };
 }
@@ -83,7 +87,9 @@ function serializeStreamingState(state: ConvStreamingState): string {
     streamLead: state.streamLeadAccRef.current,
     streamTail: state.streamTailAccRef.current,
     streamPlots: state.plotsRef.current,
+    streamArtifacts: state.artifactsRef.current,
     turnActivity: state.turnActivity,
+    workspaceEvents: state.workspaceEvents,
     assistantError: state.assistantError,
   });
 }
@@ -99,12 +105,15 @@ function deserializeStreamingState(json: string): ConvStreamingState {
       streamLead: data.streamLead ?? "",
       streamTail: data.streamTail ?? "",
       streamPlots: data.streamPlots ?? [],
+      streamArtifacts: data.streamArtifacts ?? [],
       turnActivity: data.turnActivity ?? [],
+      workspaceEvents: data.workspaceEvents ?? [],
       assistantError: data.assistantError ?? null,
       streamLeadAccRef: { current: data.streamLead ?? "" },
       streamTailAccRef: { current: data.streamTail ?? "" },
       sawToolCallRef: { current: false },
       plotsRef: { current: data.streamPlots ?? [] },
+      artifactsRef: { current: data.streamArtifacts ?? [] },
       streamOpenedForTurnRef: { current: false },
       thinkingSegmentStartMsRef: { current: null },
     };
@@ -161,12 +170,15 @@ function initConvStreamingState(): ConvStreamingState {
     streamLead: "",
     streamTail: "",
     streamPlots: [],
+    streamArtifacts: [],
     turnActivity: [],
+    workspaceEvents: [],
     assistantError: null,
     streamLeadAccRef: { current: "" },
     streamTailAccRef: { current: "" },
     sawToolCallRef: { current: false },
     plotsRef: { current: [] },
+    artifactsRef: { current: [] },
     streamOpenedForTurnRef: { current: false },
     thinkingSegmentStartMsRef: { current: null },
   };
@@ -391,7 +403,15 @@ export function useChat(
   }, [serverProcessing, activeConvId, processingConvId]);
 
   const sendMessage = useCallback(
-    async (text: string, convIdOverride?: string) => {
+    async (
+      text: string,
+      convIdOverride?: string,
+      options?: {
+        confirmedActionId?: string | null;
+        cancelledActionId?: string | null;
+        supersededActionId?: string | null;
+      },
+    ) => {
       const convId = convIdOverride ?? activeConvId;
       if (!convId || !token || !text.trim()) return;
 
@@ -416,6 +436,8 @@ export function useChat(
       state.streamLead = "";
       state.streamTail = "";
       state.streamPlots = [];
+      state.streamArtifacts = [];
+      state.workspaceEvents = [];
       state.assistantError = null;
       state.turnActivity = [
         {
@@ -431,6 +453,7 @@ export function useChat(
       state.streamOpenedForTurnRef.current = false;
       state.thinkingSegmentStartMsRef.current = null;
       state.plotsRef.current = [];
+      state.artifactsRef.current = [];
       sseLastSeqRef.current = 0;
       updateAndPersistStreamingState(convId);
       // Per-turn nonce for event dedup — server echoes it back on every
@@ -491,6 +514,14 @@ export function useChat(
               // Always reset: a new `thinking` SSE (e.g. after rate-limit) starts a fresh window.
               state.thinkingSegmentStartMsRef.current = Date.now();
             }
+            if (
+              event.type === "tool_result" ||
+              event.type === "config_confirmation_required" ||
+              event.type === "config_confirmation_cancelled" ||
+              event.type === "config_confirmation_superseded"
+            ) {
+              state.workspaceEvents = [...state.workspaceEvents, event];
+            }
 
             // Update turn activity
             let next = reduceTurnActivity(state.turnActivity, event, state.streamOpenedForTurnRef);
@@ -503,6 +534,9 @@ export function useChat(
               event.type === "tool_call" ||
               event.type === "tool_progress" ||
               event.type === "tool_result" ||
+              event.type === "config_confirmation_required" ||
+              event.type === "config_confirmation_cancelled" ||
+              event.type === "config_confirmation_superseded" ||
               event.type === "error" ||
               event.type === "tool_round_limit" ||
               event.type === "done";
@@ -598,6 +632,7 @@ export function useChat(
                         title: s?.title,
                         plotTimezone: s?.plot_timezone ?? mTz,
                         plotType: s?.plot_type,
+                        caption: s?.caption,
                         groupLabel: meter.serial_number,
                       });
                     }
@@ -618,6 +653,7 @@ export function useChat(
                         title: s?.title,
                         plotTimezone: s?.plot_timezone ?? fallbackTz,
                         plotType: s?.plot_type,
+                        caption: s?.caption,
                       });
                     }
                   }
@@ -626,8 +662,37 @@ export function useChat(
                   state.plotsRef.current = [...state.plotsRef.current, ...merged];
                   state.streamPlots = [...state.plotsRef.current];
                 }
+                const artifacts = artifactsFromEvent(event);
+                if (artifacts.length) {
+                  state.artifactsRef.current = [
+                    ...state.artifactsRef.current,
+                    ...artifacts,
+                  ];
+                  state.streamArtifacts = [...state.artifactsRef.current];
+                }
                 break;
               }
+              case "config_confirmation_required":
+                state.streamStatus = {
+                  kind: "tool_result",
+                  tool: event.tool ?? "configuration",
+                  success: true,
+                };
+                break;
+              case "config_confirmation_cancelled":
+                state.streamStatus = {
+                  kind: "tool_result",
+                  tool: event.tool ?? "configuration",
+                  success: true,
+                };
+                break;
+              case "config_confirmation_superseded":
+                state.streamStatus = {
+                  kind: "tool_result",
+                  tool: event.tool ?? "configuration",
+                  success: true,
+                };
+                break;
               case "token_usage": {
                 const inputTokens = event.tokens ?? 0;
                 setStreamTokenUsage({
@@ -673,6 +738,9 @@ export function useChat(
           turnUuid,
           anthropicApiKey,
           modelRef.current,
+          options?.confirmedActionId ?? null,
+          options?.cancelledActionId ?? null,
+          options?.supersededActionId ?? null,
         );
 
         // Stream finished — load final persisted messages
@@ -689,7 +757,10 @@ export function useChat(
           state.streamTailAccRef.current = "";
           state.sawToolCallRef.current = false;
           state.streamPlots = [];
+          state.streamArtifacts = [];
+          state.workspaceEvents = [];
           state.plotsRef.current = [];
+          state.artifactsRef.current = [];
           // Always drop the live strip so it never lingers under the persisted bubble
           // (``streamReportedError`` used to skip this and left Reasoning / Generating orphan rows).
           state.turnActivity = [];
@@ -722,7 +793,10 @@ export function useChat(
           state.streamTailAccRef.current = "";
           state.sawToolCallRef.current = false;
           state.streamPlots = [];
+          state.streamArtifacts = [];
+          state.workspaceEvents = [];
           state.plotsRef.current = [];
+          state.artifactsRef.current = [];
           state.turnActivity = [];
           state.streamOpenedForTurnRef.current = false;
         }
@@ -762,7 +836,10 @@ export function useChat(
         state.streamTailAccRef.current = "";
         state.sawToolCallRef.current = false;
         state.streamPlots = [];
+        state.streamArtifacts = [];
+        state.workspaceEvents = [];
         state.plotsRef.current = [];
+        state.artifactsRef.current = [];
         state.turnActivity = [];
         state.streamOpenedForTurnRef.current = false;
         // Don't persist to sessionStorage — delete it instead so refresh doesn't auto-restore
@@ -806,6 +883,8 @@ export function useChat(
     tokenUsage: streamTokenUsage,
     historyLoading,
     pendingPlots: isViewingProcessing && currentStreamingState ? currentStreamingState.streamPlots : [],
+    pendingArtifacts: isViewingProcessing && currentStreamingState ? currentStreamingState.streamArtifacts : [],
+    workspaceEvents: isViewingProcessing && currentStreamingState ? currentStreamingState.workspaceEvents : [],
     turnActivity: currentStreamingState?.turnActivity ?? [],
     turnActivityActive: isViewingProcessing,
     processingConvId,

@@ -33,6 +33,7 @@ from processors.plots import (
     _time_series,
     describe_plot_tz,
     generate_plot,
+    pop_captions,
     pop_figures,
     resolve_plot_tz,
 )
@@ -47,9 +48,11 @@ from processors.plots import (
 def _clean_pending():
     """Drain ``_pending`` before and after each test so figures don't leak."""
     pop_figures()
+    pop_captions()
     yield
     for fig, _ in pop_figures():
         plt.close(fig)
+    pop_captions()
 
 
 @pytest.fixture
@@ -386,5 +389,58 @@ class TestGeneratePlotForwardsTz:
         )
         assert "path" in result and "tz" not in result
         # Drain the figure so the autouse fixture doesn't see it as a leak.
+        for fig, _ in pop_figures():
+            plt.close(fig)
+
+    def test_diagnostic_timeline_writes_png_and_marker_caption(self, isolated_plots_dir):
+        base = 1_700_000_000.0
+        ts = np.array([base, base + 2, base + 4, base + 700, base + 702], dtype=float)
+        flow = np.array([1.0, 1.1, 1.2, 4.0, 4.1], dtype=float)
+        quality = np.array([95.0, 92.0, 90.0, 55.0, 54.0], dtype=float)
+        facts = {
+            "max_healthy_inter_arrival_seconds": 60,
+            "cusum_drift": {
+                "skipped": False,
+                "drift_detected": "upward",
+                "positive_alarm_count": 5,
+                "negative_alarm_count": 0,
+                "first_alarm_timestamp": int(base + 700),
+            },
+            "signal_quality": {
+                "flagged_percent": 40,
+                "low_quality_intervals": [
+                    {
+                        "start_timestamp": int(base + 700),
+                        "end_timestamp": int(base + 702),
+                        "duration_seconds": 2.0,
+                        "point_count": 2,
+                        "mean_quality_score": 54.5,
+                    }
+                ],
+            },
+            "anomaly_attribution": {
+                "summary": "The strongest interpretation is a real sustained upward flow change.",
+                "next_checks": ["Compare with the previous day"],
+            },
+        }
+        result = generate_plot(
+            "diagnostic_timeline",
+            ts,
+            flow,
+            quality,
+            "BB-TEST",
+            float(ts[0]),
+            tz_name="America/Denver",
+            verified_facts=facts,
+        )
+        assert result["path"].endswith("_diagnostic_timeline.png")
+        assert result["marker_count"] >= 2
+        assert result["caption"]["plot_type"] == "diagnostic_timeline"
+        assert any(
+            marker["type"] == "drift"
+            for marker in result["caption"]["diagnostic_markers"]
+        )
+        captions = pop_captions()
+        assert captions[result["path"]]["diagnostic_markers"]
         for fig, _ in pop_figures():
             plt.close(fig)

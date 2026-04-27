@@ -223,6 +223,9 @@ async function initChatTurn(
   clientTurnId?: string,
   anthropicApiKey?: string | null,
   model?: string | null,
+  confirmedActionId?: string | null,
+  cancelledActionId?: string | null,
+  supersededActionId?: string | null,
 ): Promise<string> {
   const clientTimezone =
     typeof Intl !== "undefined"
@@ -238,6 +241,9 @@ async function initChatTurn(
       ...(clientTimezone ? { client_timezone: clientTimezone } : {}),
       ...(clientTurnId ? { client_turn_id: clientTurnId } : {}),
       ...(trimmedModel ? { model: trimmedModel } : {}),
+      ...(confirmedActionId ? { confirmed_action_id: confirmedActionId } : {}),
+      ...(cancelledActionId ? { cancelled_action_id: cancelledActionId } : {}),
+      ...(supersededActionId ? { superseded_action_id: supersededActionId } : {}),
     }),
     signal,
   });
@@ -271,6 +277,9 @@ export async function streamChat(
   clientTurnId?: string,
   anthropicApiKey?: string | null,
   model?: string | null,
+  confirmedActionId?: string | null,
+  cancelledActionId?: string | null,
+  supersededActionId?: string | null,
 ): Promise<void> {
   const streamId = await initChatTurn(
     convId,
@@ -280,6 +289,9 @@ export async function streamChat(
     clientTurnId,
     anthropicApiKey,
     model,
+    confirmedActionId,
+    cancelledActionId,
+    supersededActionId,
   );
 
   return new Promise<void>((resolve, reject) => {
@@ -349,6 +361,9 @@ export async function streamChatViaPolling(
   clientTurnId?: string,
   anthropicApiKey?: string | null,
   model?: string | null,
+  confirmedActionId?: string | null,
+  cancelledActionId?: string | null,
+  supersededActionId?: string | null,
 ): Promise<void> {
   const streamId = await initChatTurn(
     convId,
@@ -358,6 +373,9 @@ export async function streamChatViaPolling(
     clientTurnId,
     anthropicApiKey,
     model,
+    confirmedActionId,
+    cancelledActionId,
+    supersededActionId,
   );
 
   let cursor = 0;
@@ -410,6 +428,47 @@ export async function streamChatViaPolling(
 }
 
 // ---------------------------------------------------------------------------
+// Authenticated artifacts
+// ---------------------------------------------------------------------------
+
+export async function downloadArtifact(
+  url: string,
+  filename: string,
+  token: string,
+  anthropicApiKey?: string | null,
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: headers(token, { anthropicApiKey }),
+    });
+  } catch (e) {
+    throw new Error(mapFetchNetworkError(e));
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(
+      parseFastApiDetail(
+        body,
+        `Could not download ${filename}`,
+        res.status,
+        res.statusText,
+      ),
+    );
+  }
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+}
+
+// ---------------------------------------------------------------------------
 // Server tuning (public)
 // ---------------------------------------------------------------------------
 
@@ -454,4 +513,66 @@ export async function fetchOrchestratorConfig(
   const res = await fetch(`${BASE}/config`, { signal });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Public share links (snapshot, read-only)
+// ---------------------------------------------------------------------------
+
+export async function createShare(
+  convId: string,
+  userId: string,
+  accessToken: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const res = await fetch(`${BASE}/conversations/${encodeURIComponent(convId)}/share`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify({ user_id: userId }),
+    signal,
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(t || `Share failed (${res.status})`);
+  }
+  const data = (await res.json()) as { token?: string };
+  if (!data.token) throw new Error("Missing share token in response");
+  return data.token;
+}
+
+export async function revokeShare(
+  shareToken: string,
+  userId: string,
+  accessToken: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(
+    `${BASE}/shares/${encodeURIComponent(shareToken)}?user_id=${encodeURIComponent(userId)}`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal,
+    },
+  );
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(t || `Revoke share failed (${res.status})`);
+  }
+}
+
+export async function loadPublicShare(
+  shareToken: string,
+  signal?: AbortSignal,
+): Promise<{ title: string; messages: Message[] }> {
+  const res = await fetch(
+    `${BASE}/public/shares/${encodeURIComponent(shareToken)}`,
+    { signal },
+  );
+  if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error("This share link is not available.");
+    }
+    throw new Error(await res.text().catch(() => res.statusText));
+  }
+  return res.json() as Promise<{ title: string; messages: Message[] }>;
 }
