@@ -81,3 +81,111 @@ def test_status_exposes_active_stream_metadata_while_queued(tmp_path, monkeypatc
         time.sleep(0.02)
 
     assert status == {"processing": False}
+
+
+def test_full_thread_compression_still_persists_streamed_reply(tmp_path, monkeypatch):
+    client, api_mod, store = _client_and_modules(tmp_path, monkeypatch)
+
+    def fake_run_turn(messages, _token, **kwargs):
+        on_event = kwargs.get("on_event")
+        messages.clear()
+        messages.append(
+            {
+                "role": "user",
+                "content": "[Full thread compressed — TPM budget]\nEarlier context.",
+            }
+        )
+        if on_event:
+            on_event({"type": "text_delta", "text": "Final answer after compression."})
+        messages.append(
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Final answer after compression."}],
+            }
+        )
+        return "Final answer after compression.", True
+
+    monkeypatch.setattr(api_mod, "run_turn", fake_run_turn)
+    monkeypatch.setattr(api_mod, "update_title", lambda *_args, **_kwargs: None)
+
+    cid = store.create_conversation("u1", "compression")
+    store.append_messages(
+        cid,
+        [
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": [{"type": "text", "text": "Earlier answer"}]},
+        ],
+    )
+
+    response = client.post(
+        f"/api/conversations/{cid}/chat",
+        json={"message": "Large fleet question", "client_turn_id": "turn-compress"},
+        headers={"Authorization": "Bearer token"},
+    )
+    assert response.status_code == 200
+
+    for _ in range(50):
+        if client.get(f"/api/conversations/{cid}/status").json()["processing"] is False:
+            break
+        time.sleep(0.02)
+
+    messages = store.load_messages(cid)
+    assert messages[-2] == {"role": "user", "content": "Large fleet question"}
+    assert messages[-1]["role"] == "assistant"
+    assert messages[-1]["content"][0]["text"] == "Final answer after compression."
+
+    summary, covers = store.get_api_context_info(cid)
+    assert summary == "[Full thread compressed — TPM budget]\nEarlier context."
+    assert covers == 3
+
+
+def test_stream_gc_preserves_stale_active_unfinished_stream(tmp_path, monkeypatch):
+    _client, api_mod, store = _client_and_modules(tmp_path, monkeypatch)
+    cid = store.create_conversation("u1", "long running")
+    sid = "stream-active"
+    with api_mod._streams_lock:  # noqa: SLF001
+        api_mod._streams[sid] = {  # noqa: SLF001
+            "events": [],
+            "done": False,
+            "cond": threading.Condition(),
+            "created": time.monotonic() - api_mod._STREAM_TTL_SEC - 5,  # noqa: SLF001
+            "sse_consumed": True,
+            "turn_id": "turn-active",
+            "conv_id": cid,
+        }
+        api_mod._active_conversations.add(cid)  # noqa: SLF001
+        api_mod._active_conversation_streams[cid] = sid  # noqa: SLF001
+
+    try:
+        api_mod._gc_streams()  # noqa: SLF001
+        with api_mod._streams_lock:  # noqa: SLF001
+            assert sid in api_mod._streams  # noqa: SLF001
+            assert api_mod._active_conversation_streams[cid] == sid  # noqa: SLF001
+    finally:
+        with api_mod._streams_lock:  # noqa: SLF001
+            api_mod._streams.pop(sid, None)  # noqa: SLF001
+            api_mod._active_conversations.discard(cid)  # noqa: SLF001
+            api_mod._active_conversation_streams.pop(cid, None)  # noqa: SLF001
+
+
+def test_stream_gc_removes_stale_done_stream(tmp_path, monkeypatch):
+    _client, api_mod, store = _client_and_modules(tmp_path, monkeypatch)
+    cid = store.create_conversation("u1", "done")
+    sid = "stream-done"
+    with api_mod._streams_lock:  # noqa: SLF001
+        api_mod._streams[sid] = {  # noqa: SLF001
+            "events": [],
+            "done": True,
+            "cond": threading.Condition(),
+            "created": time.monotonic() - api_mod._STREAM_TTL_SEC - 5,  # noqa: SLF001
+            "sse_consumed": True,
+            "turn_id": "turn-done",
+            "conv_id": cid,
+        }
+        api_mod._active_conversation_streams[cid] = sid  # noqa: SLF001
+
+    api_mod._gc_streams()  # noqa: SLF001
+
+    with api_mod._streams_lock:  # noqa: SLF001
+        assert sid not in api_mod._streams  # noqa: SLF001
+        assert cid not in api_mod._active_conversation_streams  # noqa: SLF001

@@ -19,8 +19,10 @@ for a typical user query. Two consumers:
   "id": "single_meter_status",
   "description": "Direct-action status query on a single serial.",
   "user": "Is BB8100015261 online?",
-  // Ordered expectations — each entry must be satisfied in order, but
-  // intermediate repetitions are tolerated (LLMs retry tool calls).
+  // Ordered expectations over user-visible tool_call events — each entry must
+  // be satisfied in order, but intermediate repetitions are tolerated (LLMs
+  // retry tool calls). Internal helper reads, such as profile lookups used to
+  // prepare a confirmation card, are intentionally ignored by the runner.
   "expected_tool_sequence": [
     {
       "tool": "check_meter_status",

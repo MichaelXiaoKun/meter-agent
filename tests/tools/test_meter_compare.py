@@ -77,6 +77,8 @@ def _status_ok(
     nominal_size: str = '3/4"',
     pipe_standard: str = "CPVC",
     inner_id_mm: float = 20.93,
+    health_score: float = 92.0,
+    health_verdict: str = "healthy",
 ) -> Dict[str, Any]:
     return {
         "success": True,
@@ -101,6 +103,11 @@ def _status_ok(
                 "inner_diameter_mm": inner_id_mm,
                 "nominal_size": nominal_size,
                 "pipe_standard": pipe_standard,
+            },
+            "health_score": {
+                "score": health_score,
+                "verdict": health_verdict,
+                "components": {"staleness": {"score": 100}},
             },
             "errors": {},
         },
@@ -233,6 +240,20 @@ class TestDiffLogic:
         by_sn = {m["serial_number"]: m for m in res["per_meter"]}
         assert by_sn["BB1"]["signal_score"] == 87
         assert by_sn["BB2"]["signal_score"] == 42
+
+    def test_health_score_surfaces_per_meter(self, fake_fetch):
+        fake_fetch(
+            profiles={"BB1": _profile_ok("BB1"), "BB2": _profile_ok("BB2")},
+            statuses={
+                "BB1": _status_ok("BB1", health_score=95, health_verdict="healthy"),
+                "BB2": _status_ok("BB2", health_score=55, health_verdict="unhealthy"),
+            },
+        )
+        res = mc.compare_meters(["BB1", "BB2"], "tok")
+        by_sn = {m["serial_number"]: m for m in res["per_meter"]}
+        assert by_sn["BB1"]["health_score"] == 95
+        assert by_sn["BB2"]["health_verdict"] == "unhealthy"
+        assert by_sn["BB1"]["health_score_components"]["staleness"]["score"] == 100
 
 
 # ---------------------------------------------------------------------------

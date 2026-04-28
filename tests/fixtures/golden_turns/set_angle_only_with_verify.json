@@ -1,6 +1,6 @@
 {
   "id": "set_angle_only_with_verify",
-  "description": "Angle-only change — rule 10 routes to set_transducer_angle_only. Rule 11 requires a check_meter_status readback in the same turn.",
+  "description": "Angle-only change — rule 10 routes to set_transducer_angle_only and the first turn must prepare a confirmation, not send the write.",
   "user": "Set the transducer angle on BB8100015261 to 45 degrees.",
   "expected_tool_sequence": [
     {
@@ -9,16 +9,6 @@
       "mock_result": {
         "success": true,
         "message": "Angle set via MQTT ssa publish."
-      }
-    },
-    {
-      "tool": "check_meter_status",
-      "args_contains": {"serial_number": "BB8100015261"},
-      "mock_result": {
-        "success": true,
-        "online": true,
-        "signal_quality": {"label": "good", "score": 88},
-        "pipe_config": {"transducer_angle": 45}
       }
     }
   ],
@@ -36,6 +26,9 @@
     "subprocess",
     "/Users/"
   ],
-  "response_must_contain": [],
+  "response_must_contain": [
+    "prepared",
+    "Choose Yes"
+  ],
   "prompt_versions": ["v1"]
 }

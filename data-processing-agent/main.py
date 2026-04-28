@@ -26,17 +26,26 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from data_client import fetch_flow_data_range
-from agent import analyze
+from agent import analyze as analyze_llm
+from agent_template import analyze_template
 from report import format_report
 from processors.analysis_bundle import build_analysis_bundle
 from processors.anomaly_attribution import slim_anomaly_attribution_for_prompt
+from processors.daily_rollup import (
+    build_daily_rollups,
+    build_today_partial_rollup,
+    fraction_of_day_elapsed as _fraction_of_day_elapsed,
+    today_missing_bucket_ratio as _today_missing_bucket_ratio,
+)
 from processors.long_range_summary import (
     format_long_range_summary_markdown,
     build_long_range_summary,
     resolve_analysis_mode,
 )
 from processors.plots import generate_plot, pop_captions, pop_figures
+from processors.sampling_physics import max_healthy_inter_arrival_seconds
 from processors.verified_facts import build_verified_facts
+from processors.mask_by_local_time import apply_filter
 
 _ANALYSIS_JSON_MARKER = "__BLUEBOT_ANALYSIS_JSON__"
 _PLOT_CAPTIONS_MARKER = "__BLUEBOT_PLOT_CAPTIONS__"
@@ -44,6 +53,17 @@ _REASONING_SCHEMA_MARKER = "__BLUEBOT_REASONING_SCHEMA__"
 _ANALYSIS_DETAILS_MARKER = "__BLUEBOT_ANALYSIS_DETAILS__"
 _ANALYSIS_METADATA_MARKER = "__BLUEBOT_ANALYSIS_METADATA__"
 _DOWNLOAD_ARTIFACTS_MARKER = "__BLUEBOT_DOWNLOAD_ARTIFACTS__"
+
+
+def _data_agent_mode() -> str:
+    raw = (os.environ.get("BLUEBOT_DATA_AGENT_MODE") or "llm").strip().lower()
+    return "template" if raw == "template" else "llm"
+
+
+def _analyze_with_mode(df, serial: str, verified_facts: dict) -> str:
+    if _data_agent_mode() == "template":
+        return analyze_template(df, serial, verified_facts=verified_facts)
+    return analyze_llm(df, serial, verified_facts=verified_facts)
 
 
 def _safe_filename_part(value: object) -> str:
@@ -104,6 +124,182 @@ def _analysis_details_from_verified_facts(verified_facts: dict) -> dict:
     return details
 
 
+def _resolve_meter_tz() -> str:
+    """Resolve the IANA zone used for daily-rollup grouping.
+
+    The orchestrator already exports the resolved plot timezone (the meter's
+    ``deviceTimeZone`` when available, otherwise the user's browser zone, then
+    the server default, then UTC). We reuse that here because the baseline
+    refusal evaluator wants the same calendar-day boundaries the user sees on
+    the plot x-axes.
+    """
+    for var in ("BLUEBOT_PLOT_TZ", "DISPLAY_TZ"):
+        raw = os.environ.get(var)
+        if raw and raw.strip():
+            return raw.strip()
+    return "UTC"
+
+
+def _filters_from_env() -> dict | None:
+    """Parse the orchestrator-supplied local-time filter spec, if present."""
+    raw = os.environ.get("BLUEBOT_FILTERS_JSON")
+    if raw is None or not raw.strip():
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(
+            f"WARNING: BLUEBOT_FILTERS_JSON is not valid JSON; skipping filter: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    if not isinstance(parsed, dict) or not parsed:
+        return None
+    return parsed
+
+
+def _event_predicates_from_env() -> list[dict] | None:
+    """Parse orchestrator-supplied threshold event predicate specs, if present."""
+    raw = os.environ.get("BLUEBOT_EVENT_PREDICATES_JSON")
+    if raw is None or not raw.strip():
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(
+            f"WARNING: BLUEBOT_EVENT_PREDICATES_JSON is not valid JSON; skipping event predicates: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    if not isinstance(parsed, list) or not parsed:
+        return None
+    return parsed
+
+
+def _filter_refusal_analysis(verified_facts: dict) -> str:
+    """Deterministic report body when a requested filter cannot be applied."""
+    fa = verified_facts.get("filter_applied") if isinstance(verified_facts, dict) else None
+    if not isinstance(fa, dict):
+        return "The requested local-time filter could not be applied."
+    lines = [
+        "## Requested local-time filter was not applied",
+        "",
+        f"- State: `{fa.get('state') or 'unknown'}`",
+    ]
+    for reason in fa.get("reasons_refused") or []:
+        lines.append(f"- Refusal: {reason}")
+    for err in fa.get("validation_errors") or []:
+        lines.append(f"- Validation: {err}")
+    return "\n".join(lines)
+
+
+def _build_baseline_inputs(
+    *,
+    df,
+    primary_end: int,
+    baseline_start: int | None,
+    baseline_end: int | None,
+    token: str,
+    serial: str,
+    filters: dict | None = None,
+) -> dict:
+    """Translate ``--baseline-start/--baseline-end`` into ``build_verified_facts`` kwargs.
+
+    Returns an empty dict when no baseline window was supplied — that path
+    keeps the legacy behaviour where ``baseline_quality`` stays as the
+    ``not_requested`` stub. When the window is supplied we fetch the
+    reference range, build local-tz daily rollups, and produce the
+    ``today_partial`` rollup the refusal evaluator wants.
+    """
+    if baseline_start is None or baseline_end is None:
+        return {}
+    if baseline_end < baseline_start:
+        print(
+            f"WARNING: baseline window end ({baseline_end}) precedes start "
+            f"({baseline_start}); skipping baseline.",
+            file=sys.stderr,
+        )
+        return {}
+
+    tz = _resolve_meter_tz()
+    cap = max_healthy_inter_arrival_seconds()
+    # Coverage uses the same nominal interval the rest of the pipeline does
+    # (``min(max(median, P75), max_healthy_inter_arrival)``) — but at this
+    # point we have not built verified_facts yet, so use the cap as a safe
+    # ceiling. The baseline-quality evaluator only consults coverage_ratio
+    # against a configurable threshold; small mis-estimates here just shift
+    # the rejection bar by a few percent.
+    nominal_interval_seconds = float(cap)
+
+    print(
+        f"Fetching baseline window {baseline_start} → {baseline_end} "
+        f"(tz={tz}) for serial {serial}…",
+        file=sys.stderr,
+    )
+    baseline_df, _baseline_meta = fetch_flow_data_range(
+        serial,
+        baseline_start,
+        baseline_end,
+        token,
+        verbose=True,
+        return_metadata=True,
+    )
+    print(
+        f"Baseline window: fetched {len(baseline_df)} rows over "
+        f"{baseline_end - baseline_start}s.",
+        file=sys.stderr,
+    )
+    if filters is not None:
+        baseline_filtered_df, baseline_filter_result = apply_filter(baseline_df, filters)
+        baseline_df = (
+            baseline_filtered_df
+            if baseline_filter_result.applied
+            else baseline_df.iloc[0:0].copy()
+        )
+
+    reference_rollups = build_daily_rollups(
+        baseline_df,
+        tz=tz,
+        nominal_interval_seconds=nominal_interval_seconds,
+        healthy_gap_cap_seconds=cap,
+    )
+
+    # ``today`` is the local date that contains the *primary window's end*.
+    # That matches the user's mental model: "today vs typical" pivots on the
+    # right edge of the analysis window, not the start.
+    import pandas as _pd  # local import — main.py already pulls pandas via processors
+
+    end_local = _pd.to_datetime(int(primary_end), unit="s", utc=True).tz_convert(tz)
+    today_local_date = end_local.strftime("%Y-%m-%d")
+    target_weekday = int(end_local.weekday())
+
+    fraction = _fraction_of_day_elapsed(end_timestamp=float(primary_end), tz=tz)
+    today_partial = build_today_partial_rollup(
+        df,
+        target_local_date=today_local_date,
+        tz=tz,
+        nominal_interval_seconds=nominal_interval_seconds,
+        healthy_gap_cap_seconds=cap,
+        fraction_of_day_elapsed=fraction,
+    )
+    today_missing_bucket = _today_missing_bucket_ratio(
+        df,
+        target_local_date=today_local_date,
+        tz=tz,
+        fraction_of_day_elapsed=fraction,
+    )
+
+    return {
+        "reference_df": baseline_df,
+        "seasonality_tz": tz,
+        "reference_rollups": reference_rollups,
+        "today_partial": today_partial,
+        "target_weekday": target_weekday,
+        "fraction_of_day_elapsed": fraction,
+        "today_missing_bucket_ratio": today_missing_bucket,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Flow rate time series analysis agent",
@@ -137,6 +333,24 @@ def main() -> None:
             "detailed always runs the internal LLM analysis loop."
         ),
     )
+    parser.add_argument(
+        "--baseline-start",
+        type=int,
+        default=None,
+        help=(
+            "Optional Unix-seconds start of the baseline (reference) window. "
+            "When both --baseline-start and --baseline-end are set, the agent "
+            "fetches that range, builds local-tz daily rollups, and runs the "
+            "baseline-quality refusal evaluator. Without these, baseline_quality "
+            "stays as the not_requested stub."
+        ),
+    )
+    parser.add_argument(
+        "--baseline-end",
+        type=int,
+        default=None,
+        help="Optional Unix-seconds end of the baseline window (see --baseline-start).",
+    )
     args = parser.parse_args()
 
     token = args.token or os.environ.get("BLUEBOT_TOKEN")
@@ -164,26 +378,60 @@ def main() -> None:
     print(f"Fetched {len(df)} data points total.", file=sys.stderr)
 
     print("Running analysis...", file=sys.stderr)
-    verified_facts = build_verified_facts(df)
+    filters = _filters_from_env()
+    event_predicates = _event_predicates_from_env()
+    analysis_df = df
+    filter_result = None
+    if filters is not None:
+        filtered_df, filter_result = apply_filter(df, filters)
+        if filter_result.applied:
+            analysis_df = filtered_df
+
+    filter_refused = filter_result is not None and not filter_result.applied
+    baseline_kwargs = {}
+    if not filter_refused:
+        baseline_kwargs = _build_baseline_inputs(
+            df=analysis_df,
+            primary_end=args.end,
+            baseline_start=args.baseline_start,
+            baseline_end=args.baseline_end,
+            token=token,
+            serial=args.serial,
+            filters=filters,
+        )
+    verified_facts = build_verified_facts(
+        df,
+        filters=filters,
+        event_predicates=event_predicates,
+        **baseline_kwargs,
+    )
     mode_selection = resolve_analysis_mode(
         args.analysis_mode,
         start=args.start,
         end=args.end,
-        row_count=len(df),
+        row_count=len(analysis_df),
     )
 
     long_range_summary = None
-    if mode_selection["resolved_mode"] == "summary":
-        if len(df):
+    if filter_refused:
+        analysis = _filter_refusal_analysis(verified_facts)
+        report = format_report(
+            analysis, args.serial, args.start, args.end, verified_facts=verified_facts
+        )
+        plot_paths = []
+        plot_captions = {}
+        pending = []
+    elif mode_selection["resolved_mode"] == "summary":
+        if len(analysis_df):
             quality = (
-                df["quality"].values.astype(float)
-                if "quality" in df.columns
-                else [float("nan")] * len(df)
+                analysis_df["quality"].values.astype(float)
+                if "quality" in analysis_df.columns
+                else [float("nan")] * len(analysis_df)
             )
             generate_plot(
                 "diagnostic_timeline",
-                df["timestamp"].values.astype(float),
-                df["flow_rate"].values.astype(float),
+                analysis_df["timestamp"].values.astype(float),
+                analysis_df["flow_rate"].values.astype(float),
                 quality,
                 serial_number=args.serial,
                 start=args.start,
@@ -192,7 +440,7 @@ def main() -> None:
         pending = pop_figures()
         plot_paths = [path for _, path in pending]
         plot_captions = pop_captions()
-        long_range_summary = build_long_range_summary(df, verified_facts)
+        long_range_summary = build_long_range_summary(analysis_df, verified_facts)
         analysis = format_long_range_summary_markdown(
             serial_number=args.serial,
             summary=long_range_summary,
@@ -204,21 +452,21 @@ def main() -> None:
             analysis, args.serial, args.start, args.end, verified_facts=verified_facts
         )
     else:
-        analysis = analyze(df, args.serial, verified_facts=verified_facts)
+        analysis = _analyze_with_mode(analysis_df, args.serial, verified_facts)
         report = format_report(
             analysis, args.serial, args.start, args.end, verified_facts=verified_facts
         )
 
-        if len(df):
+        if len(analysis_df):
             quality = (
-                df["quality"].values.astype(float)
-                if "quality" in df.columns
-                else [float("nan")] * len(df)
+                analysis_df["quality"].values.astype(float)
+                if "quality" in analysis_df.columns
+                else [float("nan")] * len(analysis_df)
             )
             generate_plot(
                 "diagnostic_timeline",
-                df["timestamp"].values.astype(float),
-                df["flow_rate"].values.astype(float),
+                analysis_df["timestamp"].values.astype(float),
+                analysis_df["flow_rate"].values.astype(float),
                 quality,
                 serial_number=args.serial,
                 start=args.start,
@@ -238,7 +486,7 @@ def main() -> None:
         analyses_dir, f"report_{args.serial}_{args.start}_{args.end}.md"
     )
     download_artifacts = [
-        _write_flow_csv_artifact(df, analyses_dir, args.serial, args.start, args.end)
+        _write_flow_csv_artifact(analysis_df, analyses_dir, args.serial, args.start, args.end)
     ]
     analysis_metadata = {
         "analysis_mode": mode_selection["resolved_mode"],

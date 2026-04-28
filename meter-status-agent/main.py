@@ -26,6 +26,7 @@ from report import format_report
 from processors.staleness import compute_staleness
 from processors.signal import interpret_signal_quality
 from processors.pipe_config import interpret_pipe_config
+from processors.health_score import compute_health_score
 
 
 _STATUS_JSON_MARKER = "__BLUEBOT_STATUS_JSON__"
@@ -62,7 +63,7 @@ def _build_status_payload(status: Dict[str, Any], serial: str) -> Dict[str, Any]
         )
         if v
     }
-    return {
+    payload = {
         "serial_number": serial,
         "online": status.get("online"),
         "last_message_at": status.get("last_message_at"),
@@ -71,6 +72,8 @@ def _build_status_payload(status: Dict[str, Any], serial: str) -> Dict[str, Any]
         "pipe_config": pipe,
         "errors": errors,
     }
+    payload["health_score"] = compute_health_score(status=payload)
+    return payload
 
 
 def _emit_status_marker(status: Dict[str, Any], serial: str) -> None:

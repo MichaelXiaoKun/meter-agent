@@ -61,6 +61,18 @@ from tools.meter_compare import (
     TOOL_DEFINITION as _METER_COMPARE_DEF,
     compare_meters,
 )
+from tools.fleet_health import (
+    TOOL_DEFINITION as _FLEET_HEALTH_DEF,
+    rank_fleet_by_health,
+)
+from tools.fleet_triage import (
+    TOOL_DEFINITION as _FLEET_TRIAGE_DEF,
+    triage_fleet_for_account,
+)
+from tools.period_compare import (
+    TOOL_DEFINITION as _PERIOD_COMPARE_DEF,
+    compare_periods,
+)
 from tools.flow_analysis import (
     TOOL_DEFINITION as _FLOW_ANALYSIS_DEF,
     analyze_flow_data,
@@ -88,6 +100,9 @@ TOOLS = [
     _METER_PROFILE_DEF,
     _METERS_BY_EMAIL_DEF,
     _METER_COMPARE_DEF,
+    _FLEET_HEALTH_DEF,
+    _FLEET_TRIAGE_DEF,
+    _PERIOD_COMPARE_DEF,
     _FLOW_ANALYSIS_DEF,
     _BATCH_FLOW_ANALYSIS_DEF,
     _PIPE_CONFIGURATION_DEF,
@@ -112,6 +127,8 @@ _BASE_READ_TOOLS: frozenset[str] = frozenset(
         "get_meter_profile",
         "list_meters_for_account",
         "compare_meters",
+        "rank_fleet_by_health",
+        "triage_fleet_for_account",
     }
 )
 
@@ -120,7 +137,8 @@ _TOOL_NAMES_BY_INTENT: dict[str, frozenset[str]] = {
     "status": _BASE_READ_TOOLS,
     "general": _BASE_READ_TOOLS,
     # Historical flow + plots (expensive subprocess).
-    "flow": _BASE_READ_TOOLS | frozenset({"analyze_flow_data", "batch_analyze_flow"}),
+    "flow": _BASE_READ_TOOLS
+    | frozenset({"analyze_flow_data", "batch_analyze_flow", "compare_periods"}),
     # Pipe / angle changes (mutations).
     "config": _BASE_READ_TOOLS
     | frozenset(
@@ -194,7 +212,9 @@ def _route_intent_rules(user_text: str) -> str:
     if re.search(
         r"\b(flow|rate|trend|chart|graph|plot|time series|historical|analy[sz]e|"
         r"last \d+|past \d+|yesterday|today|this week|this month|"
-        r"demand|duration curve|how much (water|flow)|usage over|peaks?|data for)\b",
+        r"demand|duration curve|how much (water|flow)|usage over|peaks?|events?|"
+        r"threshold|above|below|frequency|frequencies|periodic|periodicity|fft|psd|"
+        r"data for)\b",
         t,
     ):
         return "flow"
@@ -206,7 +226,8 @@ def _route_intent_rules(user_text: str) -> str:
         return "config"
     if re.search(
         r"\b(online|offline|status|signal|quality|battery|wifi|lora|lorawan|"
-        r"health|is my meter|meter is|list meters?|serial)\b",
+        r"health|healthiest|triage|fleet|need attention|needs attention|"
+        r"is my meter|meter is|list meters?|serial)\b",
         t,
     ) or re.search(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", t, re.I):
         return "status"
@@ -408,6 +429,9 @@ _DEDUPABLE_READ_TOOLS: frozenset[str] = frozenset(
         "get_meter_profile",
         "list_meters_for_account",
         "compare_meters",
+        "rank_fleet_by_health",
+        "triage_fleet_for_account",
+        "compare_periods",
         "analyze_flow_data",
     }
 )
@@ -424,6 +448,9 @@ _WRITE_TOOLS: frozenset[str] = frozenset(
 # the UI timeline. Fan-out flow comparisons go through batch_analyze_flow instead.
 _SERIAL_ONLY_TOOLS: frozenset[str] = _WRITE_TOOLS | frozenset({"analyze_flow_data"})
 _MAX_PARALLEL_TOOL_WORKERS = 6
+_HEARTBEAT_PROGRESS_TOOLS: frozenset[str] = frozenset(
+    {"rank_fleet_by_health", "triage_fleet_for_account"}
+)
 
 
 def _per_turn_tool_dedupe_key(tool_name: str, inp_d: dict) -> str | None:
@@ -489,7 +516,12 @@ def _resolve_max_input_tokens_target(tpm_guide: int) -> int:
     if explicit is not None:
         return explicit
     frac = _env_float("ORCHESTRATOR_TPM_HEADROOM_FRACTION", 0.5)
-    return int(tpm_guide * frac)
+    target = int(tpm_guide * frac)
+    next_call_factor = max(1.0, _env_float("ORCHESTRATOR_TPM_NEXT_CALL_FACTOR", 2.05))
+    # The next stream charges roughly count_tokens + stream input. Keep the
+    # default target below the per-minute guide so an empty 60s window can run.
+    streamable_target = int(tpm_guide / next_call_factor)
+    return max(1, min(target, streamable_target))
 
 
 _TPM_INPUT_GUIDE_TOKENS = _resolve_tpm_input_guide_tokens()
@@ -509,6 +541,50 @@ def _estimate_stream_turn_tpm_cost(token_count: int) -> int:
     """
     f = _env_float("ORCHESTRATOR_TPM_NEXT_CALL_FACTOR", 2.05)
     return max(1, int(token_count * f))
+
+
+def _wait_for_tpm_headroom_with_progress(
+    estimated_next_input_tokens: int,
+    *,
+    emit,
+) -> None:
+    """Block for TPM headroom while streaming visible wait status to the UI."""
+    last_bucket = -1
+
+    def on_wait(snapshot: dict[str, int | float]) -> None:
+        nonlocal last_bucket
+        waited = float(snapshot.get("waited_seconds") or 0.0)
+        bucket = int(waited // 5)
+        # Emit immediately, then roughly every five seconds while blocked.
+        if bucket == last_bucket and waited > 0:
+            return
+        last_bucket = bucket
+        current = int(snapshot.get("current_tokens") or 0)
+        estimated = int(snapshot.get("estimated_next_tokens") or estimated_next_input_tokens)
+        cap = int(snapshot.get("tpm_cap") or _TPM_INPUT_GUIDE_TOKENS)
+        overflow = int(snapshot.get("overflow_tokens") or 0)
+        emit(
+            {
+                "type": "rate_limit_wait",
+                "message": (
+                    "Waiting for input-token headroom: "
+                    f"{current:,} used in the last 60s + {estimated:,} next "
+                    f"exceeds the {cap:,}/min budget."
+                ),
+                "current_tokens": current,
+                "estimated_next_tokens": estimated,
+                "tpm_limit": int(snapshot.get("tpm_limit") or _TPM_INPUT_GUIDE_TOKENS),
+                "tpm_cap": cap,
+                "overflow_tokens": overflow,
+                "waited_seconds": waited,
+            }
+        )
+
+    wait_for_sliding_tpm_headroom(
+        estimated_next_input_tokens,
+        _TPM_INPUT_GUIDE_TOKENS,
+        on_wait=on_wait,
+    )
 
 
 def get_rate_limit_config_for_api() -> dict[str, object]:
@@ -827,6 +903,8 @@ def _run_analyze_flow_with_progress(
                     network_type=inputs.get("network_type"),
                     meter_timezone=inputs.get("meter_timezone"),
                     analysis_mode=inputs.get("analysis_mode"),
+                    baseline_window=inputs.get("baseline_window"),
+                    filters=inputs.get("filters"),
                 )
             )
         except BaseException as e:
@@ -874,6 +952,87 @@ def _run_analyze_flow_with_progress(
     if not result_holder:
         return json.dumps({"error": "analyze_flow_data produced no result"}, default=str)
     return json.dumps(result_holder[0], default=str)
+
+
+def _run_dispatch_with_heartbeat_progress(
+    tool_name: str,
+    inputs: dict,
+    token: str,
+    *,
+    client_timezone: str | None,
+    emit,
+    anthropic_api_key: str | None = None,
+    heartbeat_seconds: float = 4.0,
+) -> str:
+    """Run a silent long read tool while emitting periodic status heartbeats."""
+    result_holder: list[str] = []
+    exc_holder: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            result_holder.append(
+                _dispatch(
+                    tool_name,
+                    inputs,
+                    token,
+                    client_timezone=client_timezone,
+                    anthropic_api_key=anthropic_api_key,
+                )
+            )
+        except BaseException as e:
+            exc_holder.append(e)
+
+    thread = threading.Thread(target=worker, daemon=True, name=tool_name)
+    thread.start()
+
+    def label() -> str:
+        if tool_name == "triage_fleet_for_account":
+            email = str(inputs.get("email") or "").strip()
+            return f"Fleet triage for {email}" if email else "Fleet triage"
+        if tool_name == "rank_fleet_by_health":
+            serials = inputs.get("serial_numbers")
+            count = len(serials) if isinstance(serials, list) else 0
+            return f"Fleet health ranking for {count} meter(s)" if count else "Fleet health ranking"
+        return tool_name.replace("_", " ")
+
+    title = label()
+    emit(
+        {
+            "type": "tool_progress",
+            "tool": tool_name,
+            "message": f"{title}: started — reading profiles and status…",
+        }
+    )
+    elapsed_chunks = 0
+    interval = max(0.01, float(heartbeat_seconds))
+    while True:
+        thread.join(timeout=interval)
+        if not thread.is_alive():
+            break
+        elapsed_chunks += 1
+        sec = int(round(elapsed_chunks * interval))
+        emit(
+            {
+                "type": "tool_progress",
+                "tool": tool_name,
+                "message": f"{title}: still checking meters… ({sec}s)",
+            }
+        )
+
+    if exc_holder:
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"{type(exc_holder[0]).__name__}: {exc_holder[0]}",
+            },
+            default=str,
+        )
+    if not result_holder:
+        return json.dumps(
+            {"success": False, "error": f"{tool_name} produced no result"},
+            default=str,
+        )
+    return result_holder[0]
 
 
 def _sse_tool_succeeded(result_dict: dict) -> bool:
@@ -1021,6 +1180,34 @@ def _compact_tool_result_for_history(tool_name: str, result_dict: dict) -> dict:
                 )
         compact["meters"] = meters
         return {k: v for k, v in compact.items() if v is not None}
+    if tool_name == "compare_periods":
+        return {
+            "success": result_dict.get("success"),
+            "serial_number": result_dict.get("serial_number"),
+            "periods": result_dict.get("periods"),
+            "deltas": result_dict.get("deltas"),
+            "error": result_dict.get("error"),
+        }
+    if tool_name == "rank_fleet_by_health":
+        return {
+            "success": result_dict.get("success"),
+            "meters": result_dict.get("meters"),
+            "failed_serials": result_dict.get("failed_serials"),
+            "truncated": result_dict.get("truncated"),
+            "error": result_dict.get("error"),
+        }
+    if tool_name == "triage_fleet_for_account":
+        return {
+            "success": result_dict.get("success"),
+            "email": result_dict.get("email"),
+            "meters": result_dict.get("meters"),
+            "failed_serials": result_dict.get("failed_serials"),
+            "total_count": result_dict.get("total_count"),
+            "returned_count": result_dict.get("returned_count"),
+            "truncated": result_dict.get("truncated"),
+            "notice": result_dict.get("notice"),
+            "error": result_dict.get("error"),
+        }
     return result_dict
 
 
@@ -1088,6 +1275,17 @@ def _tool_activity_line(
                 return _clip_activity(f"Compared meters {', '.join(clean)}", 240)
         return _clip_activity("Compared meters", 200)
 
+    if tool_name == "rank_fleet_by_health":
+        sns = inp.get("serial_numbers")
+        if isinstance(sns, list) and sns:
+            clean = [s.strip() for s in sns if isinstance(s, str) and s.strip()]
+            if clean:
+                return _clip_activity(f"Ranked fleet health for {', '.join(clean)}", 260)
+        return _clip_activity("Ranked fleet health", 200)
+
+    if tool_name == "triage_fleet_for_account" and email:
+        return _clip_activity(f"Triaged fleet health for account {email}", 260)
+
     if tool_name == "batch_analyze_flow":
         sns = inp.get("serial_numbers")
         if isinstance(sns, list) and sns:
@@ -1099,6 +1297,9 @@ def _tool_activity_line(
                     return _clip_activity(f"{core} — {dr.strip()}", 300)
                 return _clip_activity(core, 240)
         return _clip_activity("Batch flow analysis", 200)
+
+    if tool_name == "compare_periods" and sn:
+        return _clip_activity(f"Compared two flow periods for meter {sn}", 240)
 
     if tool_name == "configure_meter_pipe" and sn:
         return _clip_activity(f"Configured the pipe for meter {sn}", 200)
@@ -1465,6 +1666,10 @@ def _emit_tool_result_event(
         if all_summaries:
             event["plot_summaries"] = all_summaries
         event["meters"] = result_dict.get("meters", [])
+    elif tool_name in {"rank_fleet_by_health", "triage_fleet_for_account"}:
+        meters = result_dict.get("meters")
+        if isinstance(meters, list):
+            event["meters"] = meters
     emit(event)
     return event
 
@@ -1512,6 +1717,32 @@ def _dispatch(
             anthropic_api_key=anthropic_api_key,
         )
 
+    elif name == "rank_fleet_by_health":
+        result = rank_fleet_by_health(
+            inputs["serial_numbers"],
+            token,
+            anthropic_api_key=anthropic_api_key,
+        )
+
+    elif name == "triage_fleet_for_account":
+        result = triage_fleet_for_account(
+            inputs["email"],
+            token,
+            anthropic_api_key=anthropic_api_key,
+        )
+
+    elif name == "compare_periods":
+        result = compare_periods(
+            inputs["serial_number"],
+            inputs["period_a"],
+            inputs["period_b"],
+            token,
+            display_timezone=client_timezone,
+            anthropic_api_key=anthropic_api_key,
+            network_type=inputs.get("network_type"),
+            meter_timezone=inputs.get("meter_timezone"),
+        )
+
     elif name == "analyze_flow_data":
         result = analyze_flow_data(
             inputs["serial_number"],
@@ -1523,6 +1754,9 @@ def _dispatch(
             network_type=inputs.get("network_type"),
             meter_timezone=inputs.get("meter_timezone"),
             analysis_mode=inputs.get("analysis_mode"),
+            baseline_window=inputs.get("baseline_window"),
+            filters=inputs.get("filters"),
+            event_predicates=inputs.get("event_predicates"),
         )
 
     elif name == "batch_analyze_flow":
@@ -1692,6 +1926,13 @@ def _dispatch_tool_batch(
             elif tc.name == "analyze_flow_data":
                 result_json = _run_analyze_flow_with_progress(
                     inp_d, token,
+                    client_timezone=client_timezone,
+                    emit=emit,
+                    anthropic_api_key=anthropic_api_key,
+                )
+            elif tc.name in _HEARTBEAT_PROGRESS_TOOLS:
+                result_json = _run_dispatch_with_heartbeat_progress(
+                    tc.name, inp_d, token,
                     client_timezone=client_timezone,
                     emit=emit,
                     anthropic_api_key=anthropic_api_key,
@@ -1890,6 +2131,7 @@ def run_turn(
                     Fired before and after each tool call with:
                       {"type": "token_usage",  "tokens": int, "pct": float}  — before each API call
                       {"type": "compressing",  "tokens": int, "pct": float}  — when compression fires
+                      {"type": "rate_limit_wait", ...}  — waiting for input TPM headroom
                       {"type": "intent_route",  "intent": str, "source": str, "tools": list}
                           — when ORCHESTRATOR_INTENT_ROUTER is not off (rules/haiku pass)
                       {"type": "tool_call",    "tool": str, "input": dict}
@@ -2114,9 +2356,9 @@ def run_turn(
         else:
             api_messages = messages_for_anthropic_api(messages)
 
-        wait_for_sliding_tpm_headroom(
+        _wait_for_tpm_headroom_with_progress(
             _estimate_stream_turn_tpm_cost(token_count),
-            _TPM_INPUT_GUIDE_TOKENS,
+            emit=_emit,
         )
         _emit({"type": "thinking"})
         response = None
@@ -2184,9 +2426,9 @@ def run_turn(
                         "attempt": stream_attempt,
                     }
                 )
-                wait_for_sliding_tpm_headroom(
+                _wait_for_tpm_headroom_with_progress(
                     _estimate_stream_turn_tpm_cost(token_count),
-                    _TPM_INPUT_GUIDE_TOKENS,
+                    emit=_emit,
                 )
 
         if response is None:

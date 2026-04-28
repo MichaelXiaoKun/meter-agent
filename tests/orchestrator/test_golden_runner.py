@@ -53,6 +53,23 @@ def test_is_subset_value_must_match_exactly(runner):
     assert runner._is_subset({"serial_number": "BB1"}, {"serial_number": "BB2"}) is False
 
 
+def test_is_subset_accepts_config_value_equivalents(runner):
+    assert runner._is_subset(
+        {
+            "pipe_material": "stainless_steel",
+            "pipe_standard": "asme_schedule_40",
+            "pipe_size": "2_inch",
+            "transducer_angle": 45,
+        },
+        {
+            "pipe_material": "stainless steel",
+            "pipe_standard": "ASME schedule 40",
+            "pipe_size": "2-inch",
+            "transducer_angle": "45°",
+        },
+    )
+
+
 def test_is_subset_missing_key_fails(runner):
     assert runner._is_subset({"email": "a@b"}, {"serial_number": "BB1"}) is False
 
@@ -186,7 +203,11 @@ def test_install_stubs_records_and_returns_canned_results(runner):
         get_meter_profile=lambda *a, **k: {"unused": True},
         list_meters_for_account=lambda *a, **k: {"unused": True},
         compare_meters=lambda *a, **k: {"unused": True},
+        rank_fleet_by_health=lambda *a, **k: {"unused": True},
+        triage_fleet_for_account=lambda *a, **k: {"unused": True},
+        compare_periods=lambda *a, **k: {"unused": True},
         analyze_flow_data=lambda *a, **k: {"unused": True},
+        batch_analyze_flow=lambda *a, **k: {"unused": True},
         configure_meter_pipe=lambda *a, **k: {"unused": True},
         set_transducer_angle_only=lambda *a, **k: {"unused": True},
     )
@@ -228,7 +249,11 @@ def test_install_stubs_restores_originals(runner):
         get_meter_profile=sentinel_a,
         list_meters_for_account=sentinel_a,
         compare_meters=sentinel_a,
+        rank_fleet_by_health=sentinel_a,
+        triage_fleet_for_account=sentinel_a,
+        compare_periods=sentinel_a,
         analyze_flow_data=sentinel_a,
+        batch_analyze_flow=sentinel_a,
         configure_meter_pipe=sentinel_a,
         set_transducer_angle_only=sentinel_a,
     )

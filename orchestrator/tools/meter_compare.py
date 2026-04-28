@@ -103,6 +103,7 @@ def _flatten_meter(
     staleness = (status_data.get("staleness") or {}) if status_data else {}
     signal = (status_data.get("signal") or {}) if status_data else {}
     pipe = (status_data.get("pipe_config") or {}) if status_data else {}
+    health = (status_data.get("health_score") or {}) if status_data else {}
 
     return {
         "serial_number": serial,
@@ -127,6 +128,9 @@ def _flatten_meter(
         "signal_score": signal.get("score"),
         "signal_level": signal.get("level"),
         "signal_reliable": signal.get("reliable"),
+        "health_score": health.get("score"),
+        "health_verdict": health.get("verdict"),
+        "health_score_components": health.get("components"),
         "pipe_nominal_size": pipe.get("nominal_size"),
         "pipe_standard": pipe.get("pipe_standard"),
         "pipe_inner_diameter_mm": pipe.get("inner_diameter_mm"),
