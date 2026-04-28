@@ -16,6 +16,13 @@ function str(v: unknown): string {
 
 function valuesLine(values: Record<string, unknown> | undefined): string {
   if (!values) return "No proposed values";
+  const sweepAngles = values.transducer_angles;
+  if (Array.isArray(sweepAngles)) {
+    const angles = sweepAngles
+      .map((v) => (typeof v === "string" || typeof v === "number" ? String(v).trim() : ""))
+      .filter(Boolean);
+    if (angles.length > 0) return `Transducer angle sweep -> ${angles.join(", ")}`;
+  }
   const pipeParts = [
     str(values.pipe_material),
     str(values.pipe_standard),
@@ -51,6 +58,23 @@ function ttlLabel(workflow: Workflow): string {
   return `Expires in ${min} min`;
 }
 
+function durationLabel(values: Record<string, unknown> | undefined): string {
+  const raw = values?.estimated_duration_seconds;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return "";
+  if (raw < 60) return `About ${Math.round(raw)} sec`;
+  return `About ${Math.ceil(raw / 60)} min`;
+}
+
+function finalPolicyLabel(values: Record<string, unknown> | undefined): string {
+  if (values?.apply_best_after_sweep === true) {
+    return "Set best measured angle at the end when a reliable score exists";
+  }
+  if (Array.isArray(values?.transducer_angles)) {
+    return "Leave meter at the last successfully tested angle";
+  }
+  return "";
+}
+
 export default function ConfigConfirmationCard({
   workflow,
   disabled = false,
@@ -69,6 +93,8 @@ export default function ConfigConfirmationCard({
   const network = str(current?.network_type);
   const angles = allowedAngles(current);
   const risk = str(workflow.risk);
+  const duration = durationLabel(workflow.proposed_values);
+  const finalPolicy = finalPolicyLabel(workflow.proposed_values);
 
   return (
     <div className="my-3 max-w-2xl rounded-lg border border-amber-300/80 bg-amber-50/90 px-4 py-3 text-amber-950 shadow-sm dark:border-amber-900/70 dark:bg-amber-950/25 dark:text-amber-100">
@@ -109,6 +135,16 @@ export default function ConfigConfirmationCard({
         {angles ? (
           <p>
             <span className="font-semibold">Allowed angles:</span> {angles}
+          </p>
+        ) : null}
+        {duration ? (
+          <p>
+            <span className="font-semibold">Estimated runtime:</span> {duration}
+          </p>
+        ) : null}
+        {finalPolicy ? (
+          <p>
+            <span className="font-semibold">Final angle:</span> {finalPolicy}
           </p>
         ) : null}
         {risk ? (

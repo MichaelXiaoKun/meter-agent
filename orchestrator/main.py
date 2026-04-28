@@ -33,6 +33,7 @@ _TOOL_LABELS = {
     "analyze_flow_data":  "Analysing flow data",
     "configure_meter_pipe": "Configuring meter pipe",
     "set_transducer_angle_only": "Setting transducer angle (SSA only)",
+    "sweep_transducer_angles": "Sweeping transducer angles",
 }
 
 
@@ -65,7 +66,7 @@ def _on_event(event: dict) -> None:
                 detail += f"  {inp.get('start')} → {inp.get('end')}"
         elif tool == "configure_meter_pipe":
             detail = inp.get("serial_number", "")
-        elif tool == "set_transducer_angle_only":
+        elif tool in ("set_transducer_angle_only", "sweep_transducer_angles"):
             detail = inp.get("serial_number", "")
         else:
             detail = ""

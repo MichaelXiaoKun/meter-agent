@@ -52,6 +52,7 @@ class TestToolsForIntentLabel:
         cfg = _names(orch._tools_for_intent_label("config"))
         assert "configure_meter_pipe" in cfg
         assert "set_transducer_angle_only" in cfg
+        assert "sweep_transducer_angles" in cfg
         assert "analyze_flow_data" not in cfg
 
     def test_status_and_general_are_read_only_base(self) -> None:

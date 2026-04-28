@@ -17,6 +17,7 @@ export const TOOL_LIFECYCLE: Record<string, { now: string; done: string }> = {
   triage_fleet_for_account: { now: "Triaging account fleet…", done: "Triaged account fleet" },
   configure_meter_pipe: { now: "Preparing configuration review…", done: "Prepared configuration review" },
   set_transducer_angle_only: { now: "Preparing configuration review…", done: "Prepared configuration review" },
+  sweep_transducer_angles: { now: "Preparing angle sweep review…", done: "Prepared angle sweep review" },
 };
 
 function narrowStr(v: unknown): string {
@@ -168,6 +169,16 @@ function toolInputDetails(
       detail("Angle", narrowStr(input.transducer_angle))
     );
   }
+  if (name === "sweep_transducer_angles") {
+    return mergeDetails(
+      detail("Meter", sn),
+      detail("Angles", cleanList(input.transducer_angles, 8)),
+      detail(
+        "Final",
+        input.apply_best_after_sweep === true ? "set best measured" : "last tested"
+      )
+    );
+  }
   return mergeDetails(detail("Meter", sn), detail("Account", email));
 }
 
@@ -317,6 +328,10 @@ export function toolNowLine(
     if (t === "set_transducer_angle_only") {
       const sn = narrowStr(inp.serial_number);
       if (sn) return `Preparing configuration review for meter ${sn}…`;
+    }
+    if (t === "sweep_transducer_angles") {
+      const sn = narrowStr(inp.serial_number);
+      if (sn) return `Preparing angle sweep review for meter ${sn}…`;
     }
   }
   if (TOOL_LIFECYCLE[t]) return TOOL_LIFECYCLE[t].now;

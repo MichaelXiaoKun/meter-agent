@@ -46,6 +46,7 @@ def test_write_tools_never_get_a_dedupe_key():
         is None
     )
     assert orch._per_turn_tool_dedupe_key("configure_meter_pipe", {}) is None
+    assert orch._per_turn_tool_dedupe_key("sweep_transducer_angles", {}) is None
 
 
 def test_read_tools_are_dedup_keyed_and_canonical():

@@ -127,6 +127,7 @@ _TOOL_ATTRS: dict[str, str] = {
     "batch_analyze_flow": "batch_analyze_flow",
     "configure_meter_pipe": "configure_meter_pipe",
     "set_transducer_angle_only": "set_transducer_angle_only",
+    "sweep_transducer_angles": "sweep_transducer_angles",
 }
 
 
@@ -149,6 +150,15 @@ def _install_stubs(agent: ModuleType, fixture: dict[str, Any], calls: list[ToolC
                 if sequence[i]["tool"] == tool_name:
                     next_idx[tool_name] = i + 1
                     return dict(sequence[i].get("mock_result") or {"success": True})
+            if tool_name == "get_meter_profile":
+                return {
+                    "success": True,
+                    "serial_number": inputs.get("serial_number"),
+                    "network_type": "wifi",
+                    "profile": {"label": "Golden replay meter"},
+                    "transducer_angle_options": ["15º", "25º", "35º", "45º"],
+                    "error": None,
+                }
             return {
                 "success": False,
                 "error": f"golden-replay: tool {tool_name!r} called but no canned result left",
@@ -196,6 +206,7 @@ def _reconstruct_inputs(tool: str, args: tuple, kwargs: dict) -> dict[str, Any]:
             "transducer_angle",
         ],
         "set_transducer_angle_only": ["serial_number", "transducer_angle"],
+        "sweep_transducer_angles": ["serial_number", "transducer_angles"],
     }
     names = positional_schema.get(tool, [])
     inputs: dict[str, Any] = {}
@@ -214,6 +225,7 @@ def _reconstruct_inputs(tool: str, args: tuple, kwargs: dict) -> dict[str, Any]:
         "baseline_window",
         "filters",
         "event_predicates",
+        "apply_best_after_sweep",
     ):
         if key in kwargs:
             inputs[key] = kwargs[key]

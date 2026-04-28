@@ -86,6 +86,11 @@ from tools.set_transducer_angle import (
     TOOL_DEFINITION as _SET_TRANSDUCER_ANGLE_DEF,
     set_transducer_angle_only,
 )
+from tools.sweep_transducer_angles import (
+    TOOL_DEFINITION as _SWEEP_TRANSDUCER_ANGLES_DEF,
+    prepare_sweep_confirmation_inputs,
+    sweep_transducer_angles,
+)
 from tools.batch_flow_analysis import (
     TOOL_DEFINITION as _BATCH_FLOW_ANALYSIS_DEF,
     batch_analyze_flow,
@@ -107,6 +112,7 @@ TOOLS = [
     _BATCH_FLOW_ANALYSIS_DEF,
     _PIPE_CONFIGURATION_DEF,
     _SET_TRANSDUCER_ANGLE_DEF,
+    _SWEEP_TRANSDUCER_ANGLES_DEF,
 ]
 
 # ---------------------------------------------------------------------------
@@ -145,6 +151,7 @@ _TOOL_NAMES_BY_INTENT: dict[str, frozenset[str]] = {
         {
             "configure_meter_pipe",
             "set_transducer_angle_only",
+            "sweep_transducer_angles",
         }
     ),
 }
@@ -439,7 +446,7 @@ _DEDUPABLE_READ_TOOLS: frozenset[str] = frozenset(
 # Write tools are *never* cached: each call is an MQTT / management push and
 # must reach the device even when the arguments look identical.
 _WRITE_TOOLS: frozenset[str] = frozenset(
-    {"configure_meter_pipe", "set_transducer_angle_only"}
+    {"configure_meter_pipe", "set_transducer_angle_only", "sweep_transducer_angles"}
 )
 
 # These tools always run serially even when multiple tool_use blocks arrive in
@@ -1208,6 +1215,19 @@ def _compact_tool_result_for_history(tool_name: str, result_dict: dict) -> dict:
             "notice": result_dict.get("notice"),
             "error": result_dict.get("error"),
         }
+    if tool_name == "sweep_transducer_angles":
+        return {
+            "success": result_dict.get("success"),
+            "serial_number": result_dict.get("serial_number"),
+            "network_type": result_dict.get("network_type"),
+            "resolved_angles": result_dict.get("resolved_angles"),
+            "ranking": result_dict.get("ranking"),
+            "best_angle": result_dict.get("best_angle"),
+            "final_angle": result_dict.get("final_angle"),
+            "final_action": result_dict.get("final_action"),
+            "notice": result_dict.get("notice"),
+            "error": result_dict.get("error"),
+        }
     return result_dict
 
 
@@ -1313,6 +1333,17 @@ def _tool_activity_line(
             )
         return _clip_activity(f"Set the transducer angle for meter {sn}", 200)
 
+    if tool_name == "sweep_transducer_angles" and sn:
+        count = len(result.get("resolved_angles") or inp.get("transducer_angles") or [])
+        best = result.get("best_angle")
+        final = result.get("final_angle")
+        if best and final:
+            return _clip_activity(
+                f"Swept {count} transducer angles for meter {sn}; best {best}, final {final}",
+                260,
+            )
+        return _clip_activity(f"Swept {count} transducer angles for meter {sn}", 220)
+
     return None
 
 
@@ -1398,11 +1429,18 @@ def _meter_context_from_result(tool_name: str, inp: dict, result: dict) -> dict 
                     "pipe_config": _compact_pipe_config(status.get("pipe_config")),
                 }
             )
-    elif tool_name in {"analyze_flow_data", "configure_meter_pipe", "set_transducer_angle_only"}:
+    elif tool_name in {
+        "analyze_flow_data",
+        "configure_meter_pipe",
+        "set_transducer_angle_only",
+        "sweep_transducer_angles",
+    }:
         if inp.get("network_type"):
             ctx["network_type"] = inp.get("network_type")
         if inp.get("meter_timezone"):
             ctx["timezone"] = inp.get("meter_timezone")
+        if result.get("network_type"):
+            ctx["network_type"] = result.get("network_type")
 
     clean = {k: v for k, v in ctx.items() if v is not None and v != ""}
     return clean or None
@@ -1508,6 +1546,8 @@ def _current_values_for_config_confirmation(tool_name: str, inp: dict, token: st
         "change_type": (
             "full_pipe_configuration"
             if tool_name == "configure_meter_pipe"
+            else "transducer_angle_sweep"
+            if tool_name == "sweep_transducer_angles"
             else "transducer_angle_only"
         ),
     }
@@ -1533,8 +1573,10 @@ def _confirmation_required_payload(
     tool_name: str,
     inp: dict,
     token: str,
+    current_values: dict | None = None,
 ) -> tuple[dict, dict]:
-    current_values = _current_values_for_config_confirmation(tool_name, inp, token)
+    if current_values is None:
+        current_values = _current_values_for_config_confirmation(tool_name, inp, token)
     action = create_pending_action(
         conversation_id=conversation_id,
         user_scope=user_scope,
@@ -1554,6 +1596,16 @@ def _confirmation_required_payload(
     return workflow, {k: v for k, v in meter_context.items() if v}
 
 
+def _prepare_write_confirmation_inputs(tool_name: str, inp: dict, token: str) -> dict:
+    if tool_name == "sweep_transducer_angles":
+        return prepare_sweep_confirmation_inputs(
+            inp,
+            token,
+            profile_lookup=get_meter_profile,
+        )
+    return {"success": True, "inputs": inp, "current_values": None}
+
+
 def _confirmation_prompt(workflow: dict) -> str:
     serial = str(workflow.get("serial_number") or "the meter")
     proposed = workflow.get("proposed_values") if isinstance(workflow.get("proposed_values"), dict) else {}
@@ -1561,7 +1613,17 @@ def _confirmation_prompt(workflow: dict) -> str:
     current = workflow.get("current_values") if isinstance(workflow.get("current_values"), dict) else {}
     if isinstance(current, dict) and current.get("label"):
         label = f" ({current.get('label')})"
-    if workflow.get("tool") == "set_transducer_angle_only":
+    if workflow.get("tool") == "sweep_transducer_angles":
+        angles = proposed.get("transducer_angles")
+        angle_list = ", ".join(str(a) for a in angles) if isinstance(angles, list) else ""
+        estimate = proposed.get("estimated_duration_seconds")
+        estimate_s = f" Estimated runtime: about {int(estimate)} seconds." if isinstance(estimate, (int, float)) else ""
+        if proposed.get("apply_best_after_sweep") is True:
+            final = "I will set the best measured angle at the end if a reliable score is available."
+        else:
+            final = "I will leave the meter at the last successfully tested angle."
+        change = f"transducer angle sweep across {angle_list or 'the allowed angles'}.{estimate_s} {final}"
+    elif workflow.get("tool") == "set_transducer_angle_only":
         change = f"transducer angle to {proposed.get('transducer_angle')}"
     else:
         parts = [
@@ -1595,6 +1657,53 @@ def _status_line_from_status_result(result: dict) -> str:
     last = status.get("last_message_at")
     last_s = f", last message {last}" if last else ""
     return f"Verification: meter is {online_s}{signal_s}{last_s}."
+
+
+def _sweep_progress_message(event: dict) -> str:
+    phase = str(event.get("phase") or "")
+    angle = str(event.get("angle") or "").strip()
+    index = event.get("index")
+    total = event.get("total")
+    prefix = ""
+    if isinstance(index, int) and isinstance(total, int) and total > 0:
+        prefix = f"{index}/{total}: "
+    if phase == "set_angle":
+        return f"Angle sweep: {prefix}setting transducer angle {angle}."
+    if phase == "check_status":
+        return f"Angle sweep: {prefix}checking signal quality after {angle}."
+    if phase == "set_best":
+        return f"Angle sweep: setting best measured angle {angle}."
+    if phase == "verify_best":
+        return f"Angle sweep: verifying best measured angle {angle}."
+    return "Angle sweep: working."
+
+
+def _sweep_summary_message(serial: str, result: dict) -> str:
+    angles = result.get("resolved_angles")
+    count = len(angles) if isinstance(angles, list) else 0
+    best = result.get("best_angle")
+    final = result.get("final_angle")
+    action = result.get("final_action")
+    if action == "set_best_after_sweep" and best:
+        final_s = f"I set the best measured angle, {best}, as the final setting."
+    elif action == "best_not_set_no_reliable_score":
+        final_s = "No reliable numeric signal score was available, so I did not choose a best angle."
+    elif final:
+        final_s = f"I left the meter at the last successfully tested angle, {final}."
+    else:
+        final_s = "No final angle was confirmed from the sweep."
+    ranking = result.get("ranking") if isinstance(result.get("ranking"), list) else []
+    if best and ranking:
+        top = ranking[0]
+        score = top.get("signal_score") if isinstance(top, dict) else None
+        score_s = f" with signal score {score:g}" if isinstance(score, (int, float)) else ""
+        best_s = f" Best snapshot: {best}{score_s}."
+    else:
+        best_s = ""
+    return (
+        f"Confirmed. I swept {count} transducer angle(s) for meter {serial}. "
+        f"{final_s}{best_s}"
+    )
 
 
 def _emit_tool_result_event(
@@ -1789,6 +1898,18 @@ def _dispatch(
             anthropic_api_key=anthropic_api_key,
         )
 
+    elif name == "sweep_transducer_angles":
+        result = sweep_transducer_angles(
+            inputs["serial_number"],
+            inputs.get("transducer_angles"),
+            token,
+            apply_best_after_sweep=bool(inputs.get("apply_best_after_sweep")),
+            anthropic_api_key=anthropic_api_key,
+            profile_lookup=get_meter_profile,
+            set_angle_func=set_transducer_angle_only,
+            check_status_func=check_meter_status,
+        )
+
     else:
         result = {"error": f"Unknown tool: {name}"}
 
@@ -1828,12 +1949,57 @@ def _dispatch_tool_batch(
         inp_d = _coerce_tool_input(tc.input)
         emit({"type": "tool_call", "tool": tc.name, "input": inp_d})
         counters["tool_calls"] += 1
+        prepared = _prepare_write_confirmation_inputs(tc.name, inp_d, token)
+        if not prepared.get("success"):
+            result_dict = {
+                "success": False,
+                "error": prepared.get("error") or "Could not prepare configuration confirmation.",
+            }
+            counters["tool_failures"] += 1
+            _emit_tool_result_event(
+                emit=emit,
+                tool_name=tc.name,
+                inp=inp_d,
+                result_dict=result_dict,
+                ok=False,
+            )
+            hidden_results: list[dict] = []
+            for j, other in enumerate(tool_calls):
+                if j == write_index:
+                    content = _compact_tool_result_json_for_history(tc.name, result_dict)
+                else:
+                    content = json.dumps(
+                        {
+                            "success": True,
+                            "skipped_due_to_configuration_error": True,
+                            "message": (
+                                "Skipped because a configuration change could not be prepared. "
+                                "No additional tools were run."
+                            ),
+                        },
+                        default=str,
+                    )
+                hidden_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": other.id,
+                        "content": content,
+                    }
+                )
+            return hidden_results, None
+        inp_d = dict(prepared.get("inputs") or inp_d)
+        current_values = (
+            prepared.get("current_values")
+            if isinstance(prepared.get("current_values"), dict)
+            else None
+        )
         workflow, meter_context = _confirmation_required_payload(
             conversation_id=conversation_id,
             user_scope=user_scope,
             tool_name=tc.name,
             inp=inp_d,
             token=token,
+            current_values=current_values,
         )
         emit(
             {
@@ -2023,13 +2189,33 @@ def _execute_confirmed_config_action(
     inp = dict(action.inputs)
     workflow_base = action.as_workflow(status="confirmed")
     emit({"type": "tool_call", "tool": tool_name, "input": inp})
-    result_json = _dispatch(
-        tool_name,
-        inp,
-        token,
-        client_timezone=client_timezone,
-        anthropic_api_key=anthropic_api_key,
-    )
+    if tool_name == "sweep_transducer_angles":
+        result = sweep_transducer_angles(
+            inp["serial_number"],
+            inp.get("transducer_angles"),
+            token,
+            apply_best_after_sweep=bool(inp.get("apply_best_after_sweep")),
+            anthropic_api_key=anthropic_api_key,
+            on_progress=lambda ev: emit(
+                {
+                    "type": "tool_progress",
+                    "tool": tool_name,
+                    "message": _sweep_progress_message(ev),
+                }
+            ),
+            profile_lookup=get_meter_profile,
+            set_angle_func=set_transducer_angle_only,
+            check_status_func=check_meter_status,
+        )
+        result_json = json.dumps(result, default=str)
+    else:
+        result_json = _dispatch(
+            tool_name,
+            inp,
+            token,
+            client_timezone=client_timezone,
+            anthropic_api_key=anthropic_api_key,
+        )
     result = json.loads(result_json)
     ok = _sse_tool_succeeded(result)
     workflow_status = "executed" if ok else "failed"
@@ -2048,6 +2234,11 @@ def _execute_confirmed_config_action(
             f"I could not apply the confirmed configuration for meter {serial or 'the meter'}. "
             f"{result.get('error') or 'The configuration tool reported a failure.'}"
         )
+        messages.append({"role": "assistant", "content": [{"type": "text", "text": msg}]})
+        return msg, False
+
+    if tool_name == "sweep_transducer_angles":
+        msg = _sweep_summary_message(serial, result)
         messages.append({"role": "assistant", "content": [{"type": "text", "text": msg}]})
         return msg, False
 

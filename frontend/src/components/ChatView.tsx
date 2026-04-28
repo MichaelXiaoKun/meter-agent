@@ -6,7 +6,7 @@ import {
   useState,
   type RefObject,
 } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { DownloadArtifact, Message, PlotAttachment, SSEEvent } from "../types";
@@ -46,6 +46,21 @@ type ChatSendOptions = {
   confirmedActionId?: string | null;
   cancelledActionId?: string | null;
   supersededActionId?: string | null;
+};
+
+const CHAT_LOGO_LAYOUT_ID = "bluebot-chat-header-logo";
+const CHAT_COMPOSER_LAYOUT_ID = "bluebot-chat-composer";
+const CHAT_LOGO_LAYOUT_TRANSITION = {
+  type: "spring" as const,
+  stiffness: 420,
+  damping: 34,
+  mass: 0.8,
+};
+const CHAT_COMPOSER_LAYOUT_TRANSITION = {
+  type: "spring" as const,
+  stiffness: 360,
+  damping: 36,
+  mass: 0.95,
 };
 
 function SendArrowIcon({ className }: { className?: string }) {
@@ -185,6 +200,7 @@ export default function ChatView({
 }: ChatViewProps) {
   const [input, setInput] = useState("");
   const [composerFocused, setComposerFocused] = useState(false);
+  const [logoAcknowledgeSignal, setLogoAcknowledgeSignal] = useState(0);
   const [replacingConfigActionId, setReplacingConfigActionId] = useState<string | null>(null);
   /**
    * Voice-to-text dictation state. See :hook:`useSpeechRecognition`.
@@ -615,6 +631,7 @@ export default function ChatView({
     if (speech.listening) speech.stop();
     const supersededActionId = replacingConfigActionId;
     setReplacingConfigActionId(null);
+    setLogoAcknowledgeSignal((n) => n + 1);
     forceBottomNow();
     onSend(msg, supersededActionId ? { supersededActionId } : undefined);
     setInput("");
@@ -727,6 +744,7 @@ export default function ChatView({
     share &&
     conversationId != null &&
     messages.length > 0;
+  const showHeaderLogo = hasMessages;
   const welcomeLogoMood = speech.listening
     ? "listening"
     : composerFocused || input.trim().length > 0
@@ -737,6 +755,9 @@ export default function ChatView({
     : input.includes("<METER SERIAL>")
       ? "confused"
       : "neutral";
+  const headerLogoMood =
+    isProcessing || serverProcessing || historyLoading ? "loading" : "idle";
+  const headerLogoExpression = status.kind === "error" ? "annoyed" : "neutral";
 
   // Pair plot paths with assistant messages: collect from tool_result rows,
   // attach to the next assistant message (same logic as the Streamlit app).
@@ -785,8 +806,9 @@ export default function ChatView({
     const serial = workflow.serial_number || workflow.proposed_values?.serial_number;
     const angle = workflow.proposed_values?.transducer_angle;
     setReplacingConfigActionId(workflow.action_id ?? null);
-    const text =
-      typeof angle === "string" || typeof angle === "number"
+    const text = Array.isArray(workflow.proposed_values?.transducer_angles)
+      ? `Instead, sweep meter ${serial || "<METER SERIAL>"} transducer angles `
+      : typeof angle === "string" || typeof angle === "number"
         ? `Instead, set meter ${serial || "<METER SERIAL>"} transducer angle to `
         : `Instead, configure meter ${serial || "<METER SERIAL>"} with `;
     setInput(text);
@@ -978,7 +1000,11 @@ export default function ChatView({
   const composerWelcome = disabled ? (
     composerDisabled
   ) : (
-    <div className={composerShellClass}>
+    <motion.div
+      layoutId={CHAT_COMPOSER_LAYOUT_ID}
+      className={composerShellClass}
+      transition={CHAT_COMPOSER_LAYOUT_TRANSITION}
+    >
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -987,13 +1013,17 @@ export default function ChatView({
       >
         {composerBody("Message bluebot Assistant…", true)}
       </form>
-    </div>
+    </motion.div>
   );
 
   const composerFooter = disabled ? (
     composerDisabled
   ) : (
-    <div className={`${composerShellClass} mx-auto`}>
+    <motion.div
+      layoutId={CHAT_COMPOSER_LAYOUT_ID}
+      className={`${composerShellClass} mx-auto`}
+      transition={CHAT_COMPOSER_LAYOUT_TRANSITION}
+    >
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -1005,11 +1035,12 @@ export default function ChatView({
           false,
         )}
       </form>
-    </div>
+    </motion.div>
   );
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col lg:flex-row">
+    <LayoutGroup>
+      <div className="flex h-full min-h-0 min-w-0 flex-col lg:flex-row">
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
       {/* Header — full width of main pane, inset from sidebar via px-6 */}
       <header className="relative z-20 shrink-0 border-b border-brand-border/90 bg-gradient-to-b from-white to-brand-50/40 pt-[env(safe-area-inset-top,0px)] shadow-[0_1px_0_0_rgba(15,23,42,0.04)] backdrop-blur-md dark:from-brand-100 dark:to-brand-50 dark:shadow-[0_1px_0_0_rgba(0,0,0,0.2)]">
@@ -1021,7 +1052,7 @@ export default function ChatView({
         >
           {narrowNav ? (
             <>
-              <div className="flex shrink-0 items-center">
+              <div className="flex shrink-0 items-center gap-2">
                 <button
                   type="button"
                   onClick={narrowNav.onOpenSidebar}
@@ -1031,6 +1062,27 @@ export default function ChatView({
                 >
                   <IconSidebarDock className="h-5 w-5 shrink-0" />
                 </button>
+                <AnimatePresence initial={false}>
+                  {showHeaderLogo && (
+                    <motion.div
+                      layoutId={CHAT_LOGO_LAYOUT_ID}
+                      className="shrink-0"
+                      initial={{ opacity: 0, scale: 0.96 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.96 }}
+                      transition={CHAT_LOGO_LAYOUT_TRANSITION}
+                    >
+                      <WelcomeBluebotLogo
+                        size={32}
+                        mood={headerLogoMood}
+                        expression={headerLogoExpression}
+                        acknowledgeSignal={logoAcknowledgeSignal}
+                        sleepAfterMs={null}
+                        className="welcome-bluebot-header-logo"
+                      />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
               <div className="min-w-0 flex-1">
                 <h1 className="text-xl font-bold leading-none tracking-tight text-brand-900">
@@ -1053,13 +1105,36 @@ export default function ChatView({
             </>
           ) : (
             <div className="flex w-full min-w-0 items-start justify-between gap-3 sm:items-center">
-              <div className="min-w-0 flex-1">
-                <h1 className="text-lg font-bold tracking-tight text-brand-900 sm:text-[1.0625rem]">
-                  bluebot Assistant
-                </h1>
-                <p className="hidden max-w-[40rem] text-sm leading-relaxed text-brand-muted lg:mt-0.5 lg:block lg:text-xs lg:leading-snug">
-                  Flow analysis, meter health, and pipe configuration — ask with a serial number.
-                </p>
+              <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                <AnimatePresence initial={false}>
+                  {showHeaderLogo && (
+                    <motion.div
+                      layoutId={CHAT_LOGO_LAYOUT_ID}
+                      className="shrink-0"
+                      initial={{ opacity: 0, scale: 0.96 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.96 }}
+                      transition={CHAT_LOGO_LAYOUT_TRANSITION}
+                    >
+                      <WelcomeBluebotLogo
+                        size={34}
+                        mood={headerLogoMood}
+                        expression={headerLogoExpression}
+                        acknowledgeSignal={logoAcknowledgeSignal}
+                        sleepAfterMs={null}
+                        className="welcome-bluebot-header-logo"
+                      />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+                <div className="min-w-0 flex-1">
+                  <h1 className="text-lg font-bold tracking-tight text-brand-900 sm:text-[1.0625rem]">
+                    bluebot Assistant
+                  </h1>
+                  <p className="hidden max-w-[40rem] text-sm leading-relaxed text-brand-muted lg:mt-0.5 lg:block lg:text-xs lg:leading-snug">
+                    Flow analysis, meter health, and pipe configuration — ask with a serial number.
+                  </p>
+                </div>
               </div>
               {showShare && (
                 <SharePopover
@@ -1350,12 +1425,18 @@ export default function ChatView({
                       : "flex w-full max-w-2xl flex-1 flex-col items-center justify-center py-6 sm:py-10 md:py-14"
                   }
                 >
-                  <WelcomeBluebotLogo
-                    size={welcomeComposerAtBottom ? 88 : 104}
-                    mood={welcomeLogoMood}
-                    expression={welcomeLogoExpression}
-                    className="mb-3 sm:mb-4"
-                  />
+                  <motion.div
+                    layoutId={CHAT_LOGO_LAYOUT_ID}
+                    className="mb-3 shrink-0 sm:mb-4"
+                    transition={CHAT_LOGO_LAYOUT_TRANSITION}
+                  >
+                    <WelcomeBluebotLogo
+                      size={welcomeComposerAtBottom ? 88 : 104}
+                      mood={welcomeLogoMood}
+                      expression={welcomeLogoExpression}
+                      acknowledgeSignal={logoAcknowledgeSignal}
+                    />
+                  </motion.div>
                   <h2 className="welcome-heading px-1 text-center text-2xl font-semibold leading-snug tracking-tight text-brand-900 sm:px-2 sm:text-3xl">
                     What can I help with?
                   </h2>
@@ -1417,7 +1498,8 @@ export default function ChatView({
           </div>
         )}
       </div>
+      </div>
     </div>
-    </div>
+    </LayoutGroup>
   );
 }
