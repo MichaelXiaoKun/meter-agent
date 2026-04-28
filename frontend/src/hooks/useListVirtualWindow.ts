@@ -66,6 +66,8 @@ export function useListVirtualWindow(
     };
   }, [items, offsets, rowHeights, parentRef, overscan, items.length]);
 
+  const start = items.length > 0 ? Math.min(win.start, items.length - 1) : 0;
+  const end = items.length > 0 ? Math.min(Math.max(win.end, start), items.length - 1) : -1;
   const getOffset = (i: number) => offsets[i] ?? 0;
-  return { start: win.start, end: win.end, totalSize, getOffset, rowHeights };
+  return { start, end, totalSize, getOffset, rowHeights };
 }

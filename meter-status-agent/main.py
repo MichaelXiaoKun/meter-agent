@@ -40,7 +40,23 @@ def _safe_processor(fn, *args):
         return None, f"{type(exc).__name__}: {exc}"
 
 
-def _build_status_payload(status: Dict[str, Any], serial: str) -> Dict[str, Any]:
+def _verified_facts_from_env() -> Dict[str, Any] | None:
+    raw = os.environ.get("BLUEBOT_VERIFIED_FACTS_JSON")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _build_status_payload(
+    status: Dict[str, Any],
+    serial: str,
+    *,
+    verified_facts: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     """Call each processor independently so one bad field doesn't mask the rest."""
     staleness, staleness_err = _safe_processor(
         compute_staleness, status.get("last_message_at")
@@ -72,7 +88,10 @@ def _build_status_payload(status: Dict[str, Any], serial: str) -> Dict[str, Any]
         "pipe_config": pipe,
         "errors": errors,
     }
-    payload["health_score"] = compute_health_score(status=payload)
+    payload["health_score"] = compute_health_score(
+        status=payload,
+        verified_facts=verified_facts,
+    )
     return payload
 
 
@@ -80,7 +99,11 @@ def _emit_status_marker(status: Dict[str, Any], serial: str) -> None:
     """Emit the structured payload on stderr. Swallow any JSON error silently —
     the Markdown report is still the primary output."""
     try:
-        payload = _build_status_payload(status, serial)
+        payload = _build_status_payload(
+            status,
+            serial,
+            verified_facts=_verified_facts_from_env(),
+        )
         print(
             _STATUS_JSON_MARKER + json.dumps(payload, default=str),
             file=sys.stderr,

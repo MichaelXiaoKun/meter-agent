@@ -146,9 +146,10 @@ export default function ConversationList({
       className="relative min-h-0 min-w-0 flex-1 overflow-y-auto px-2.5 [scrollbar-gutter:stable]"
     >
       <div className="relative w-full" style={{ height: totalSize }}>
-        {Array.from({ length: end - start + 1 }, (_, j) => {
+        {Array.from({ length: Math.max(0, end - start + 1) }, (_, j) => {
           const i = start + j;
-          const it = listItems[i]!;
+          const it = listItems[i];
+          if (!it) return null;
           const top = getOffset(i);
           const h = rowHeights[i] ?? 0;
           const pos: CSSProperties = {

@@ -172,6 +172,56 @@ export interface ProcessingStatus {
   done?: boolean;
 }
 
+export interface SalesLeadSummary {
+  application?: string;
+  industry?: string;
+  site_count?: string;
+  pipe_material?: string;
+  pipe_size?: string;
+  liquid?: string;
+  expected_flow_range?: string;
+  pipe_access?: string;
+  installation_environment?: string;
+  network_or_power?: string;
+  reporting_goals?: string;
+  timeline?: string;
+  buyer_role?: string;
+  contact?: string;
+  notes?: string;
+  [key: string]: unknown;
+}
+
+export interface SalesConversation {
+  id: string;
+  messages: Message[];
+  lead_summary: SalesLeadSummary;
+}
+
+export interface SalesSSEEvent {
+  type:
+  | "text_delta"
+  | "tool_call"
+  | "tool_result"
+  | "lead_summary"
+  | "thinking"
+  | "token_usage"
+  | "queued"
+  | "tool_round_limit"
+  | "done"
+  | "error";
+  text?: string;
+  tool?: string;
+  input?: Record<string, unknown>;
+  success?: boolean;
+  lead_summary?: SalesLeadSummary;
+  completion_score?: number;
+  missing_fields?: string[];
+  message?: string;
+  error?: string;
+  turn_id?: string;
+  seq?: number;
+}
+
 export async function getProcessingStatus(
   convId: string,
   signal?: AbortSignal
@@ -193,6 +243,198 @@ export async function checkProcessing(
   signal?: AbortSignal
 ): Promise<boolean> {
   return (await getProcessingStatus(convId, signal)).processing;
+}
+
+// ---------------------------------------------------------------------------
+// Public sales chat
+// ---------------------------------------------------------------------------
+
+export async function createSalesConversation(title = "Sales conversation"): Promise<string> {
+  const res = await fetch(`${BASE}/public/sales/conversations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json();
+  return data.id;
+}
+
+export async function listSalesConversations(
+  ids: string[],
+  signal?: AbortSignal,
+): Promise<Conversation[]> {
+  if (ids.length === 0) return [];
+  const params = new URLSearchParams({ ids: ids.join(",") });
+  const res = await fetch(`${BASE}/public/sales/conversations?${params}`, { signal });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function loadSalesConversation(
+  convId: string,
+  signal?: AbortSignal,
+): Promise<SalesConversation> {
+  const res = await fetch(`${BASE}/public/sales/conversations/${convId}`, { signal });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function getSalesProcessingStatus(
+  convId: string,
+  signal?: AbortSignal,
+): Promise<ProcessingStatus> {
+  const res = await fetch(
+    `${BASE}/public/sales/conversations/${encodeURIComponent(convId)}/status`,
+    { signal },
+  );
+  if (!res.ok) return { processing: false };
+  const data = await res.json();
+  return {
+    processing: !!data.processing,
+    stream_id: typeof data.stream_id === "string" ? data.stream_id : undefined,
+    turn_id: typeof data.turn_id === "string" ? data.turn_id : undefined,
+    event_count: typeof data.event_count === "number" ? data.event_count : undefined,
+    done: typeof data.done === "boolean" ? data.done : undefined,
+  };
+}
+
+export async function updateSalesConversationTitle(
+  convId: string,
+  title: string,
+): Promise<void> {
+  const res = await fetch(`${BASE}/public/sales/conversations/${convId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+export async function deleteSalesConversation(convId: string): Promise<void> {
+  const res = await fetch(`${BASE}/public/sales/conversations/${convId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+async function initSalesTurn(
+  convId: string,
+  message: string,
+  signal?: AbortSignal,
+  clientTurnId?: string,
+): Promise<{ streamId: string; turnId?: string }> {
+  const res = await fetch(`${BASE}/public/sales/conversations/${convId}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message,
+      ...(clientTurnId ? { client_turn_id: clientTurnId } : {}),
+    }),
+    signal,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const body = (await res.json()) as { stream_id?: string; turn_id?: string };
+  if (!body.stream_id) throw new Error("Missing stream_id in sales chat response");
+  return { streamId: body.stream_id, turnId: body.turn_id };
+}
+
+export async function pollSalesStream(
+  streamId: string,
+  onEvent: (event: SalesSSEEvent) => void,
+  signal?: AbortSignal,
+  startCursor = 0,
+): Promise<void> {
+  let cursor = Math.max(0, startCursor);
+  while (true) {
+    if (signal?.aborted) throw new DOMException("aborted", "AbortError");
+    const res = await fetch(
+      `${BASE}/public/sales/streams/${streamId}/poll?cursor=${cursor}&wait_ms=1500&_=${Date.now()}`,
+      {
+        signal,
+        cache: "no-store",
+        headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+      },
+    );
+    if (!res.ok) throw new Error(await res.text());
+    const body = (await res.json()) as {
+      events?: SalesSSEEvent[];
+      done?: boolean;
+      next_cursor?: number;
+    };
+    const events = body.events ?? [];
+    for (const event of events) onEvent(event);
+    cursor = body.next_cursor ?? cursor + events.length;
+    if (body.done) return;
+    if (events.length === 0) await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+export async function streamSalesChat(
+  convId: string,
+  message: string,
+  onEvent: (event: SalesSSEEvent) => void,
+  signal?: AbortSignal,
+  clientTurnId?: string,
+): Promise<void> {
+  const { streamId } = await initSalesTurn(convId, message, signal, clientTurnId);
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("aborted", "AbortError"));
+      return;
+    }
+    const es = new EventSource(`${BASE}/public/sales/streams/${streamId}`);
+    let settled = false;
+    let fallbackStarted = false;
+    let lastSeq = 0;
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      es.close();
+      signal?.removeEventListener("abort", onAbort);
+      fn();
+    };
+    const onAbort = () => settle(() => reject(new DOMException("aborted", "AbortError")));
+    const startPollingFallback = () => {
+      if (settled || fallbackStarted) return;
+      fallbackStarted = true;
+      es.close();
+      pollSalesStream(streamId, onEvent, signal, lastSeq)
+        .then(() => settle(() => resolve()))
+        .catch((err) => settle(() => reject(err)));
+    };
+    signal?.addEventListener("abort", onAbort);
+    es.onmessage = (ev: MessageEvent<string>) => {
+      let parsed: SalesSSEEvent | null = null;
+      try {
+        parsed = JSON.parse(ev.data) as SalesSSEEvent;
+      } catch {
+        return;
+      }
+      if (typeof parsed.seq === "number") lastSeq = Math.max(lastSeq, parsed.seq);
+      if (parsed.type === "done") {
+        settle(() => resolve());
+        return;
+      }
+      if (parsed.type === "error") {
+        settle(() => reject(new Error(parsed.error || "Sales chat failed")));
+        return;
+      }
+      onEvent(parsed);
+    };
+    es.onerror = () => startPollingFallback();
+  });
+}
+
+export async function cancelSalesProcessing(
+  convId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${BASE}/public/sales/conversations/${convId}/cancel`, {
+    method: "POST",
+    signal,
+  });
+  if (!res.ok) throw new Error(await res.text());
 }
 
 export async function cancelProcessing(
@@ -570,6 +812,11 @@ export async function fetchOrchestratorConfig(
 // Public share links (snapshot, read-only)
 // ---------------------------------------------------------------------------
 
+export interface PublicShareToken {
+  token: string;
+  revokeKey?: string;
+}
+
 export async function createShare(
   convId: string,
   userId: string,
@@ -591,6 +838,26 @@ export async function createShare(
   return data.token;
 }
 
+export async function createSalesShare(
+  convId: string,
+  signal?: AbortSignal,
+): Promise<PublicShareToken> {
+  const res = await fetch(
+    `${BASE}/public/sales/conversations/${encodeURIComponent(convId)}/share`,
+    {
+      method: "POST",
+      signal,
+    },
+  );
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(t || `Sales share failed (${res.status})`);
+  }
+  const data = (await res.json()) as { token?: string; revoke_key?: string };
+  if (!data.token) throw new Error("Missing share token in response");
+  return { token: data.token, revokeKey: data.revoke_key };
+}
+
 export async function revokeShare(
   shareToken: string,
   userId: string,
@@ -608,6 +875,27 @@ export async function revokeShare(
   if (!res.ok) {
     const t = await res.text();
     throw new Error(t || `Revoke share failed (${res.status})`);
+  }
+}
+
+export async function revokeSalesShare(
+  shareToken: string,
+  revokeKey?: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!revokeKey) {
+    throw new Error("Missing revoke key for this sales share link");
+  }
+  const res = await fetch(
+    `${BASE}/public/sales/shares/${encodeURIComponent(shareToken)}?revoke_key=${encodeURIComponent(revokeKey)}`,
+    {
+      method: "DELETE",
+      signal,
+    },
+  );
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(t || `Revoke sales share failed (${res.status})`);
   }
 }
 

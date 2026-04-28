@@ -108,6 +108,7 @@ def check_meter_status(
     token: str,
     *,
     anthropic_api_key: str | None = None,
+    verified_facts: dict | None = None,
 ) -> dict:
     """
     Run the meter-status-agent for a meter (by serial number) and return its report.
@@ -136,6 +137,11 @@ def check_meter_status(
         }
     """
     env = tool_subprocess_env(token, anthropic_api_key)
+    if isinstance(verified_facts, dict):
+        try:
+            env["BLUEBOT_VERIFIED_FACTS_JSON"] = json.dumps(verified_facts, sort_keys=True)
+        except (TypeError, ValueError):
+            pass
     result = subprocess.run(
         [_PYTHON, "main.py", "--serial", serial_number],
         cwd=_AGENT_DIR,

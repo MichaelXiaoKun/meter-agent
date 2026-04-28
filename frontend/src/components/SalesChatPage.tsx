@@ -1,0 +1,775 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  cancelSalesProcessing,
+  createSalesShare,
+  getSalesProcessingStatus,
+  loadSalesConversation,
+  pollSalesStream,
+  revokeSalesShare,
+  streamSalesChat,
+  type SalesSSEEvent,
+} from "../api";
+import {
+  applyStreamEventToChatState,
+  clearChatStreamStateAfterTurn,
+  createChatStreamState,
+  IDLE,
+  resetChatStreamStateForTurn,
+  type ChatStreamState,
+} from "../chatStreamReducer";
+import { useMediaQuery } from "../hooks/useMediaQuery";
+import { useSalesConversations } from "../hooks/useSalesConversations";
+import type { Message, SSEEvent } from "../types";
+import ChatView from "./ChatView";
+import Sidebar from "./Sidebar";
+import SidebarIconRail from "./SidebarIconRail";
+import { ToastContainer, useToast } from "./Toast";
+import type { QuickAction } from "./WelcomeCard";
+
+interface SalesChatPageProps {
+  onBackToEntry?: () => void;
+}
+
+const SALES_ACTIVE_CONV_KEY = "bb_sales_active_conv";
+const LEGACY_SALES_CONV_KEY = "bb_sales_conv";
+const SALES_STREAMING_STATE_KEY = (conversationId: string) =>
+  `bb_sales_streaming_state_${conversationId}`;
+
+const SALES_ACTIONS: QuickAction[] = [
+  {
+    id: "pipe-impact",
+    label: "Pipe impact",
+    message: () => "Will Bluebot damage my pipe or affect water pressure?",
+  },
+  {
+    id: "unknown-size",
+    label: "Unknown size",
+    message: () => "I do not know my pipe size. What should I check?",
+  },
+  {
+    id: "irrigation",
+    label: "Irrigation",
+    message: () => "Can Bluebot work for irrigation monitoring?",
+  },
+  {
+    id: "quote-info",
+    label: "Quote info",
+    message: () => "What information do you need to recommend the right meter?",
+  },
+];
+
+function turnId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `sales-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function readInitialActiveId(): string | null {
+  try {
+    return (
+      localStorage.getItem(SALES_ACTIVE_CONV_KEY) ||
+      localStorage.getItem(LEGACY_SALES_CONV_KEY)
+    );
+  } catch {
+    return null;
+  }
+}
+
+function isAbortOrUnload(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === "AbortError") return true;
+  if (err instanceof TypeError && /load failed/i.test(err.message)) return true;
+  return false;
+}
+
+function serializeSalesStreamState(state: ChatStreamState): string {
+  return JSON.stringify({
+    streamStatus: state.streamStatus,
+    streamLead: state.streamLeadAccRef.current,
+    streamTail: state.streamTailAccRef.current,
+    streamPlots: state.plotsRef.current,
+    streamArtifacts: state.artifactsRef.current,
+    turnActivity: state.turnActivity,
+    workspaceEvents: state.workspaceEvents,
+    assistantError: state.assistantError,
+    streamId: state.streamId,
+    turnId: state.turnId,
+    cursor: state.cursor,
+    sawToolCall: state.sawToolCallRef.current,
+    streamOpened: state.streamOpenedForTurnRef.current,
+  });
+}
+
+function deserializeSalesStreamState(json: string): ChatStreamState {
+  try {
+    const data = JSON.parse(json);
+    return {
+      streamStatus: data.streamStatus ?? IDLE,
+      streamLead: data.streamLead ?? "",
+      streamTail: data.streamTail ?? "",
+      streamPlots: data.streamPlots ?? [],
+      streamArtifacts: data.streamArtifacts ?? [],
+      turnActivity: data.turnActivity ?? [],
+      workspaceEvents: data.workspaceEvents ?? [],
+      assistantError: data.assistantError ?? null,
+      streamId: typeof data.streamId === "string" ? data.streamId : null,
+      turnId: typeof data.turnId === "string" ? data.turnId : null,
+      cursor: typeof data.cursor === "number" ? Math.max(0, data.cursor) : 0,
+      streamLeadAccRef: { current: data.streamLead ?? "" },
+      streamTailAccRef: { current: data.streamTail ?? "" },
+      sawToolCallRef: { current: data.sawToolCall === true },
+      plotsRef: { current: data.streamPlots ?? [] },
+      artifactsRef: { current: data.streamArtifacts ?? [] },
+      streamOpenedForTurnRef: { current: data.streamOpened === true },
+      thinkingSegmentStartMsRef: { current: null },
+    };
+  } catch {
+    return createChatStreamState();
+  }
+}
+
+function readStoredSalesStreamState(conversationId: string | null): ChatStreamState | null {
+  if (!conversationId || typeof sessionStorage === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(SALES_STREAMING_STATE_KEY(conversationId));
+    return raw ? deserializeSalesStreamState(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export default function SalesChatPage({ onBackToEntry }: SalesChatPageProps) {
+  const toast = useToast();
+  const {
+    conversations,
+    listLoaded,
+    refresh,
+    create,
+    remove,
+    removeMany,
+    rename,
+  } = useSalesConversations();
+  const [activeConvId, _setActiveConvId] = useState<string | null>(
+    readInitialActiveId
+  );
+  const [messages, setMessages] = useState<Message[]>([]);
+  const streamStateMapRef = useRef<Map<string, ChatStreamState>>(new Map());
+  const [streamState, setStreamState] = useState(() => createChatStreamState());
+  const [processingConvId, setProcessingConvId] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 1023px)").matches) {
+      return false;
+    }
+    return true;
+  });
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const historyAbortRef = useRef<AbortController | null>(null);
+  const activeConvRef = useRef(activeConvId);
+  const processingConvIdRef = useRef<string | null>(null);
+  const prevLoadedConvIdRef = useRef<string | null>(null);
+  const expectedTurnIdRef = useRef<string | null>(null);
+  const lastSeqRef = useRef(0);
+  const isNarrow = useMediaQuery("(max-width: 1023px)");
+
+  const setCurrentProcessingConvId = useCallback(
+    (value: string | null | ((current: string | null) => string | null)) => {
+      setProcessingConvId((current) => {
+        const next = typeof value === "function" ? value(current) : value;
+        processingConvIdRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
+  const getStreamState = useCallback((convId: string | null) => {
+    if (!convId) return null;
+    const map = streamStateMapRef.current;
+    if (!map.has(convId)) {
+      map.set(convId, readStoredSalesStreamState(convId) ?? createChatStreamState());
+    }
+    return map.get(convId) ?? null;
+  }, []);
+
+  const persistStreamState = useCallback((convId: string, state: ChatStreamState) => {
+    try {
+      sessionStorage.setItem(
+        SALES_STREAMING_STATE_KEY(convId),
+        serializeSalesStreamState(state),
+      );
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }, []);
+
+  const clearStoredStreamState = useCallback((convId: string) => {
+    try {
+      sessionStorage.removeItem(SALES_STREAMING_STATE_KEY(convId));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const publishStreamState = useCallback((convId = activeConvRef.current) => {
+    if (!convId || convId !== activeConvRef.current) return;
+    const state = getStreamState(convId);
+    setStreamState(state ? { ...state } : createChatStreamState());
+  }, [getStreamState]);
+
+  useEffect(() => {
+    activeConvRef.current = activeConvId;
+    const state = getStreamState(activeConvId);
+    setStreamState(state ? { ...state } : createChatStreamState());
+  }, [activeConvId, getStreamState]);
+
+  const setActiveConvId = useCallback((id: string | null) => {
+    activeConvRef.current = id;
+    _setActiveConvId(id);
+    try {
+      if (id) {
+        localStorage.setItem(SALES_ACTIVE_CONV_KEY, id);
+        localStorage.setItem(LEGACY_SALES_CONV_KEY, id);
+      } else {
+        localStorage.removeItem(SALES_ACTIVE_CONV_KEY);
+        localStorage.removeItem(LEGACY_SALES_CONV_KEY);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const isViewingProcessing =
+    activeConvId != null && processingConvId === activeConvId;
+  const status = isViewingProcessing
+    ? streamState.streamStatus ?? IDLE
+    : streamState.assistantError
+      ? { kind: "error" as const, error: streamState.assistantError }
+      : IDLE;
+  const isProcessing = status.kind !== "idle" && status.kind !== "error";
+  const processingId = processingConvId;
+
+  useEffect(() => {
+    if (!listLoaded) return;
+    if (!activeConvId) {
+      if (conversations.length > 0) {
+        setActiveConvId(conversations[0]!.id);
+      }
+      return;
+    }
+    if (!conversations.some((c) => c.id === activeConvId)) {
+      setActiveConvId(conversations[0]?.id ?? null);
+    }
+  }, [activeConvId, conversations, listLoaded, setActiveConvId]);
+
+  const applyEvent = useCallback((convId: string, event: SalesSSEEvent) => {
+    const state = getStreamState(convId);
+    if (!state) return;
+    applyStreamEventToChatState(
+      state,
+      event as SSEEvent,
+      {
+        expectedTurnId: expectedTurnIdRef,
+        lastSeq: lastSeqRef,
+      },
+    );
+    persistStreamState(convId, state);
+    publishStreamState(convId);
+  }, [getStreamState, persistStreamState, publishStreamState]);
+
+  useEffect(() => {
+    historyAbortRef.current?.abort();
+    if (!activeConvId) {
+      prevLoadedConvIdRef.current = null;
+      setMessages([]);
+      setHistoryLoading(false);
+      return;
+    }
+    const switched =
+      prevLoadedConvIdRef.current !== null &&
+      prevLoadedConvIdRef.current !== activeConvId;
+    prevLoadedConvIdRef.current = activeConvId;
+    if (switched) setMessages([]);
+
+    const ac = new AbortController();
+    const convId = activeConvId;
+    historyAbortRef.current = ac;
+    setHistoryLoading(true);
+    loadSalesConversation(convId, ac.signal)
+      .then(async (loaded) => {
+        if (activeConvRef.current !== convId) return;
+        setMessages(loaded.messages || []);
+        const processing = await getSalesProcessingStatus(convId, ac.signal);
+        if (!processing.processing || !processing.stream_id) {
+          if (processingConvIdRef.current === convId) {
+            setCurrentProcessingConvId(null);
+          }
+          return;
+        }
+        if (
+          processingConvIdRef.current === convId &&
+          streamAbortRef.current != null
+        ) {
+          return;
+        }
+
+        const state = getStreamState(convId);
+        if (!state) return;
+        const streamId = processing.stream_id;
+        const turnId = processing.turn_id ?? state.turnId;
+        const sameStoredRun =
+          state.streamId === streamId ||
+          (turnId != null && state.turnId === turnId);
+        const resumeCursor = sameStoredRun ? Math.max(0, state.cursor) : 0;
+        if (
+          !sameStoredRun ||
+          (state.turnActivity.length === 0 && state.streamStatus.kind === "idle")
+        ) {
+          resetChatStreamStateForTurn(state, {
+            status: { kind: "connecting" },
+            streamId,
+            turnId: turnId ?? null,
+            cursor: resumeCursor,
+            title: "Reconnecting to current turn",
+          });
+        } else {
+          state.streamId = streamId;
+          state.turnId = turnId ?? null;
+          state.cursor = resumeCursor;
+        }
+        expectedTurnIdRef.current = turnId ?? null;
+        lastSeqRef.current = resumeCursor;
+        setCurrentProcessingConvId(convId);
+        persistStreamState(convId, state);
+        publishStreamState(convId);
+
+        const streamAc = new AbortController();
+        streamAbortRef.current = streamAc;
+        let streamErrorMessage: string | null = null;
+        try {
+          await pollSalesStream(
+            streamId,
+            (event) => {
+              applyEvent(convId, event);
+              if (event.type === "error") {
+                streamErrorMessage = event.error ?? event.message ?? "Sales chat failed";
+              }
+            },
+            streamAc.signal,
+            resumeCursor,
+          );
+          const final = await loadSalesConversation(convId, streamAc.signal);
+          if (activeConvRef.current === convId) {
+            setMessages(final.messages || []);
+          }
+          clearChatStreamStateAfterTurn(
+            state,
+            streamErrorMessage
+              ? { kind: "error", error: streamErrorMessage }
+              : IDLE,
+          );
+          clearStoredStreamState(convId);
+          publishStreamState(convId);
+          setCurrentProcessingConvId((current) => (current === convId ? null : current));
+          await refresh();
+        } catch (e) {
+          if (!isAbortOrUnload(e)) {
+            const error = e instanceof Error ? e.message : String(e);
+            state.assistantError = error;
+            state.streamStatus = { kind: "error", error };
+            persistStreamState(convId, state);
+            publishStreamState(convId);
+            setCurrentProcessingConvId((current) => (current === convId ? null : current));
+          }
+        } finally {
+          if (streamAbortRef.current === streamAc) {
+            streamAbortRef.current = null;
+          }
+        }
+      })
+      .catch((e) => {
+        if (ac.signal.aborted) return;
+        const state = getStreamState(convId);
+        if (!state) return;
+        state.streamStatus = {
+          kind: "error",
+          error: e instanceof Error ? e.message : String(e),
+        };
+        persistStreamState(convId, state);
+        publishStreamState(convId);
+      })
+      .finally(() => {
+        if (!ac.signal.aborted && activeConvRef.current === convId) {
+          setHistoryLoading(false);
+        }
+        if (historyAbortRef.current === ac) {
+          historyAbortRef.current = null;
+        }
+      });
+    return () => ac.abort();
+  }, [
+    activeConvId,
+    applyEvent,
+    clearStoredStreamState,
+    getStreamState,
+    persistStreamState,
+    publishStreamState,
+    refresh,
+    setCurrentProcessingConvId,
+  ]);
+
+  const send = useCallback(async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || status.kind !== "idle") return;
+    let convId = activeConvId;
+    if (!convId) {
+      convId = await create();
+      setActiveConvId(convId);
+    }
+    if (processingConvId && processingConvId !== convId) {
+      toast.error(
+        "Sales assistant is still responding",
+        "Open the active conversation or stop the current response before starting another one.",
+      );
+      return;
+    }
+    const state = getStreamState(convId);
+    if (!state) return;
+    setCurrentProcessingConvId(convId);
+    const clientTurnId = turnId();
+    expectedTurnIdRef.current = clientTurnId;
+    lastSeqRef.current = 0;
+    resetChatStreamStateForTurn(state, {
+      status: { kind: "connecting" },
+      turnId: clientTurnId,
+      title: "Sending your message",
+    });
+    persistStreamState(convId, state);
+    publishStreamState(convId);
+    setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
+    const ac = new AbortController();
+    streamAbortRef.current = ac;
+    try {
+      await streamSalesChat(
+        convId,
+        trimmed,
+        (event) => applyEvent(convId, event),
+        ac.signal,
+        clientTurnId,
+      );
+      const loaded = await loadSalesConversation(convId);
+      if (activeConvRef.current === convId) {
+        setMessages(loaded.messages || []);
+      }
+      clearChatStreamStateAfterTurn(state);
+      clearStoredStreamState(convId);
+      publishStreamState(convId);
+      setCurrentProcessingConvId((current) => (current === convId ? null : current));
+      await refresh();
+    } catch (e) {
+      if (!ac.signal.aborted) {
+        const error = e instanceof Error ? e.message : String(e);
+        state.assistantError = error;
+        state.streamStatus = { kind: "error", error };
+        persistStreamState(convId, state);
+        publishStreamState(convId);
+      }
+      setCurrentProcessingConvId((current) => (current === convId ? null : current));
+    } finally {
+      if (streamAbortRef.current === ac) {
+        streamAbortRef.current = null;
+      }
+    }
+  }, [
+    activeConvId,
+    applyEvent,
+    clearStoredStreamState,
+    create,
+    getStreamState,
+    persistStreamState,
+    processingConvId,
+    publishStreamState,
+    refresh,
+    setActiveConvId,
+    setCurrentProcessingConvId,
+    status.kind,
+    toast,
+  ]);
+
+  const handleNewConversation = useCallback(async () => {
+    if (historyLoading || !listLoaded) return;
+    const activeMeta = activeConvId
+      ? conversations.find((c) => c.id === activeConvId)
+      : null;
+    const activeIsEmpty =
+      !activeConvId ||
+      (messages.length === 0 &&
+        streamState.streamLead.length === 0 &&
+        streamState.streamTail.length === 0 &&
+        (activeMeta?.message_count ?? 0) === 0);
+    if (activeIsEmpty) return;
+
+    setMessages([]);
+    try {
+      const id = await create();
+      setActiveConvId(id);
+      if (isNarrow) setSidebarOpen(false);
+    } catch (e) {
+      toast.error(
+        "Could not create chat",
+        e instanceof Error ? e.message : "The sales conversation could not be created.",
+      );
+    }
+  }, [
+    activeConvId,
+    conversations,
+    create,
+    historyLoading,
+    isNarrow,
+    listLoaded,
+    messages.length,
+    setActiveConvId,
+    streamState.streamLead.length,
+    streamState.streamTail.length,
+    toast,
+  ]);
+
+  const handleSelectConversation = useCallback((id: string) => {
+    setActiveConvId(id);
+    if (isNarrow) setSidebarOpen(false);
+  }, [isNarrow, setActiveConvId]);
+
+  const handleDeleteConversation = useCallback(
+    async (id: string) => {
+      if (id === processingId) {
+        streamAbortRef.current?.abort();
+        void cancelSalesProcessing(id).catch(() => {
+          /* deleting locally anyway */
+        });
+        setCurrentProcessingConvId(null);
+      }
+      const wasActive = id === activeConvId;
+      streamStateMapRef.current.delete(id);
+      clearStoredStreamState(id);
+      const list = await remove(id);
+      if (wasActive) setActiveConvId(list?.[0]?.id ?? null);
+    },
+    [
+      activeConvId,
+      clearStoredStreamState,
+      processingId,
+      remove,
+      setActiveConvId,
+      setCurrentProcessingConvId,
+    ],
+  );
+
+  const handleDeleteConversations = useCallback(
+    async (ids: string[]) => {
+      if (ids.length === 0) return;
+      const idSet = new Set(ids);
+      const hadActive = activeConvId != null && idSet.has(activeConvId);
+      if (processingId && idSet.has(processingId)) {
+        streamAbortRef.current?.abort();
+        void cancelSalesProcessing(processingId).catch(() => {
+          /* deleting locally anyway */
+        });
+        setCurrentProcessingConvId(null);
+      }
+      ids.forEach((id) => {
+        streamStateMapRef.current.delete(id);
+        clearStoredStreamState(id);
+      });
+      const list = await removeMany(ids);
+      if (hadActive) setActiveConvId(list?.[0]?.id ?? null);
+    },
+    [
+      activeConvId,
+      clearStoredStreamState,
+      processingId,
+      removeMany,
+      setActiveConvId,
+      setCurrentProcessingConvId,
+    ],
+  );
+
+  const goBack = useCallback(() => {
+    streamAbortRef.current?.abort();
+    historyAbortRef.current?.abort();
+    if (onBackToEntry) {
+      onBackToEntry();
+    } else {
+      window.location.href = "/";
+    }
+  }, [onBackToEntry]);
+
+  const cancel = useCallback(() => {
+    if (!activeConvId) return;
+    streamAbortRef.current?.abort();
+    expectedTurnIdRef.current = null;
+    lastSeqRef.current = 0;
+    const state = getStreamState(activeConvId);
+    if (state) {
+      state.assistantError = null;
+      clearChatStreamStateAfterTurn(state);
+      clearStoredStreamState(activeConvId);
+      publishStreamState(activeConvId);
+    }
+    setCurrentProcessingConvId((current) => (current === activeConvId ? null : current));
+    void cancelSalesProcessing(activeConvId).catch(() => {
+      /* frontend already stopped */
+    });
+  }, [
+    activeConvId,
+    clearStoredStreamState,
+    getStreamState,
+    publishStreamState,
+    setCurrentProcessingConvId,
+  ]);
+
+  const dismissAssistantError = useCallback(() => {
+    if (!activeConvId) return;
+    const state = getStreamState(activeConvId);
+    if (!state) return;
+    state.assistantError = null;
+    state.streamStatus = IDLE;
+    clearStoredStreamState(activeConvId);
+    publishStreamState(activeConvId);
+  }, [activeConvId, clearStoredStreamState, getStreamState, publishStreamState]);
+
+  const sidebarProps = {
+    conversations,
+    activeId: activeConvId,
+    processingId,
+    user: "Sales guest",
+    onSelectConversation: handleSelectConversation,
+    onNewConversation: handleNewConversation,
+    onDeleteConversation: handleDeleteConversation,
+    onDeleteConversations: handleDeleteConversations,
+    onRenameConversation: rename,
+    onLogout: goBack,
+    anthropicApiKey: "",
+    onAnthropicApiKeyChange: () => undefined,
+    anthropicServerConfigured: true,
+    showApiKeyControl: false,
+    accountLabel: "Mode:",
+    logoutLabel: "Back to options",
+    onCollapse: () => setSidebarOpen(false),
+  };
+  const activeConversationTitle =
+    conversations.find((conversation) => conversation.id === activeConvId)?.title ||
+    "Sales conversation";
+
+  return (
+    <div className="relative flex h-[100dvh] max-h-[100dvh] min-h-0 overflow-hidden overflow-x-hidden bg-brand-50 text-brand-900">
+      {isNarrow && (
+        <>
+          <button
+            type="button"
+            className={`fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-[1px] transition-opacity duration-300 ease-out dark:bg-black/60 lg:hidden ${sidebarOpen
+              ? "opacity-100"
+              : "pointer-events-none opacity-0"
+              }`}
+            aria-label="Close sidebar"
+            aria-hidden={!sidebarOpen}
+            tabIndex={sidebarOpen ? 0 : -1}
+            onClick={() => setSidebarOpen(false)}
+          />
+          <div
+            className={`fixed inset-y-0 left-0 z-50 flex h-[100dvh] max-h-[100dvh] min-w-0 overflow-hidden border-r border-brand-border bg-gradient-to-b from-white/95 to-brand-100 shadow-2xl transition-transform duration-300 ease-out will-change-transform dark:bg-gradient-to-b dark:from-brand-50 dark:to-brand-50 lg:hidden [width:min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))] max-w-[min(20rem,calc(100dvw_-_env(safe-area-inset-left,0px)_-_env(safe-area-inset-right,0px)))] ${sidebarOpen
+              ? "translate-x-0"
+              : "pointer-events-none -translate-x-full"
+              }`}
+            aria-hidden={!sidebarOpen}
+          >
+            <div className="h-full min-h-0 min-w-0 flex-1 overflow-hidden [&>aside]:max-w-full [&>aside]:min-w-0 [&>aside]:w-full">
+              <Sidebar {...sidebarProps} />
+            </div>
+          </div>
+        </>
+      )}
+
+      <div
+        className={`relative z-[45] flex min-h-0 shrink-0 flex-col overflow-hidden transition-[width] duration-200 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] motion-reduce:transition-none motion-reduce:duration-0 ${isNarrow
+          ? "w-0 min-w-0 border-r-0"
+          : `h-[100dvh] max-h-[100dvh] border-r border-brand-border bg-gradient-to-b from-white/95 to-brand-100 dark:bg-gradient-to-b dark:from-brand-50 dark:to-brand-50 ${sidebarOpen ? "w-72" : "w-14"}`
+          }`}
+      >
+        {!isNarrow && sidebarOpen ? (
+          <Sidebar {...sidebarProps} />
+        ) : !isNarrow && !sidebarOpen ? (
+          <div className="flex h-full min-h-0 min-w-0 w-full flex-1 flex-col bg-gradient-to-b from-white/95 to-brand-100 dark:bg-gradient-to-b dark:from-brand-50 dark:to-brand-50">
+            <SidebarIconRail
+              onExpand={() => setSidebarOpen(true)}
+              onNewConversation={handleNewConversation}
+              user="Sales"
+              onLogout={goBack}
+            />
+          </div>
+        ) : null}
+      </div>
+
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <ChatView
+          conversationId={activeConvId}
+          messages={messages}
+          status={status}
+          streamingLead={isViewingProcessing ? streamState.streamLead : ""}
+          streamingTail={isViewingProcessing ? streamState.streamTail : ""}
+          pendingPlots={isViewingProcessing ? streamState.streamPlots : []}
+          pendingArtifacts={isViewingProcessing ? streamState.streamArtifacts : []}
+          tokenUsage={{ tokens: 0, pct: 0 }}
+          historyLoading={historyLoading || !listLoaded}
+          tpmInputGuideTokens={50_000}
+          tpmServerSliding60s={0}
+          modelContextWindowTokens={200_000}
+          maxInputTokensTarget={24_390}
+          turnActivity={streamState.turnActivity}
+          turnActivityActive={isViewingProcessing}
+          workspaceEvents={isViewingProcessing ? streamState.workspaceEvents : []}
+          serverProcessing={false}
+          onSend={(text) => void send(text)}
+          onConfirmConfig={() => undefined}
+          onCancelConfig={() => undefined}
+          onCancel={cancel}
+          onDismissAssistantError={dismissAssistantError}
+          disabled={
+            ((historyLoading || !listLoaded) && !isProcessing) ||
+            (processingConvId != null && processingConvId !== activeConvId)
+          }
+          narrowNav={
+            isNarrow
+              ? {
+                onOpenSidebar: () => setSidebarOpen(true),
+              }
+              : undefined
+          }
+          onToast={(a) => {
+            if (a.kind === "success") toast.success(a.title, a.message);
+            else toast.error(a.title, a.message);
+          }}
+          share={{
+            conversationTitle: activeConversationTitle,
+            onToast: (a) => {
+              if (a.kind === "success") toast.success(a.title, a.message);
+              else toast.error(a.title, a.message);
+            },
+            createShareLink: createSalesShare,
+            revokeShareLink: revokeSalesShare,
+          }}
+          copy={{
+            title: "bluebot Sales Assistant",
+            subtitle: "Product fit, pipe impact, and buyer qualification.",
+            welcomeTitle: "What are you trying to monitor?",
+            welcomePlaceholder: "Ask about product fit, installation, or pipe impact...",
+            composerPlaceholder: "Ask about product fit, installation, or pipe impact...",
+            welcomeActions: SALES_ACTIONS,
+            welcomeHint: "Start with a question, or tell me your pipe material, size, liquid, and application.",
+            requireWelcomeSerial: false,
+          }}
+        />
+      </main>
+      <ToastContainer toasts={toast.toasts} onClose={toast.dismiss} />
+    </div>
+  );
+}

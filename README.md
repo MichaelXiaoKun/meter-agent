@@ -263,7 +263,7 @@ For explicit period-over-period questions, `compare_periods` runs two normal flo
 
 `check_meter_status` also includes a composite `health_score` in `status_data`: staleness and signal quality are scored from the current status payload, while optional flow-analysis facts can contribute gap-density and drift components when available. `compare_meters` surfaces the score and verdict per meter for side-by-side triage.
 
-For supplied serial-number lists, `rank_fleet_by_health` fans out status and profile reads for up to 50 meters, then returns a compact table sorted from lowest composite health score to highest. Each row includes online state, communication status, signal summary, label/timezone metadata, and a `top_concern` string derived from the weakest health component or status/profile error.
+For supplied serial-number lists, `rank_fleet_by_health` fans out status and profile reads for up to 50 meters, then returns a compact table sorted from lowest composite health score to highest. Each row includes online state, communication status, signal summary, label/timezone metadata, and a `top_concern` string derived from the weakest health component or status/profile error. When a `flow_window` is provided, the tool also runs summary flow analysis per meter and feeds the resulting `verified_facts` into the same `health_score` calculation, so gap-density and CUSUM drift can change the fleet rank.
 
 For account-level triage, `triage_fleet_for_account` starts from a user email, reuses the account meter listing, caps the fan-out at 50 meters, and returns the same lowest-health-first table. This is the preferred path for "which meters need attention on this account?" because it avoids model-side serial loops.
 

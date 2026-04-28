@@ -4,9 +4,34 @@ Tests for ``tools.fleet_health``.
 
 from __future__ import annotations
 
+import importlib.util
+import json
+from pathlib import Path
 from typing import Any
 
 from tools import fleet_health as fh
+
+
+_HEALTH_SCORE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "meter-status-agent"
+    / "processors"
+    / "health_score.py"
+)
+
+
+def _load_health_score_module():
+    spec = importlib.util.spec_from_file_location(
+        "meter_status_health_score_for_fleet",
+        _HEALTH_SCORE_PATH,
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+hs = _load_health_score_module()
 
 
 def _profile_ok(serial: str, *, label: str | None = None) -> dict[str, Any]:
@@ -113,6 +138,107 @@ def test_rank_fleet_by_health_sorts_lowest_health_first(monkeypatch):
     assert out["meters"][0]["label"] == "Needs attention"
     assert out["failed_serials"] is None
     assert out["truncated"] is False
+
+
+def test_rank_fleet_by_health_uses_flow_verified_facts_for_health_score(
+    monkeypatch,
+    tmp_path,
+):
+    def bundle(serial: str, facts: dict[str, Any]) -> str:
+        path = tmp_path / f"{serial}.json"
+        path.write_text(json.dumps({"verified_facts": facts}), encoding="utf-8")
+        return str(path)
+
+    good_facts = {
+        "gap_event_count": 0,
+        "largest_gap_duration_seconds": 0,
+        "coverage_6h": {"n_buckets": 2, "buckets_with_issues": 0},
+        "cusum_drift": {
+            "skipped": False,
+            "drift_detected": "none",
+            "positive_alarm_count": 0,
+            "negative_alarm_count": 0,
+        },
+    }
+    bad_facts = {
+        "gap_event_count": 6,
+        "largest_gap_duration_seconds": 7200,
+        "coverage_6h": {"n_buckets": 2, "buckets_with_issues": 1},
+        "cusum_drift": {
+            "skipped": False,
+            "drift_detected": "upward",
+            "positive_alarm_count": 5,
+            "negative_alarm_count": 0,
+        },
+    }
+    analysis_paths = {
+        "BB_GOOD": bundle("BB_GOOD", good_facts),
+        "BB_BAD": bundle("BB_BAD", bad_facts),
+    }
+    flow_calls: list[tuple[str, int, int, dict[str, Any]]] = []
+    status_facts: dict[str, dict[str, Any] | None] = {}
+
+    monkeypatch.setattr(
+        fh,
+        "get_meter_profile",
+        lambda serial, token: _profile_ok(serial, label=serial),
+    )
+
+    def fake_analyze(serial, start, end, token, **kwargs):
+        flow_calls.append((serial, start, end, kwargs))
+        return {
+            "success": True,
+            "analysis_json_path": analysis_paths[serial],
+            "display_range": f"{start}-{end}",
+            "plot_timezone": kwargs.get("meter_timezone") or "UTC",
+            "error": None,
+        }
+
+    def fake_status(serial, token, *, anthropic_api_key=None, verified_facts=None):
+        status_facts[serial] = verified_facts
+        status_data = {
+            "serial_number": serial,
+            "online": True,
+            "staleness": {
+                "seconds_since": 30,
+                "communication_status": "fresh",
+                "status_description": "fresh telemetry",
+            },
+            "signal": {
+                "score": 90,
+                "level": "good",
+                "reliable": True,
+                "action_needed": False,
+            },
+        }
+        status_data["health_score"] = hs.compute_health_score(
+            status=status_data,
+            verified_facts=verified_facts,
+        )
+        return {"success": True, "status_data": status_data, "error": None}
+
+    monkeypatch.setattr(fh, "analyze_flow_data", fake_analyze)
+    monkeypatch.setattr(fh, "check_meter_status", fake_status)
+
+    out = fh.rank_fleet_by_health(
+        ["BB_GOOD", "BB_BAD"],
+        "tok",
+        flow_window={"start": 1_700_000_000, "end": 1_700_086_400},
+    )
+
+    assert out["success"] is True
+    assert out["flow_window"] == {"start": 1_700_000_000, "end": 1_700_086_400}
+    assert [m["serial_number"] for m in out["meters"]] == ["BB_BAD", "BB_GOOD"]
+    assert status_facts["BB_BAD"] == bad_facts
+    assert status_facts["BB_GOOD"] == good_facts
+    assert out["meters"][0]["health_score"] < out["meters"][1]["health_score"]
+    assert out["meters"][0]["top_concern"].startswith("gap_density:")
+    assert out["meters"][0]["flow_analysis"]["gap_event_count"] == 6
+    assert out["meters"][0]["flow_analysis"]["drift_detected"] == "upward"
+    assert {call[0] for call in flow_calls} == {"BB_GOOD", "BB_BAD"}
+    assert all(call[3]["analysis_mode"] == "summary" for call in flow_calls)
+    assert all(call[3]["network_type"] == "wifi" for call in flow_calls)
+    assert all(call[3]["meter_timezone"] == "America/Denver" for call in flow_calls)
 
 
 def test_rank_fleet_by_health_dedups_and_truncates(monkeypatch):
