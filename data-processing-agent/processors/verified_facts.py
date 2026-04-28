@@ -8,14 +8,22 @@ from __future__ import annotations
 
 import os
 from copy import deepcopy
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
-from processors.baseline_quality import not_requested_stub as _baseline_not_requested
+from processors.baseline_compare import compute_today_vs_baseline
+from processors.baseline_quality import (
+    BaselineQualityConfig,
+    evaluate_baseline_quality,
+    not_requested_stub as _baseline_not_requested,
+)
 from processors.continuity import detect_gaps, detect_zero_flow_periods
-from processors.mask_by_local_time import not_requested_stub as _filter_not_requested
+from processors.mask_by_local_time import (
+    apply_filter,
+    not_requested_stub as _filter_not_requested,
+)
 from processors.sampling_physics import (
     describe_sampling_caps,
     max_healthy_inter_arrival_seconds,
@@ -46,15 +54,61 @@ def _positive_delta_stats(timestamps: np.ndarray) -> tuple[float, float]:
     return med, p75
 
 
-def build_verified_facts(df: pd.DataFrame) -> Dict[str, Any]:
+def build_verified_facts(
+    df: pd.DataFrame,
+    *,
+    filters: Optional[Dict[str, Any]] = None,
+    reference_rollups: Optional[List[Dict[str, Any]]] = None,
+    today_partial: Optional[Dict[str, Any]] = None,
+    target_weekday: Optional[int] = None,
+    fraction_of_day_elapsed: Optional[float] = None,
+    today_missing_bucket_ratio: Optional[float] = None,
+) -> Dict[str, Any]:
     """
     Run the same core processors as the tool loop on the full dataframe.
     JSON-serialisable; safe to embed in prompts and reports.
+
+    Optional baseline arguments
+    ---------------------------
+    When ``filters`` is supplied, :func:`processors.mask_by_local_time.apply_filter`
+    runs before any other processor. Applied filters replace ``df`` for all
+    downstream metrics and set ``out["filter_applied"]`` to the provenance
+    block. Invalid specs or valid specs that match zero rows short-circuit:
+    the function returns only ``n_rows``, ``baseline_quality`` (not requested),
+    and the filter refusal block so callers cannot accidentally narrate the
+    unfiltered series as if it had been scoped.
+
+    When ``reference_rollups`` is supplied (already filtered to the relevant
+    window by the caller — see :mod:`processors.daily_rollup`), the real
+    :func:`processors.baseline_quality.evaluate_baseline_quality` runs and
+    populates ``out["baseline_quality"]``. When the verdict is ``reliable`` we
+    additionally call :func:`processors.baseline_compare.compute_today_vs_baseline`
+    to populate ``out["today_vs_baseline"]``. When the baseline is *not*
+    reliable we leave ``today_vs_baseline`` absent so the system prompt rule
+    "if not reliable, relay refusal verbatim" is structurally enforced.
+
+    Leaving ``reference_rollups`` as ``None`` preserves the legacy stub
+    behaviour (``baseline_quality.state == "not_requested"``) so callers that
+    do not opt into the comparison loop are unaffected.
     """
+    filter_applied: Dict[str, Any] = _filter_not_requested()
+    if filters is not None:
+        filtered_df, filter_result = apply_filter(df, filters)
+        filter_applied = filter_result.to_dict()
+        if not filter_result.applied:
+            return {
+                "n_rows": int(len(df)),
+                "baseline_quality": _baseline_not_requested(),
+                "filter_applied": filter_applied,
+            }
+        df = filtered_df
+
     n = len(df)
     out: Dict[str, Any] = {"n_rows": n}
     if n == 0:
         out["error"] = "empty_dataframe"
+        out["baseline_quality"] = _baseline_not_requested()
+        out["filter_applied"] = filter_applied
         return out
 
     ts = df["timestamp"].values.astype(float)
@@ -101,15 +155,41 @@ def build_verified_facts(df: pd.DataFrame) -> Dict[str, Any]:
         ts, interval_coverage, low_ratio_threshold=low_ratio
     )
 
-    # Baseline-comparison scaffolding: the stub is always present so the output
-    # schema is stable. When the baseline pipeline is wired, replace this with
-    # ``evaluate_baseline_quality(reference_rollups=..., today_partial=...)``.
-    out["baseline_quality"] = _baseline_not_requested()
+    # Baseline-comparison: when the orchestrator passes a baseline window the
+    # caller hands us already-built ``reference_rollups`` and (when applicable)
+    # a ``today_partial`` rollup. We run the real refusal evaluator so the
+    # state field carries one of:
+    #   not_requested | no_history | insufficient_clean_days |
+    #   regime_change_too_recent | partial_today_unsuitable | reliable.
+    # If reference_rollups is None we keep the stub for schema stability —
+    # downstream consumers slim it out of the prompt automatically.
+    if reference_rollups is None:
+        out["baseline_quality"] = _baseline_not_requested()
+    else:
+        verdict = evaluate_baseline_quality(
+            reference_rollups=reference_rollups,
+            today_partial=today_partial,
+            target_weekday=target_weekday,
+            fraction_of_day_elapsed=fraction_of_day_elapsed,
+            today_missing_bucket_ratio=today_missing_bucket_ratio,
+            config=BaselineQualityConfig.from_env(),
+        )
+        out["baseline_quality"] = verdict.to_dict()
+        # Today-vs-baseline metrics are only meaningful when the verdict is
+        # reliable. Skipping them on refusal is intentional: it makes the
+        # "if not reliable, relay state/reasons_refused verbatim" rule a
+        # structural property of the bundle rather than a prompt-only guard.
+        if verdict.reliable:
+            comparison = compute_today_vs_baseline(
+                reference_rollups=reference_rollups,
+                today_partial=today_partial,
+                target_weekday=target_weekday,
+                fraction_of_day_elapsed=fraction_of_day_elapsed,
+            )
+            if comparison is not None:
+                out["today_vs_baseline"] = comparison
 
-    # Local-time filter scaffolding (future business-hours / weekend slicing).
-    # Pipeline is not wired yet; stub keeps the output schema stable so
-    # downstream consumers (report, orchestrator) can rely on the key.
-    out["filter_applied"] = _filter_not_requested()
+    out["filter_applied"] = filter_applied
 
     # Deterministic diagnostic interpretation: classify the dominant anomaly
     # type after every processor signal is available. Reasoning schema and the
@@ -141,11 +221,25 @@ def slim_verified_facts_for_prompt(facts: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(cov, dict) and cov.get("buckets"):
         slim["coverage_6h"] = slim_coverage_for_prompt(cov)
 
-    # Drop the baseline-quality stub from the prompt until the feature is wired.
-    # The full verdict is still in the analysis bundle for audit.
+    # Drop the baseline-quality stub from the prompt when no baseline was
+    # requested (state == "not_requested"). Every other state — refusals
+    # (no_history / insufficient_clean_days / regime_change_too_recent /
+    # partial_today_unsuitable) AND the success state (reliable) — must
+    # survive into the prompt: the system prompt rule for the data-processing
+    # agent requires the narrative to relay reasons_refused verbatim or, on
+    # success, lead with the today-vs-baseline verdict.
     bq = slim.get("baseline_quality")
     if isinstance(bq, dict) and bq.get("state") == "not_requested":
         slim.pop("baseline_quality", None)
+    elif isinstance(bq, dict):
+        # Trim audit-only ballast that does not change the narrative — keep
+        # state, reliable, reasons_refused, recommendations, n_days_used,
+        # n_days_rejected, change_point_*, today_missing_bucket_ratio, and
+        # n_same_weekday_days_used. Drop the verbose ``days_rejected`` array
+        # and the echoed ``config_used`` block; both stay in the analysis
+        # bundle for audit and add no value to the LLM's interpretation.
+        bq.pop("days_rejected", None)
+        bq.pop("config_used", None)
 
     # Same treatment for the filter-applied stub: drop when no filter was used,
     # surface verbatim (including refusal states) when the feature is wired.

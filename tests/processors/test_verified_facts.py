@@ -71,6 +71,8 @@ def test_empty_dataframe_short_circuits():
     facts = build_verified_facts(pd.DataFrame(columns=["timestamp", "flow_rate"]))
     assert facts["n_rows"] == 0
     assert facts["error"] == "empty_dataframe"
+    assert facts["baseline_quality"]["state"] == "not_requested"
+    assert facts["filter_applied"]["state"] == "not_requested"
 
 
 def test_baseline_quality_stub_default_state(synthetic_df):
@@ -139,6 +141,38 @@ def test_slim_keeps_non_default_filter_applied(synthetic_df):
     slim = slim_verified_facts_for_prompt(facts)
     assert slim["filter_applied"]["state"] == "applied"
     assert slim["filter_applied"]["n_rows_kept"] == 42
+
+
+def test_filters_apply_before_downstream_metrics(synthetic_df):
+    ts = synthetic_df["timestamp"].to_numpy()
+    midpoint = len(ts) // 2
+    facts = build_verified_facts(
+        synthetic_df,
+        filters={
+            "include_sub_ranges": [
+                {"start": int(ts[0]), "end": int(ts[midpoint])},
+            ],
+        },
+    )
+
+    fa = facts["filter_applied"]
+    assert fa["state"] == "applied"
+    assert fa["n_rows_input"] == len(synthetic_df)
+    assert fa["n_rows_kept"] == midpoint
+    assert facts["n_rows"] == midpoint
+    assert facts["flow_rate_descriptive"]["max"] == pytest.approx(0.0)
+
+
+def test_filter_refusal_short_circuits_downstream_metrics(synthetic_df):
+    facts = build_verified_facts(
+        synthetic_df,
+        filters={"weekdays": [0]},
+    )
+
+    assert facts["filter_applied"]["state"] == "invalid_spec"
+    assert facts["baseline_quality"]["state"] == "not_requested"
+    assert "flow_rate_descriptive" not in facts
+    assert "anomaly_attribution" not in facts
 
 
 def test_slim_omits_low_quality_intervals_but_keeps_count(synthetic_df):

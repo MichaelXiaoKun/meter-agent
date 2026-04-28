@@ -51,9 +51,21 @@ _PLOT_TYPE_TITLES: dict[str, str] = {
 
 # 3A TimeseriesContext result cache: avoids rerunning the specialist subprocess
 # when the same high-res window is requested repeatedly in a short session.
-_RESULT_CACHE: OrderedDict[
-    tuple[str, int, int, str, str | None, str, str, str], dict
-] = OrderedDict()
+# Cache key includes result-shaping optional inputs (baseline window and
+# local-time filters) so follow-up requests do not silently reuse stale output.
+_ResultCacheKey = tuple[
+    str,
+    int,
+    int,
+    str,
+    str | None,
+    str,
+    str,
+    str,
+    tuple[int, int] | None,
+    str | None,
+]
+_RESULT_CACHE: OrderedDict[_ResultCacheKey, dict] = OrderedDict()
 _RESULT_CACHE_RESOLUTION = "high-res"
 
 
@@ -73,7 +85,7 @@ def _token_cache_scope(token: str | None) -> str:
 
 
 def _result_cache_get(
-    key: tuple[str, int, int, str, str | None, str, str, str],
+    key: _ResultCacheKey,
 ) -> dict | None:
     if _result_cache_max_entries() <= 0:
         return None
@@ -85,7 +97,7 @@ def _result_cache_get(
 
 
 def _result_cache_put(
-    key: tuple[str, int, int, str, str | None, str, str, str],
+    key: _ResultCacheKey,
     value: dict,
 ) -> None:
     max_entries = _result_cache_max_entries()
@@ -422,10 +434,224 @@ TOOL_DEFINITION = {
                     "summary forces the compact deterministic rollup path."
                 ),
             },
+            "baseline_window": {
+                "description": (
+                    "Optional reference window for an 'is this normal?' / "
+                    "'vs typical' comparison. Pass either a semantic key "
+                    "(``\"auto\"`` ⇒ trailing 28 days, ``\"trailing_7_days\"``, "
+                    "``\"trailing_28_days\"``, ``\"prior_week\"``) or an explicit "
+                    "object ``{\"start\": <unix_seconds>, \"end\": <unix_seconds>}``. "
+                    "When set, the meter analysis builds local-tz daily rollups over "
+                    "the reference window and runs the baseline-quality refusal "
+                    "evaluator. The result includes ``baseline_quality`` "
+                    "(state ∈ no_history | insufficient_clean_days | "
+                    "regime_change_too_recent | partial_today_unsuitable | reliable) "
+                    "and, when reliable, a ``today_vs_baseline`` block. Omit when "
+                    "the user is not asking a comparative question."
+                ),
+                "oneOf": [
+                    {
+                        "type": "string",
+                        "enum": [
+                            "auto",
+                            "trailing_7_days",
+                            "trailing_28_days",
+                            "prior_week",
+                        ],
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "start": {
+                                "type": "integer",
+                                "description": "Reference window start (Unix seconds, UTC).",
+                            },
+                            "end": {
+                                "type": "integer",
+                                "description": "Reference window end (Unix seconds, UTC).",
+                            },
+                        },
+                        "required": ["start", "end"],
+                    },
+                ],
+            },
+            "filters": {
+                "type": "object",
+                "description": (
+                    "Optional DST-aware local-time and sub-range filter. Use when "
+                    "the user asks for a scoped analysis such as weekdays only, "
+                    "business hours, weekends, exclude holidays, or specific "
+                    "sub-ranges. Local rules require an IANA ``timezone``. "
+                    "``weekdays`` uses integers with 0=Mon and 6=Sun. "
+                    "``hour_ranges`` are local, non-overnight ``[start_hour, "
+                    "end_hour)`` spans; split overnight requests into two ranges. "
+                    "``exclude_dates`` are ``YYYY-MM-DD`` local dates. "
+                    "``include_sub_ranges`` are Unix-second ``[start, end)`` "
+                    "intervals."
+                ),
+                "properties": {
+                    "timezone": {
+                        "type": "string",
+                        "description": "IANA timezone for local weekday/hour/date rules.",
+                    },
+                    "weekdays": {
+                        "type": "array",
+                        "items": {"type": "integer", "minimum": 0, "maximum": 6},
+                        "minItems": 1,
+                        "description": "Local weekdays to keep, where 0=Monday and 6=Sunday.",
+                    },
+                    "hour_ranges": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "start_hour": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 24,
+                                },
+                                "end_hour": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 24,
+                                },
+                            },
+                            "required": ["start_hour", "end_hour"],
+                        },
+                        "description": (
+                            "Local non-overnight hour spans using [start_hour, end_hour)."
+                        ),
+                    },
+                    "exclude_dates": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Local dates to exclude, formatted YYYY-MM-DD.",
+                    },
+                    "include_sub_ranges": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "start": {
+                                    "type": "integer",
+                                    "description": "Unix seconds, inclusive.",
+                                },
+                                "end": {
+                                    "type": "integer",
+                                    "description": "Unix seconds, exclusive.",
+                                },
+                            },
+                            "required": ["start", "end"],
+                        },
+                        "description": "Explicit UTC Unix-second intervals to keep.",
+                    },
+                },
+            },
         },
         "required": ["serial_number", "start", "end"],
     },
 }
+
+
+_BASELINE_SEMANTIC_KEYS: frozenset[str] = frozenset(
+    {"auto", "trailing_7_days", "trailing_28_days", "prior_week"}
+)
+_BASELINE_AUTO_DEFAULT = "trailing_28_days"
+
+
+def resolve_baseline_window(
+    spec: object,
+    *,
+    primary_start: int,
+    primary_end: int,
+) -> tuple[int, int] | None:
+    """Translate the ``baseline_window`` tool input into explicit Unix bounds.
+
+    Returns ``None`` when ``spec`` is missing, malformed, or resolves to a
+    degenerate range. Centralising this here means the orchestrator agent
+    code, the cache key, and the subprocess CLI args all see exactly one
+    representation: a ``(start, end)`` tuple or nothing.
+
+    Resolution rules
+    ----------------
+    * ``"auto"`` → :data:`_BASELINE_AUTO_DEFAULT` (``trailing_28_days``).
+    * ``"trailing_7_days"`` → 7 × 86 400 s ending one second before
+      ``primary_start``.
+    * ``"trailing_28_days"`` → 28 × 86 400 s ending one second before
+      ``primary_start``.
+    * ``"prior_week"`` → exactly the 7 × 86 400 s window ending one second
+      before ``primary_start`` (alias for trailing_7_days at this layer; the
+      day-grouping that follows handles the "same days last week" semantics).
+    * ``{"start": int, "end": int}`` → returned verbatim after coercion.
+    """
+    if spec is None:
+        return None
+    if isinstance(spec, str):
+        key = spec.strip().lower()
+        if key not in _BASELINE_SEMANTIC_KEYS:
+            return None
+        if key == "auto":
+            key = _BASELINE_AUTO_DEFAULT
+        try:
+            ps = int(primary_start)
+        except (TypeError, ValueError):
+            return None
+        if key == "trailing_7_days" or key == "prior_week":
+            days = 7
+        elif key == "trailing_28_days":
+            days = 28
+        else:  # pragma: no cover - frozenset guards make this unreachable
+            return None
+        end = ps - 1
+        start = end - days * 86400 + 1
+        if start >= end:
+            return None
+        return (start, end)
+    if isinstance(spec, dict):
+        try:
+            s = int(spec.get("start"))
+            e = int(spec.get("end"))
+        except (TypeError, ValueError):
+            return None
+        if s >= e:
+            return None
+        return (s, e)
+    return None
+
+
+def resolve_filters(
+    spec: object,
+    *,
+    primary_start: int,
+    primary_end: int,
+) -> dict | None:
+    """Return a JSON-serialisable local-time filter spec or ``None``.
+
+    Validation of field semantics belongs to the data-processing subprocess so
+    refusal states can flow through ``verified_facts["filter_applied"]``. This
+    helper only handles the orchestrator boundary: missing, empty, non-object,
+    or non-JSON-serialisable values are treated as "not requested".
+    """
+    _ = (primary_start, primary_end)
+    if not isinstance(spec, dict) or not spec:
+        return None
+    try:
+        canonical = json.dumps(spec, sort_keys=True, allow_nan=False)
+        parsed = json.loads(canonical)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) and parsed else None
+
+
+def _filters_cache_key(filters: dict | None) -> str | None:
+    if filters is None:
+        return None
+    try:
+        return json.dumps(filters, sort_keys=True)
+    except (TypeError, ValueError):
+        return None
 
 
 def analyze_flow_inputs_error_payload(
@@ -545,6 +771,8 @@ def analyze_flow_data(
     network_type: str | None = None,
     meter_timezone: str | None = None,
     analysis_mode: str | None = None,
+    baseline_window: object | None = None,
+    filters: object | None = None,
 ) -> dict:
     """
     Run the data-processing-agent for a meter (by serial number) over a time range.
@@ -621,6 +849,17 @@ def analyze_flow_data(
     )
     nt = _normalize_network_type(network_type)
     mode = _normalize_analysis_mode(analysis_mode)
+    baseline_bounds = resolve_baseline_window(
+        baseline_window,
+        primary_start=int(start),
+        primary_end=int(end),
+    )
+    resolved_filters = resolve_filters(
+        filters,
+        primary_start=int(start),
+        primary_end=int(end),
+    )
+    filters_key = _filters_cache_key(resolved_filters)
     cache_key = (
         str(serial_number),
         int(start),
@@ -630,6 +869,8 @@ def analyze_flow_data(
         plot_tz,
         _token_cache_scope(token),
         mode,
+        baseline_bounds,
+        filters_key,
     )
     cached = _result_cache_get(cache_key)
     if cached is not None:
@@ -645,20 +886,26 @@ def analyze_flow_data(
     if nt:
         env["BLUEBOT_METER_NETWORK_TYPE"] = nt
     env["BLUEBOT_PLOT_TZ"] = plot_tz
+    if resolved_filters is not None and filters_key is not None:
+        env["BLUEBOT_FILTERS_JSON"] = filters_key
     logger.info(
         "analyze_flow_data subprocess start serial=%r start=%s end=%s",
         serial_number,
         start,
         end,
     )
+    cmd = [
+        _PYTHON, "main.py",
+        "--serial", serial_number,
+        "--start", str(start),
+        "--end", str(end),
+        "--analysis-mode", mode,
+    ]
+    if baseline_bounds is not None:
+        bs, be = baseline_bounds
+        cmd.extend(["--baseline-start", str(int(bs)), "--baseline-end", str(int(be))])
     result = subprocess.run(
-        [
-            _PYTHON, "main.py",
-            "--serial", serial_number,
-            "--start", str(start),
-            "--end", str(end),
-            "--analysis-mode", mode,
-        ],
+        cmd,
         cwd=_AGENT_DIR,
         capture_output=True,
         text=True,

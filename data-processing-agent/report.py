@@ -42,6 +42,40 @@ def _attribution_markdown(facts: Dict[str, Any]) -> str:
     return "".join(lines)
 
 
+def _append_filter_applied_markdown(lines: list[str], fa: Dict[str, Any]) -> None:
+    state = fa.get("state")
+    # Silent for "not_requested" — no filter was asked for.
+    if not state or state == "not_requested":
+        return
+    applied = bool(fa.get("applied"))
+    kept = fa.get("n_rows_kept") or 0
+    total = fa.get("n_rows_input") or 0
+    frac = fa.get("fraction_kept")
+    frac_s = f" ({frac:.0%})" if isinstance(frac, (int, float)) else ""
+    lines.append(
+        f"- **Local-time filter:** `{state}` "
+        f"(applied={applied}; kept {kept} of {total} rows{frac_s})\n"
+    )
+    pred = fa.get("predicate_used") or {}
+    if pred:
+        tz_s = pred.get("timezone") or ""
+        wd_s = pred.get("weekdays")
+        hr_s = pred.get("hour_ranges")
+        if tz_s:
+            lines.append(f"  - timezone: {tz_s}\n")
+        if wd_s:
+            lines.append(f"  - weekdays: {wd_s}\n")
+        if hr_s:
+            pretty = ", ".join(
+                f"{r['start_hour']}–{r['end_hour']}" for r in hr_s
+            )
+            lines.append(f"  - hour ranges: {pretty}\n")
+    for reason in (fa.get("reasons_refused") or [])[:3]:
+        lines.append(f"  - refusal: {reason}\n")
+    for verr in (fa.get("validation_errors") or [])[:3]:
+        lines.append(f"  - validation: {verr}\n")
+
+
 def _verified_facts_markdown(facts: Dict[str, Any]) -> str:
     """Append-only block of deterministic metrics (same processors as the agent tools)."""
     lines = [
@@ -59,6 +93,16 @@ def _verified_facts_markdown(facts: Dict[str, Any]) -> str:
         lines.append(f"- **Mean flow rate (gal/min):** {desc['mean']:.6g}\n")
     elif isinstance(desc, dict) and "error" in desc:
         lines.append(f"- **Flow rate descriptive:** {desc['error']}\n")
+
+    fa = facts.get("filter_applied")
+    filter_refused = (
+        isinstance(fa, dict)
+        and fa.get("state") in {"invalid_spec", "empty_mask"}
+        and "flow_rate_descriptive" not in facts
+    )
+    if filter_refused:
+        _append_filter_applied_markdown(lines, fa)
+        return "".join(lines)
 
     lines.append(f"- **Gap events:** {facts.get('gap_event_count', 0)}\n")
     lg = float(facts.get("largest_gap_duration_seconds") or 0)
@@ -169,38 +213,8 @@ def _verified_facts_markdown(facts: Dict[str, Any]) -> str:
             for rec in (bq.get("recommendations") or [])[:3]:
                 lines.append(f"  - hint: {rec}\n")
 
-    fa = facts.get("filter_applied")
     if isinstance(fa, dict):
-        state = fa.get("state")
-        # Silent for "not_requested" — no filter was asked for.
-        if state and state != "not_requested":
-            applied = bool(fa.get("applied"))
-            kept = fa.get("n_rows_kept") or 0
-            total = fa.get("n_rows_input") or 0
-            frac = fa.get("fraction_kept")
-            frac_s = f" ({frac:.0%})" if isinstance(frac, (int, float)) else ""
-            lines.append(
-                f"- **Local-time filter:** `{state}` "
-                f"(applied={applied}; kept {kept} of {total} rows{frac_s})\n"
-            )
-            pred = fa.get("predicate_used") or {}
-            if pred:
-                tz_s = pred.get("timezone") or ""
-                wd_s = pred.get("weekdays")
-                hr_s = pred.get("hour_ranges")
-                if tz_s:
-                    lines.append(f"  - timezone: {tz_s}\n")
-                if wd_s:
-                    lines.append(f"  - weekdays: {wd_s}\n")
-                if hr_s:
-                    pretty = ", ".join(
-                        f"{r['start_hour']}–{r['end_hour']}" for r in hr_s
-                    )
-                    lines.append(f"  - hour ranges: {pretty}\n")
-            for reason in (fa.get("reasons_refused") or [])[:3]:
-                lines.append(f"  - refusal: {reason}\n")
-            for verr in (fa.get("validation_errors") or [])[:3]:
-                lines.append(f"  - validation: {verr}\n")
+        _append_filter_applied_markdown(lines, fa)
 
     cov = facts.get("coverage_6h")
     if isinstance(cov, dict) and cov.get("n_buckets"):

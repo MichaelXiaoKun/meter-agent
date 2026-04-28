@@ -827,6 +827,8 @@ def _run_analyze_flow_with_progress(
                     network_type=inputs.get("network_type"),
                     meter_timezone=inputs.get("meter_timezone"),
                     analysis_mode=inputs.get("analysis_mode"),
+                    baseline_window=inputs.get("baseline_window"),
+                    filters=inputs.get("filters"),
                 )
             )
         except BaseException as e:
@@ -1523,6 +1525,8 @@ def _dispatch(
             network_type=inputs.get("network_type"),
             meter_timezone=inputs.get("meter_timezone"),
             analysis_mode=inputs.get("analysis_mode"),
+            baseline_window=inputs.get("baseline_window"),
+            filters=inputs.get("filters"),
         )
 
     elif name == "batch_analyze_flow":

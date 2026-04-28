@@ -248,11 +248,11 @@ Refusal rules (all JSON-serialisable, all overridable via env vars):
 | `BLUEBOT_BASELINE_MIN_POST_CHANGE_DAYS` | `7` | Minimum post-change-point days before a baseline is usable. |
 | `BLUEBOT_BASELINE_CUSUM_Z` | `2.0` | CUSUM sensitivity (robust standard-deviation units). |
 
-Today, `verified_facts["baseline_quality"]` is always the `not_requested` stub (and stripped from the LLM prompt to save tokens); the full verdict is still in the `analysis_*.json` bundle for audit. The data-processing system prompt already enforces: **if `baseline_quality.reliable=false`, the narrative must relay `state` / `reasons_refused` / `recommendations` verbatim and not synthesize any today-vs-typical claim** — so when the baseline pipeline is plugged in, refusals propagate end-to-end on day one.
+When `analyze_flow_data` receives a `baseline_window`, the subprocess fetches that reference period, builds local-time daily rollups, and populates `verified_facts["baseline_quality"]` with a real verdict. Without a `baseline_window`, the key remains the `not_requested` stub and is stripped from the LLM prompt to save tokens. The data-processing system prompt enforces: **if `baseline_quality.reliable=false`, the narrative must relay `state` / `reasons_refused` / `recommendations` verbatim and not synthesize any today-vs-typical claim**.
 
-#### Local-time filter scaffolding (business-hours / weekend slicing)
+#### Local-time filters (business-hours / weekend slicing)
 
-Mirrors the baseline-quality pattern: [`processors/mask_by_local_time.py`](data-processing-agent/processors/mask_by_local_time.py) is a pure, deterministic predicate evaluator ready for future use. Its spec accepts `timezone` (IANA), `weekdays` (0=Mon..6=Sun), `hour_ranges` (`[start_hour, end_hour)` local, non-overnight), `exclude_dates` (`YYYY-MM-DD` in that timezone), and `include_sub_ranges` (explicit unix-second intervals). Validation is structural and DST-aware — tests cover both the spring-forward and fall-back transitions in `America/Denver`.
+Mirrors the baseline-quality pattern: [`processors/mask_by_local_time.py`](data-processing-agent/processors/mask_by_local_time.py) is a pure, deterministic predicate evaluator wired through `analyze_flow_data` as an optional `filters` input. The orchestrator serializes that object as `BLUEBOT_FILTERS_JSON`; the data-processing subprocess applies it before the rest of the metrics, plots, summary, and internal analysis run. Its spec accepts `timezone` (IANA), `weekdays` (0=Mon..6=Sun), `hour_ranges` (`[start_hour, end_hour)` local, non-overnight), `exclude_dates` (`YYYY-MM-DD` in that timezone), and `include_sub_ranges` (explicit unix-second intervals). Validation is structural and DST-aware — tests cover both the spring-forward and fall-back transitions in `America/Denver`.
 
 `verified_facts["filter_applied"]` is always populated and has four explicit states:
 
@@ -263,7 +263,7 @@ Mirrors the baseline-quality pattern: [`processors/mask_by_local_time.py`](data-
 | `empty_mask` | Valid spec but zero rows matched — refusal, not a silent no-op. |
 | `applied` | Spec valid and at least one row kept; `fraction_kept` + `predicate_used` attached. |
 
-The data-processing system prompt enforces the parallel guardrail to baseline-quality: **when `filter_applied.state ≠ applied`, the narrative must not pretend the analysis was scoped; when `state = applied`, the narrative must cite `fraction_kept` / `predicate_used` so readers know the stats are restricted.** End-to-end wiring (threading a `filters` input through `analyze_flow_data` into the subprocess and calling `apply_filter` on the fetched DataFrame) is the next step; until then, the stub keeps the bundle schema stable.
+The data-processing system prompt enforces the parallel guardrail to baseline-quality: **when `filter_applied.state ≠ applied`, the narrative must not pretend the analysis was scoped; when `state = applied`, the narrative must cite `fraction_kept` / `predicate_used` so readers know the stats are restricted.** Invalid specs or valid filters that match zero rows short-circuit before downstream metrics run, leaving the refusal block as the source of truth.
 
 #### Plot honesty: line breaks at real gaps
 
