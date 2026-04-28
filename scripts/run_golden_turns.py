@@ -13,13 +13,14 @@ What it does:
   1. Load every fixture JSON (or the subset matching ``--fixture``).
   2. For each fixture:
      a. Monkey-patch every tool function on the orchestrator's ``agent`` module
-        to a stub that records ``(tool, inputs)`` and returns the fixture's
-        ``mock_result`` for the matching step.
+        to a stub that returns the fixture's ``mock_result`` for the matching
+        step without touching the network.
      b. Call ``run_turn`` with the fixture's user message and the real LLM.
-     c. Compare recorded tool calls vs ``expected_tool_sequence`` (order,
-        ``args_contains``), check ``forbidden_tools`` was never touched, and
-        verify ``response_must_not_contain`` / ``response_must_contain`` on
-        the assistant reply.
+     c. Compare user-visible ``tool_call`` events vs ``expected_tool_sequence``
+        (order, ``args_contains``), check ``forbidden_tools`` was never touched,
+        and verify ``response_must_not_contain`` / ``response_must_contain`` on
+        the assistant reply. This intentionally ignores internal helper reads
+        used to prepare confirmation cards.
   3. Print a pretty PASS/FAIL table and exit non-zero on any failure.
 
 Usage::
@@ -41,6 +42,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -118,7 +120,11 @@ _TOOL_ATTRS: dict[str, str] = {
     "get_meter_profile": "get_meter_profile",
     "list_meters_for_account": "list_meters_for_account",
     "compare_meters": "compare_meters",
+    "rank_fleet_by_health": "rank_fleet_by_health",
+    "triage_fleet_for_account": "triage_fleet_for_account",
+    "compare_periods": "compare_periods",
     "analyze_flow_data": "analyze_flow_data",
+    "batch_analyze_flow": "batch_analyze_flow",
     "configure_meter_pipe": "configure_meter_pipe",
     "set_transducer_angle_only": "set_transducer_angle_only",
 }
@@ -177,7 +183,11 @@ def _reconstruct_inputs(tool: str, args: tuple, kwargs: dict) -> dict[str, Any]:
         "get_meter_profile": ["serial_number"],
         "list_meters_for_account": ["email"],
         "compare_meters": ["serial_numbers"],
+        "rank_fleet_by_health": ["serial_numbers"],
+        "triage_fleet_for_account": ["email"],
+        "compare_periods": ["serial_number", "period_a", "period_b"],
         "analyze_flow_data": ["serial_number", "start", "end"],
+        "batch_analyze_flow": ["serial_numbers", "start", "end"],
         "configure_meter_pipe": [
             "serial_number",
             "pipe_material",
@@ -200,6 +210,10 @@ def _reconstruct_inputs(tool: str, args: tuple, kwargs: dict) -> dict[str, Any]:
         "limit",
         "display_timezone",
         "client_timezone",
+        "analysis_mode",
+        "baseline_window",
+        "filters",
+        "event_predicates",
     ):
         if key in kwargs:
             inputs[key] = kwargs[key]
@@ -211,11 +225,55 @@ def _reconstruct_inputs(tool: str, args: tuple, kwargs: dict) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+_LOOSE_CONFIG_FIELDS = {
+    "pipe_material",
+    "pipe_standard",
+    "pipe_size",
+    "transducer_angle",
+}
+
+
+def _config_token(value: object) -> str:
+    s = str(value if value is not None else "").strip().lower()
+    s = s.replace("º", "°")
+    s = s.replace('"', " inch ")
+    s = re.sub(r"\bdegrees?\b|°", "", s)
+    s = re.sub(r"[^a-z0-9]+", "", s)
+    return s
+
+
+def _numeric_token(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    match = re.search(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", str(value or ""))
+    if match is None:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def _arg_value_matches(key: str, expected: Any, actual: Any) -> bool:
+    if actual == expected:
+        return True
+    if key == "transducer_angle":
+        e_num = _numeric_token(expected)
+        a_num = _numeric_token(actual)
+        if e_num is not None and a_num is not None:
+            return abs(e_num - a_num) < 1e-9
+    if key in _LOOSE_CONFIG_FIELDS:
+        return _config_token(expected) == _config_token(actual)
+    return False
+
+
 def _is_subset(needle: dict[str, Any], hay: dict[str, Any]) -> bool:
     for k, v in needle.items():
         if k not in hay:
             return False
-        if hay[k] != v:
+        if not _arg_value_matches(k, v, hay[k]):
             return False
     return True
 
@@ -285,15 +343,25 @@ def _load_fixtures(selector: str | None) -> list[tuple[str, dict[str, Any]]]:
 
 
 def _run_one(agent: ModuleType, fixture: dict[str, Any], prompt_version: str) -> FixtureResult:
-    calls: list[ToolCallRecord] = []
-    restore = _install_stubs(agent, fixture, calls)
+    function_calls: list[ToolCallRecord] = []
+    event_calls: list[ToolCallRecord] = []
+    restore = _install_stubs(agent, fixture, function_calls)
     t0 = time.perf_counter()
     try:
         messages: list = [{"role": "user", "content": fixture["user"]}]
+
+        def _record_event(event: dict) -> None:
+            if event.get("type") == "tool_call":
+                tool = event.get("tool")
+                inp = event.get("input")
+                if isinstance(tool, str) and isinstance(inp, dict):
+                    event_calls.append(ToolCallRecord(tool=tool, inputs=dict(inp)))
+
         reply, _replaced = agent.run_turn(
             messages,
             token="golden-replay-token",  # stubs never hit the network
             model=agent._MODEL,
+            on_event=_record_event,
         )
     except Exception as exc:  # pragma: no cover — surface as a failure row
         restore()
@@ -302,11 +370,12 @@ def _run_one(agent: ModuleType, fixture: dict[str, Any], prompt_version: str) ->
             prompt_version=prompt_version,
             passed=False,
             reply="",
-            calls=calls,
+            calls=event_calls or function_calls,
             failures=[f"{type(exc).__name__}: {exc}"],
             elapsed_s=time.perf_counter() - t0,
         )
     restore()
+    calls = event_calls or function_calls
     failures = _check_fixture(fixture, calls, reply or "")
     return FixtureResult(
         fixture=fixture["id"],

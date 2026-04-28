@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -154,6 +155,45 @@ def test_read_only_tool_is_deduped_within_one_turn(
     assert len(hits) == 1
     assert hits[0]["tool"] == "check_meter_status"
     assert hits[0]["serial_number"] == "BB1"
+
+
+def test_fleet_health_tool_emits_heartbeat_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+    orch = _load_agent()
+    progress_events: list[dict] = []
+
+    def fake_dispatch(name, inp, token, *, client_timezone, anthropic_api_key):
+        assert name == "rank_fleet_by_health"
+        time.sleep(0.03)
+        return json.dumps(
+            {
+                "success": True,
+                "meters": [{"serial_number": "BB1", "health_score": 92}],
+                "failed_serials": None,
+                "error": None,
+            }
+        )
+
+    monkeypatch.setattr(orch, "_dispatch", fake_dispatch)
+
+    result_json = orch._run_dispatch_with_heartbeat_progress(  # noqa: SLF001
+        "rank_fleet_by_health",
+        {"serial_numbers": ["BB1"]},
+        "token",
+        client_timezone=None,
+        anthropic_api_key=None,
+        emit=progress_events.append,
+        heartbeat_seconds=0.01,
+    )
+
+    assert json.loads(result_json)["success"] is True
+    messages = [
+        ev["message"]
+        for ev in progress_events
+        if ev.get("type") == "tool_progress"
+        and ev.get("tool") == "rank_fleet_by_health"
+    ]
+    assert messages[0].startswith("Fleet health ranking for 1 meter(s): started")
+    assert any("still checking meters" in msg for msg in messages[1:])
 
 
 def test_write_tools_require_confirmation_before_dispatch(

@@ -41,8 +41,8 @@ function useLocalStorage(key: string, fallback: string) {
 /** Fallback if /api/config fails — matches Haiku Tier-1 ITPM default on the server. */
 const DEFAULT_TPM_INPUT_GUIDE = 50_000;
 const DEFAULT_MODEL_CONTEXT_WINDOW = 200_000;
-/** Default 0.5 × TPM guide when config omits max_input_tokens_target. */
-const DEFAULT_MAX_INPUT_TARGET = 25_000;
+/** Fallback safe streamable target for a 50k TPM guide and 2.05× next-call estimate. */
+const DEFAULT_MAX_INPUT_TARGET = 24_390;
 
 /** Desktop shelf animation timings (module scope so shelf effect deps stay stable). */
 const SHELF_BODY_FADE_MS = 180;

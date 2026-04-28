@@ -30,3 +30,29 @@ def test_report_includes_diagnostic_interpretation_block():
     assert "Diagnostic interpretation" in report
     assert "`real_flow_change`" in report
     assert "CUSUM detected upward drift" in report
+
+
+def test_report_filter_refusal_does_not_emit_default_zero_metrics():
+    facts = {
+        "n_rows": 10,
+        "baseline_quality": {"state": "not_requested", "reliable": False},
+        "filter_applied": {
+            "state": "invalid_spec",
+            "applied": False,
+            "n_rows_input": 10,
+            "n_rows_kept": 0,
+            "fraction_kept": None,
+            "predicate_used": {"weekdays": [0]},
+            "validation_errors": [
+                "timezone is required when weekdays / hour_ranges / exclude_dates are provided"
+            ],
+            "reasons_refused": ["Filter spec failed validation; see validation_errors."],
+        },
+    }
+
+    report = format_report("Analysis body", "BB1", 1, 2, verified_facts=facts)
+
+    assert "Local-time filter" in report
+    assert "Filter spec failed validation" in report
+    assert "Gap events" not in report
+    assert "Zero-flow periods" not in report

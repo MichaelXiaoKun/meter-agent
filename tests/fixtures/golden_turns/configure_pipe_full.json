@@ -1,6 +1,6 @@
 {
   "id": "configure_pipe_full",
-  "description": "Full pipe configuration (material + standard + size + angle) — rule 9 collects fields, rule 11 requires a verify readback.",
+  "description": "Full pipe configuration (material + standard + size + angle) — rule 9 collects fields and the first turn must prepare a confirmation, not send the write.",
   "user": "Configure BB8100015261 for stainless steel, ASME schedule 40, 2-inch pipe, transducer angle 45 degrees.",
   "expected_tool_sequence": [
     {
@@ -15,20 +15,6 @@
       "mock_result": {
         "success": true,
         "message": "Pipe config written + MQTT spm publish OK."
-      }
-    },
-    {
-      "tool": "check_meter_status",
-      "args_contains": {"serial_number": "BB8100015261"},
-      "mock_result": {
-        "success": true,
-        "online": true,
-        "signal_quality": {"label": "good", "score": 90},
-        "pipe_config": {
-          "material": "stainless_steel",
-          "size_label": "2\"",
-          "transducer_angle": 45
-        }
       }
     }
   ],
@@ -46,6 +32,9 @@
     "subprocess",
     "/Users/"
   ],
-  "response_must_contain": [],
+  "response_must_contain": [
+    "prepared",
+    "Choose Yes"
+  ],
   "prompt_versions": ["v1"]
 }

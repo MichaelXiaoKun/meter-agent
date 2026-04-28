@@ -83,7 +83,8 @@ TOOL_DEFINITION = {
     "description": (
         "Fetch the current health status of a bluebot flow meter: "
         "online/offline state, signal quality score, time since last message, "
-        "and pipe configuration (inner/outer diameter, wall thickness). "
+        "pipe configuration (inner/outer diameter, wall thickness), and a "
+        "composite health score. "
         "Use when the user asks about meter health, connectivity, or current state."
     ),
     "input_schema": {
@@ -130,6 +131,7 @@ def check_meter_status(
             "staleness": {"seconds_since": int, "communication_status": str, ...} | None,
             "signal": {"score": int, "level": str, "reliable": bool, ...} | None,
             "pipe_config": {"inner_diameter_mm": float, "nominal_size": str|None, ...} | None,
+            "health_score": {"score": float, "verdict": "healthy"|"degraded"|"unhealthy", ...} | None,
             "errors": {"signal": "KeyError: ...", ...}  # per-processor failures, empty on full success
         }
     """

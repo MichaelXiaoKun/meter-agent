@@ -33,6 +33,7 @@ const COMPACT_MAIN: Record<TurnActivityStep["kind"], string> = {
   thinking: "Reasoning",
   context: "Usage",
   compressing: "Tighten",
+  rate_limit_wait: "Waiting",
   tool: "Tool",
   stream: "Generating",
   done: "Done",
@@ -46,6 +47,7 @@ const STEP_ICONS: Record<TurnActivityStep["kind"], string> = {
   thinking: "∙",
   context: "%",
   compressing: "⇄",
+  rate_limit_wait: "⏱",
   tool: "⚙",
   stream: "✦",
   done: "✓",
@@ -59,6 +61,7 @@ const STEP_COLORS: Record<TurnActivityStep["kind"], { bg: string; text: string }
   thinking: { bg: "bg-indigo-50 dark:bg-indigo-950/30", text: "text-indigo-700 dark:text-indigo-300" },
   context: { bg: "bg-cyan-50 dark:bg-cyan-950/30", text: "text-cyan-700 dark:text-cyan-300" },
   compressing: { bg: "bg-violet-50 dark:bg-violet-950/30", text: "text-violet-700 dark:text-violet-300" },
+  rate_limit_wait: { bg: "bg-amber-50 dark:bg-amber-950/30", text: "text-amber-700 dark:text-amber-300" },
   tool: { bg: "bg-green-50 dark:bg-green-950/30", text: "text-green-700 dark:text-green-300" },
   stream: { bg: "bg-pink-50 dark:bg-pink-950/30", text: "text-pink-700 dark:text-pink-300" },
   done: { bg: "bg-emerald-50 dark:bg-emerald-950/30", text: "text-emerald-700 dark:text-emerald-300" },
@@ -101,6 +104,8 @@ function bodyLineText(step: TurnActivityStep, compact: boolean): string | undefi
       return step.detail?.split("·")[0]?.trim();
     case "compressing":
       return "Shorter thread";
+    case "rate_limit_wait":
+      return step.detail;
     case "tool":
       if (step.phase === "running") {
         if (step.progressLines && step.progressLines.length > 0) {
@@ -162,14 +167,19 @@ function DetailChips({
     Alarms: 2,
     Adequacy: 3,
     Cache: 4,
-    Report: 5,
-    Plots: 6,
-    "Plot types": 7,
-    "Plot TZ": 8,
-    Range: 9,
-    Meter: 10,
-    Window: 11,
-    Network: 12,
+    "60s used": 5,
+    Next: 6,
+    Budget: 7,
+    Over: 8,
+    Waited: 9,
+    Report: 10,
+    Plots: 11,
+    "Plot types": 12,
+    "Plot TZ": 13,
+    Range: 14,
+    Meter: 15,
+    Window: 16,
+    Network: 17,
   };
   const ordered = [...details].sort(
     (a, b) => (priority[a.label] ?? 50) - (priority[b.label] ?? 50)

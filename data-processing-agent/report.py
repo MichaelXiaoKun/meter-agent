@@ -42,6 +42,40 @@ def _attribution_markdown(facts: Dict[str, Any]) -> str:
     return "".join(lines)
 
 
+def _append_filter_applied_markdown(lines: list[str], fa: Dict[str, Any]) -> None:
+    state = fa.get("state")
+    # Silent for "not_requested" — no filter was asked for.
+    if not state or state == "not_requested":
+        return
+    applied = bool(fa.get("applied"))
+    kept = fa.get("n_rows_kept") or 0
+    total = fa.get("n_rows_input") or 0
+    frac = fa.get("fraction_kept")
+    frac_s = f" ({frac:.0%})" if isinstance(frac, (int, float)) else ""
+    lines.append(
+        f"- **Local-time filter:** `{state}` "
+        f"(applied={applied}; kept {kept} of {total} rows{frac_s})\n"
+    )
+    pred = fa.get("predicate_used") or {}
+    if pred:
+        tz_s = pred.get("timezone") or ""
+        wd_s = pred.get("weekdays")
+        hr_s = pred.get("hour_ranges")
+        if tz_s:
+            lines.append(f"  - timezone: {tz_s}\n")
+        if wd_s:
+            lines.append(f"  - weekdays: {wd_s}\n")
+        if hr_s:
+            pretty = ", ".join(
+                f"{r['start_hour']}–{r['end_hour']}" for r in hr_s
+            )
+            lines.append(f"  - hour ranges: {pretty}\n")
+    for reason in (fa.get("reasons_refused") or [])[:3]:
+        lines.append(f"  - refusal: {reason}\n")
+    for verr in (fa.get("validation_errors") or [])[:3]:
+        lines.append(f"  - validation: {verr}\n")
+
+
 def _verified_facts_markdown(facts: Dict[str, Any]) -> str:
     """Append-only block of deterministic metrics (same processors as the agent tools)."""
     lines = [
@@ -59,6 +93,16 @@ def _verified_facts_markdown(facts: Dict[str, Any]) -> str:
         lines.append(f"- **Mean flow rate (gal/min):** {desc['mean']:.6g}\n")
     elif isinstance(desc, dict) and "error" in desc:
         lines.append(f"- **Flow rate descriptive:** {desc['error']}\n")
+
+    fa = facts.get("filter_applied")
+    filter_refused = (
+        isinstance(fa, dict)
+        and fa.get("state") in {"invalid_spec", "empty_mask"}
+        and "flow_rate_descriptive" not in facts
+    )
+    if filter_refused:
+        _append_filter_applied_markdown(lines, fa)
+        return "".join(lines)
 
     lines.append(f"- **Gap events:** {facts.get('gap_event_count', 0)}\n")
     lg = float(facts.get("largest_gap_duration_seconds") or 0)
@@ -169,38 +213,82 @@ def _verified_facts_markdown(facts: Dict[str, Any]) -> str:
             for rec in (bq.get("recommendations") or [])[:3]:
                 lines.append(f"  - hint: {rec}\n")
 
-    fa = facts.get("filter_applied")
     if isinstance(fa, dict):
-        state = fa.get("state")
-        # Silent for "not_requested" — no filter was asked for.
+        _append_filter_applied_markdown(lines, fa)
+
+    ds = facts.get("diurnal_seasonality")
+    if isinstance(ds, dict):
+        state = ds.get("state")
         if state and state != "not_requested":
-            applied = bool(fa.get("applied"))
-            kept = fa.get("n_rows_kept") or 0
-            total = fa.get("n_rows_input") or 0
-            frac = fa.get("fraction_kept")
-            frac_s = f" ({frac:.0%})" if isinstance(frac, (int, float)) else ""
+            score = ds.get("score") if isinstance(ds.get("score"), dict) else {}
+            profile = ds.get("profile") if isinstance(ds.get("profile"), dict) else {}
+            departure = score.get("departure_score")
+            n_hours = score.get("n_hours_scored")
+            n_days = profile.get("n_days_used")
+            if state == "scored" and isinstance(departure, (int, float)):
+                lines.append(
+                    f"- **Diurnal seasonality:** scored {n_hours or 0} hour(s) "
+                    f"against {n_days or 0} reference day(s); max hourly |z| "
+                    f"{float(departure):.3g}\n"
+                )
+            else:
+                lines.append(f"- **Diurnal seasonality:** `{state}`\n")
+                for reason in (score.get("reasons_refused") or profile.get("reasons_refused") or [])[:3]:
+                    lines.append(f"  - refusal: {reason}\n")
+
+    te = facts.get("threshold_events")
+    if isinstance(te, dict):
+        state = te.get("state")
+        if state and state != "not_requested":
             lines.append(
-                f"- **Local-time filter:** `{state}` "
-                f"(applied={applied}; kept {kept} of {total} rows{frac_s})\n"
+                f"- **Threshold events:** `{state}` "
+                f"({te.get('valid_count', 0)} valid, {te.get('invalid_count', 0)} invalid)\n"
             )
-            pred = fa.get("predicate_used") or {}
-            if pred:
-                tz_s = pred.get("timezone") or ""
-                wd_s = pred.get("weekdays")
-                hr_s = pred.get("hour_ranges")
-                if tz_s:
-                    lines.append(f"  - timezone: {tz_s}\n")
-                if wd_s:
-                    lines.append(f"  - weekdays: {wd_s}\n")
-                if hr_s:
-                    pretty = ", ".join(
-                        f"{r['start_hour']}–{r['end_hour']}" for r in hr_s
+            for event_set in (te.get("event_sets") or [])[:6]:
+                if not isinstance(event_set, dict):
+                    continue
+                name = event_set.get("name") or "event"
+                if event_set.get("state") == "ready":
+                    lines.append(
+                        f"  - {name}: {event_set.get('event_count', 0)} event(s) "
+                        f"for `{event_set.get('predicate')}` lasting at least "
+                        f"{event_set.get('min_duration_seconds', 0)} s\n"
                     )
-                    lines.append(f"  - hour ranges: {pretty}\n")
-            for reason in (fa.get("reasons_refused") or [])[:3]:
+                    events = event_set.get("events") if isinstance(event_set.get("events"), list) else []
+                    for ev in events[:3]:
+                        if isinstance(ev, dict):
+                            lines.append(
+                                f"    - {ev.get('start_ts')} → {ev.get('end_ts')} UTC (unix), "
+                                f"{float(ev.get('duration_seconds') or 0):.4g} s, "
+                                f"peak flow {float(ev.get('peak_value') or 0):.6g}\n"
+                            )
+                    if len(events) > 3:
+                        lines.append(f"    - …and {len(events) - 3} more event(s)\n")
+                else:
+                    lines.append(f"  - {name}: `{event_set.get('state')}`\n")
+                    for reason in (event_set.get("reasons_refused") or [])[:2]:
+                        lines.append(f"    - refusal: {reason}\n")
+            for reason in (te.get("reasons_refused") or [])[:3]:
                 lines.append(f"  - refusal: {reason}\n")
-            for verr in (fa.get("validation_errors") or [])[:3]:
-                lines.append(f"  - validation: {verr}\n")
+
+    fd = facts.get("frequency_domain")
+    if isinstance(fd, dict):
+        state = fd.get("state")
+        if state == "ready":
+            freqs = fd.get("dominant_frequencies") if isinstance(fd.get("dominant_frequencies"), list) else []
+            bits = []
+            for item in freqs[:3]:
+                if isinstance(item, dict) and isinstance(item.get("period_seconds"), (int, float)):
+                    bits.append(
+                        f"{float(item['period_seconds']):.4g} s period "
+                        f"(amp {float(item.get('amplitude') or 0):.4g})"
+                    )
+            if bits:
+                lines.append(f"- **Frequency domain:** dominant periods: {', '.join(bits)}\n")
+        elif state == "insufficient_cadence":
+            reasons = fd.get("reasons_refused") if isinstance(fd.get("reasons_refused"), list) else []
+            if reasons:
+                lines.append(f"- **Frequency domain:** `{state}` — {reasons[0]}\n")
 
     cov = facts.get("coverage_6h")
     if isinstance(cov, dict) and cov.get("n_buckets"):

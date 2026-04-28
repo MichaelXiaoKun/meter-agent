@@ -11,6 +11,10 @@ export const TOOL_LIFECYCLE: Record<string, { now: string; done: string }> = {
   get_meter_profile: { now: "Reading the meter profile…", done: "Read the meter profile" },
   list_meters_for_account: { now: "Listing your meters…", done: "Listed your meters" },
   analyze_flow_data: { now: "Analyzing flow data…", done: "Analyzed the flow data" },
+  batch_analyze_flow: { now: "Analyzing flow across meters…", done: "Analyzed flow across meters" },
+  compare_periods: { now: "Comparing flow periods…", done: "Compared flow periods" },
+  rank_fleet_by_health: { now: "Ranking fleet health…", done: "Ranked fleet health" },
+  triage_fleet_for_account: { now: "Triaging account fleet…", done: "Triaged account fleet" },
   configure_meter_pipe: { now: "Preparing configuration review…", done: "Prepared configuration review" },
   set_transducer_angle_only: { now: "Preparing configuration review…", done: "Prepared configuration review" },
 };
@@ -126,6 +130,19 @@ function toolInputDetails(
       detail("Window", range),
       detail("Network", network)
     );
+  }
+  if (name === "compare_periods") {
+    return mergeDetails(
+      detail("Meter", sn),
+      detail("Network", network),
+      detail("Meter TZ", meterTz)
+    );
+  }
+  if (name === "rank_fleet_by_health") {
+    return detail("Meters", cleanList(input.serial_numbers));
+  }
+  if (name === "triage_fleet_for_account") {
+    return detail("Account", email);
   }
   if (name === "check_meter_status" || name === "get_meter_profile") {
     return detail("Meter", sn);
@@ -369,6 +386,7 @@ export interface TurnActivityStep {
   | "thinking"
   | "context"
   | "compressing"
+  | "rate_limit_wait"
   | "tool"
   | "stream"
   | "done"
@@ -521,17 +539,49 @@ export function reduceTurnActivity(
       const row: TurnActivityStep = {
         seq,
         kind: "context",
-        title: "Context usage",
-        detail: `About ${pct}% of the conversation context is in use`,
+        title: "Input budget usage",
+        detail: `About ${pct}% of the full model context is in use`,
         details: mergeDetails(
           detail("Input", event.tokens != null ? `${event.tokens.toLocaleString()} tokens` : undefined),
-          detail("Used", `${pct}%`)
+          detail("Full ctx", `${pct}%`)
         ),
       };
       return [...p0.filter((p) => p.kind !== "context"), row];
     }
     case "compressing":
       return push({ kind: "compressing", title: "Tightening context", detail: undefined });
+    case "rate_limit_wait": {
+      const current = fmtCount(event.current_tokens);
+      const estimated = fmtCount(event.estimated_next_tokens);
+      const cap = fmtCount(event.tpm_cap ?? event.tpm_limit);
+      const overflow = fmtCount(event.overflow_tokens);
+      const waited =
+        typeof event.waited_seconds === "number" && Number.isFinite(event.waited_seconds)
+          ? `${Math.round(event.waited_seconds)}s`
+          : undefined;
+      const row: TurnActivityStep = {
+        seq,
+        kind: "rate_limit_wait",
+        title: "Waiting for rate-limit headroom",
+        detail:
+          event.message ||
+          (current && estimated && cap
+            ? `${current} used + ${estimated} next exceeds ${cap}/min budget`
+            : "Waiting for the rolling 60s input-token window to refresh"),
+        details: mergeDetails(
+          detail("60s used", current, "warning"),
+          detail("Next", estimated, "warning"),
+          detail("Budget", cap, "warning"),
+          detail("Over", overflow, "warning"),
+          detail("Waited", waited)
+        ),
+      };
+      const last = base[base.length - 1];
+      if (last?.kind === "rate_limit_wait") {
+        return [...base.slice(0, -1), row];
+      }
+      return [...base, row];
+    }
     case "tool_call": {
       const tool = event.tool ?? "";
       const deduped = event.deduped === true;

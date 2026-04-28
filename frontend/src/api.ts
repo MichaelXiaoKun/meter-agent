@@ -384,21 +384,33 @@ export async function streamChat(
 
     const es = new EventSource(`${BASE}/streams/${streamId}`);
     let settled = false;
+    let fallbackStarted = false;
+    let lastSeq = 0;
     /**
-     * EventSource auto-reconnects on transport errors. Once we've seen
-     * the terminal "done" / "error" event, the server-side session is
-     * gone (single-use) and any reconnect attempt would just 409 / 404,
-     * so we close the source and ignore subsequent error callbacks.
+     * EventSource can fail mid-turn through the dev proxy or browser network
+     * stack while the worker keeps running server-side. If that happens before
+     * a terminal event, resume through the same append-only event log with
+     * long-polling from the last seen sequence number.
      */
     const settle = (fn: () => void) => {
       if (settled) return;
       settled = true;
       es.close();
+      signal?.removeEventListener("abort", onAbort);
       fn();
     };
 
     const onAbort = () => settle(() => reject(new DOMException("aborted", "AbortError")));
     signal?.addEventListener("abort", onAbort);
+
+    const startPollingFallback = () => {
+      if (settled || fallbackStarted) return;
+      fallbackStarted = true;
+      es.close();
+      pollStream(streamId, onEvent, signal, lastSeq)
+        .then(() => settle(() => resolve()))
+        .catch((err) => settle(() => reject(err)));
+    };
 
     es.onmessage = (ev: MessageEvent<string>) => {
       let parsed: SSEEvent | null = null;
@@ -406,6 +418,9 @@ export async function streamChat(
         parsed = JSON.parse(ev.data) as SSEEvent;
       } catch {
         return;
+      }
+      if (typeof parsed.seq === "number" && Number.isFinite(parsed.seq)) {
+        lastSeq = Math.max(lastSeq, parsed.seq);
       }
       onEvent(parsed);
       if (parsed.type === "done" || parsed.type === "error") {
@@ -415,7 +430,7 @@ export async function streamChat(
 
     es.onerror = () => {
       if (settled) return;
-      settle(() => reject(new Error("EventSource connection error")));
+      startPollingFallback();
     };
   });
 }

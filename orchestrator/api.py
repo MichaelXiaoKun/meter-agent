@@ -544,20 +544,19 @@ _cancelled_conversations: set[str] = set()
 _cancel_events: dict[str, threading.Event] = {}  # Per-conversation cancel events
 _streams: dict[str, dict] = {}
 _streams_lock = threading.Lock()
-# Stream sessions live at most this long after completion (or if no
-# consumer ever attaches, e.g. browser tab crashed between the POST
-# response and subscription). Workers always run to completion; stale
-# sessions are reaped by :func:`_gc_streams`.
+# Stream sessions live at most this long after completion (or after an
+# inactive worker loses its active conversation marker). Active unfinished
+# sessions must stay resumable even when a large turn exceeds this wall time.
 _STREAM_TTL_SEC = 600
 
 
 def _gc_streams() -> None:
     """Best-effort cleanup of stream sessions past their TTL.
 
-    A session is dropped when ``now - created > _STREAM_TTL_SEC`` *and*
-    either nobody ever subscribed, or the worker has finished. A phone
-    polling ~every 200 ms refreshes naturally through ``events`` access,
-    so TTL is measured from session creation, not from last poll.
+    A session is dropped when ``now - created > _STREAM_TTL_SEC`` *and* the
+    worker has either finished or is no longer marked active. TTL is measured
+    from session creation because polling/SSE reads are intentionally cheap
+    snapshots, not lease-renewing ownership.
     """
     now = time.monotonic()
     with _streams_lock:
@@ -565,6 +564,10 @@ def _gc_streams() -> None:
             sid
             for sid, s in _streams.items()
             if now - s["created"] > _STREAM_TTL_SEC
+            and (
+                bool(s.get("done"))
+                or str(s.get("conv_id") or "") not in _active_conversations
+            )
         ]
         for sid in stale:
             _streams.pop(sid, None)
@@ -803,6 +806,12 @@ async def chat_init(
             "source",
             "tools",
             "rate_limit_wait_seconds",
+            "current_tokens",
+            "estimated_next_tokens",
+            "tpm_limit",
+            "tpm_cap",
+            "overflow_tokens",
+            "waited_seconds",
             "attempt",
             "text",  # unused on slim; kept for forward compat
             "limit",  # tool_round_limit
@@ -843,6 +852,15 @@ async def chat_init(
                 ]
             out.append(s)
         return out
+
+    def _synthetic_context_summary_covers(msg: dict | None) -> bool:
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            return False
+        content = msg.get("content")
+        return isinstance(content, str) and (
+            content.startswith("[Context summary")
+            or content.startswith("[Full thread compressed")
+        )
 
     captured_events: list[dict] = []
     cancel_event = threading.Event()
@@ -920,11 +938,28 @@ async def chat_init(
                     and slim
                 ):
                     append_turn_activity_block(api_messages[-1], slim)
-                # Locate user_msg by identity — compression keeps it in the recent tail.
+                # Locate user_msg by identity — normal layered compression keeps
+                # it in the recent tail. The last-resort full-thread compression
+                # intentionally replaces the whole API message list with a
+                # synthetic summary, so the live stream can succeed even though
+                # this identity anchor disappears. In that case, append
+                # everything after the synthetic summary; otherwise the frontend
+                # reloads history after ``done`` and the streamed response
+                # appears to vanish.
                 user_idx = next(
                     (i for i, m in enumerate(api_messages) if m is user_msg), None
                 )
-                new_tail = api_messages[user_idx + 1:] if user_idx is not None else []
+                summary_covers: int | None = None
+                if user_idx is not None:
+                    new_tail = api_messages[user_idx + 1:]
+                    summary_covers = n_messages_after_user - user_idx
+                elif _synthetic_context_summary_covers(
+                    api_messages[0] if api_messages else None
+                ):
+                    new_tail = api_messages[1:]
+                    summary_covers = n_messages_after_user
+                else:
+                    new_tail = []
                 if history_replaced:
                     # Compression restructured api_messages for this API call.
                     # Update the cached summary so the next turn skips re-compression;
@@ -932,11 +967,10 @@ async def chat_init(
                     first_content = api_messages[0].get("content", "") if api_messages else ""
                     if (
                         isinstance(first_content, str)
-                        and first_content.startswith("[Context summary")
-                        and user_idx is not None
+                        and _synthetic_context_summary_covers(api_messages[0] if api_messages else None)
+                        and summary_covers is not None
                     ):
-                        new_covers = n_messages_after_user - user_idx
-                        store.set_api_context_info(conv_id, first_content, new_covers)
+                        store.set_api_context_info(conv_id, first_content, summary_covers)
                 if not new_tail:
                     logger.warning(
                         "chat turn produced no new messages after user (conv=%s)", conv_id

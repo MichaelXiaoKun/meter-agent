@@ -23,6 +23,8 @@ def _load_orchestrator_agent():
     # top-level ``processors`` package, but only the orchestrator has ``time_range``. Prepend
     # the orchestrator tree so ``import processors...`` resolves correctly.
     sys.path.insert(0, _ORCH_DIR)
+    for cached in ("processors", "processors.time_range", "agent"):
+        sys.modules.pop(cached, None)
     name = "meter_orchestrator_agent_intent_tests"
     spec = importlib.util.spec_from_file_location(name, _ORCH_AGENT_PATH)
     assert spec is not None and spec.loader is not None
@@ -61,6 +63,8 @@ class TestToolsForIntentLabel:
                 "get_meter_profile",
                 "list_meters_for_account",
                 "compare_meters",
+                "rank_fleet_by_health",
+                "triage_fleet_for_account",
             }
 
 
@@ -70,8 +74,12 @@ class TestToolsForIntentLabel:
         ("Is BB8100015261 online?", "status"),
         ("What is the signal quality?", "status"),
         ("List meters for alice@example.com", "status"),
+        ("Which of these meters need attention?", "status"),
+        ("Triage the fleet for alice@example.com", "status"),
         ("Show flow chart for last 24 hours", "flow"),
         ("Analyze flow yesterday for BB81", "flow"),
+        ("Find flow events above 10 gpm", "flow"),
+        ("What dominant frequency is in this meter's flow?", "flow"),
         ("Set transducer angle to 45 degrees", "config"),
         ("PVC pipe schedule 40 install", "config"),
         ("Hello, what can you do?", "general"),

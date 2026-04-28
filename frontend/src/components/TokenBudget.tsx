@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 
 /** Fallbacks when /api/config is unavailable — match orchestrator defaults. */
 export const DEFAULT_MODEL_CONTEXT_MAX = 200_000;
-export const DEFAULT_INPUT_BUDGET_TARGET = 25_000;
+export const DEFAULT_INPUT_BUDGET_TARGET = 24_390;
 
 /** @deprecated Use DEFAULT_MODEL_CONTEXT_MAX — kept for any external imports. */
 export const MODEL_CONTEXT_TOKENS = DEFAULT_MODEL_CONTEXT_MAX;
@@ -55,11 +55,12 @@ function TokenBudgetPanel({
   const ctxBarPct = Math.min(100, budgetPct * 100);
   const modelPctDisplay = budgetPct * 100;
   const remainingBeforeCompress = Math.max(0, budgetDen - used);
-  const nearContextLimit = budgetPct >= 0.85;
-  const warnContext = budgetPct >= 0.55;
-  const barColor = nearContextLimit
+  const fullContextPct = Math.min(100, (used / Math.max(1, modelContextMax)) * 100);
+  const nearBudgetLimit = budgetPct >= 0.85;
+  const warnBudget = budgetPct >= 0.55;
+  const barColor = nearBudgetLimit
     ? "bg-red-500"
-    : warnContext
+    : warnBudget
       ? "bg-amber-500"
       : "bg-brand-500";
 
@@ -76,7 +77,7 @@ function TokenBudgetPanel({
 
   const hasThreadEstimate = used > 0 || budgetPct > 0;
   const hasAnySignal = hasThreadEstimate || tpm > 0;
-  const ctxPctRounded =
+  const targetPctRounded =
     modelPctDisplay < 10 ? modelPctDisplay.toFixed(1) : modelPctDisplay.toFixed(0);
 
   return (
@@ -94,18 +95,18 @@ function TokenBudgetPanel({
     >
       <div className="flex items-start justify-between gap-2">
         <span className="text-xs font-semibold uppercase tracking-wide text-brand-muted">
-          Model context
+          Compression target
         </span>
         <span className="text-right text-xs text-brand-muted tabular-nums">
           {hasThreadEstimate ? (
             <>
-              <span className="font-semibold text-brand-900">~{ctxPctRounded}%</span>
+              <span className="font-semibold text-brand-900">~{targetPctRounded}%</span>
               <span className="block text-[11px] font-normal text-brand-muted/90">
                 of {formatCompactTokens(inputBudgetTarget)} target
               </span>
             </>
           ) : (
-            <span className="text-[11px]">No estimate yet</span>
+            <span className="text-[11px]">No turn yet</span>
           )}
         </span>
       </div>
@@ -115,16 +116,50 @@ function TokenBudgetPanel({
           style={{ width: `${ctxBarPct}%` }}
         />
       </div>
-      <p className="mt-2 text-sm leading-snug text-brand-900 tabular-nums">
-        <span className="font-semibold">{used.toLocaleString()}</span>
-        <span className="text-brand-muted">
-          {" "}
-          / {budgetDen.toLocaleString()}
-        </span>
-        <span className="mt-1 block text-xs font-normal leading-snug text-brand-muted">
-          Estimated input tokens vs compress target. Full model window up to{" "}
-          <span className="tabular-nums">{modelContextMax.toLocaleString()}</span>.
-        </span>
+      {hasThreadEstimate ? (
+        <p className="mt-2 text-sm leading-snug text-brand-900 tabular-nums">
+          <span className="font-semibold">{used.toLocaleString()}</span>
+          <span className="text-brand-muted">
+            {" "}
+            / {budgetDen.toLocaleString()}
+          </span>
+          <span className="mt-1 block text-xs font-normal leading-snug text-brand-muted">
+            Estimated input tokens vs proactive compression target. This protects the
+            configured TPM budget.
+          </span>
+        </p>
+      ) : (
+        <div className="mt-2 space-y-1">
+          <p className="text-sm leading-snug text-brand-900 tabular-nums">
+            <span className="font-semibold">Auto-compress before</span>
+            <span className="text-brand-muted">
+              {" "}
+              ~{formatCompactTokens(budgetDen)} input tokens
+            </span>
+          </p>
+          <p className="text-xs leading-snug text-brand-muted">
+            No conversation estimate yet. Exact target:{" "}
+            <span className="tabular-nums">{budgetDen.toLocaleString()}</span> tokens, based on the{" "}
+            <span className="tabular-nums">{formatCompactTokens(tpmPerMinuteGuide)}</span> TPM
+            guide.
+          </p>
+        </div>
+      )}
+      <p className="mt-2 text-xs leading-snug text-brand-muted">
+        Full model window:{" "}
+        <span className="font-medium tabular-nums text-brand-800">
+          {modelContextMax.toLocaleString()}
+        </span>{" "}
+        tokens
+        {hasThreadEstimate ? (
+          <>
+            {" "}
+            <span className="text-brand-muted/80">
+              (~{fullContextPct < 10 ? fullContextPct.toFixed(1) : fullContextPct.toFixed(0)}% in
+              use)
+            </span>
+          </>
+        ) : null}
       </p>
       <p className="mt-2 text-xs leading-snug text-brand-muted">
         {hasThreadEstimate ? (
@@ -135,7 +170,7 @@ function TokenBudgetPanel({
             tokens left before compress
           </>
         ) : (
-          <>Updates after each assistant reply.</>
+          <>Updates when a turn starts.</>
         )}
       </p>
 
@@ -181,8 +216,8 @@ function TokenBudgetPanel({
         )}
         {tpmCrit && (
           <p className="mt-2 text-xs font-medium text-red-800 dark:text-red-200/95">
-            High usage vs ~{(tpmPerMinuteGuide / 1000).toFixed(0)}k/min guide — risk of rate limit;
-            wait ~1 min or reduce tool-heavy requests.
+            High usage vs ~{(tpmPerMinuteGuide / 1000).toFixed(0)}k/min guide — wait ~1 min
+            if the next call fits this guide, or raise the guide/reduce context.
           </p>
         )}
       </div>
@@ -208,7 +243,7 @@ function WelcomeIdleSpinRing() {
   );
 }
 
-/** Dual concentric rings: outer = model context %, inner = 60s TPM vs guide (same idea as panel bars). */
+/** Dual concentric rings: outer = compression target %, inner = 60s TPM vs guide. */
 function UsageGaugeRings({
   contextFill,
   tpmFill,
@@ -327,9 +362,9 @@ export function TokenBudgetPopover({
   const tpmCrit =
     tpm >= TPM_CRITICAL * tpmPerMinuteGuide || tpm > tpmPerMinuteGuide;
 
-  const ctxSummary = hasThreadEstimate
+  const budgetSummary = hasThreadEstimate
     ? `~${modelPctDisplay < 10 ? modelPctDisplay.toFixed(1) : modelPctDisplay.toFixed(0)}%`
-    : "—";
+    : `target ${formatCompactTokens(budgetDen)}`;
   const tpmSummary = `${formatCompactTokens(tpm)} / ${formatCompactTokens(tpmPerMinuteGuide)}`;
 
   const close = useCallback(() => setOpen(false), []);
@@ -392,11 +427,11 @@ export function TokenBudgetPopover({
         id="token-budget-trigger"
         aria-expanded={open}
         aria-controls={panelId}
-        aria-label={`Token usage: context ${ctxSummary}, 60s TPM ${tpmSummary}. Open details.`}
+        aria-label={`Token usage: compression target ${budgetSummary}, model window ${formatCompactTokens(modelContextMax)}, 60s TPM ${tpmSummary}. Open details.`}
         title={
           showWelcomeIdleSpin
-            ? "No usage yet — rings will show context and 60s TPM after you chat. Click for details."
-            : `Context ${ctxSummary} · 60s TPM ${tpmSummary} — outer ring = context, inner = 60s TPM (click for full breakdown)`
+            ? `No turn measured yet - auto-compress before ~${formatCompactTokens(budgetDen)} input tokens; full model window ${formatCompactTokens(modelContextMax)}. Click for details.`
+            : `Compression target ${budgetSummary} · 60s TPM ${tpmSummary} - outer ring = compression target, inner = 60s TPM (click for full breakdown)`
         }
         onClick={() => setOpen((o) => !o)}
         className={[

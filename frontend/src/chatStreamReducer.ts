@@ -22,6 +22,7 @@ export type AgentStatus =
   | { kind: "tool_progress"; tool: string; message: string }
   | { kind: "tool_result"; tool: string; success: boolean }
   | { kind: "compressing" }
+  | { kind: "rate_limit_wait"; message: string }
   | { kind: "error"; error: string };
 
 export const IDLE: AgentStatus = { kind: "idle" };
@@ -203,6 +204,7 @@ export function applyStreamEventToChatState(
     event.type === "text_stream" ||
     event.type === "tool_call" ||
     event.type === "tool_progress" ||
+    event.type === "rate_limit_wait" ||
     event.type === "tool_result" ||
     event.type === "config_confirmation_required" ||
     event.type === "config_confirmation_cancelled" ||
@@ -355,6 +357,12 @@ export function applyStreamEventToChatState(
     }
     case "compressing":
       state.streamStatus = { kind: "compressing" };
+      break;
+    case "rate_limit_wait":
+      state.streamStatus = {
+        kind: "rate_limit_wait",
+        message: event.message ?? "Waiting for input-token headroom…",
+      };
       break;
     case "tool_round_limit": {
       const lim = event.limit ?? 0;
