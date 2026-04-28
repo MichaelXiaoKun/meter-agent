@@ -88,6 +88,7 @@ export interface SSEEvent {
   | "thinking"
   | "token_usage"
   | "compressing"
+  | "rate_limit_wait"
   | "queued"
   | "intent_route"
   | "tool_round_limit"
@@ -175,9 +176,15 @@ export interface SSEEvent {
   plot_summaries?: PlotSummary[];
   plot_timezone?: string;
   download_artifacts?: DownloadArtifact[];
-  /** Present on ``batch_analyze_flow`` tool_result events — used for per-meter plot grouping. */
+  /** Present on batch/fleet tool_result events — used for plot grouping and timeline counts. */
   meters?: Array<{
-    serial_number: string;
+    serial_number?: string;
+    serial?: string;
+    label?: string | null;
+    health_score?: number | null;
+    health_verdict?: string | null;
+    top_concern?: string | null;
+    status?: string | null;
     plot_paths?: string[];
     plot_summaries?: PlotSummary[];
     plot_timezone?: string;
@@ -192,6 +199,12 @@ export interface SSEEvent {
   source?: string;
   tools?: string[];
   rate_limit_wait_seconds?: number;
+  current_tokens?: number;
+  estimated_next_tokens?: number;
+  tpm_limit?: number;
+  tpm_cap?: number;
+  overflow_tokens?: number;
+  waited_seconds?: number;
   attempt?: number;
   model?: string;
   /** When ``type`` is ``tool_round_limit`` — ORCHESTRATOR_MAX_TOOL_ROUNDS cap. */

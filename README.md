@@ -112,6 +112,13 @@ Copy [`.env.example`](.env.example) to `.env` and set values. Below is a concise
 | `BLUEBOT_MAX_HEALTHY_INTER_ARRIVAL_S` | Flow analysis: max plausible seconds between consecutive samples when online (default `60`); used to cap gap detection and coverage expectations. |
 | `BLUEBOT_GAP_SLACK` | Multiplier on the above for the gap threshold cap (default `1.5` → 90 s with defaults). |
 | `BLUEBOT_PLOT_TZ` | IANA zone for plot x-axes when the orchestrator can't resolve one from the meter or the browser. Falls back to `DISPLAY_TZ` then UTC. |
+| `BLUEBOT_DATA_AGENT_MODE` | Flow report renderer: `llm` (default) uses the existing inner analyst model; `template` uses the deterministic Markdown template in `data-processing-agent/agent_template.py`. |
+
+The model picker may show a 200k context window, but the chat loop also protects
+the configured input-token-per-minute guide. For local high-TPM testing, raise
+`ORCHESTRATOR_TPM_GUIDE_TOKENS` and `ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET`
+together; raising only the context/compression target can still pause or fail if
+the next model call cannot fit in the rolling 60-second TPM window.
 
 ### Anthropic key: server vs browser
 
@@ -249,6 +256,20 @@ Refusal rules (all JSON-serialisable, all overridable via env vars):
 | `BLUEBOT_BASELINE_CUSUM_Z` | `2.0` | CUSUM sensitivity (robust standard-deviation units). |
 
 When `analyze_flow_data` receives a `baseline_window`, the subprocess fetches that reference period, builds local-time daily rollups, and populates `verified_facts["baseline_quality"]` with a real verdict. Without a `baseline_window`, the key remains the `not_requested` stub and is stripped from the LLM prompt to save tokens. The data-processing system prompt enforces: **if `baseline_quality.reliable=false`, the narrative must relay `state` / `reasons_refused` / `recommendations` verbatim and not synthesize any today-vs-typical claim**.
+
+When that same reference window is available, [`processors/seasonality.py`](data-processing-agent/processors/seasonality.py) also builds a meter-local hour-of-day profile over the most recent 28 local days and stores `verified_facts["diurnal_seasonality"]`. It refuses with `state="insufficient_history"` until at least 7 local reference days are present; on success it reports a max hourly departure score from the current window versus the reference profile.
+
+For explicit period-over-period questions, `compare_periods` runs two normal flow analyses for the same serial and computes period-B-minus-period-A deltas for integrated volume, mean flow, peak count, gap rate, and low-quality ratio from the machine-readable analysis bundles.
+
+`check_meter_status` also includes a composite `health_score` in `status_data`: staleness and signal quality are scored from the current status payload, while optional flow-analysis facts can contribute gap-density and drift components when available. `compare_meters` surfaces the score and verdict per meter for side-by-side triage.
+
+For supplied serial-number lists, `rank_fleet_by_health` fans out status and profile reads for up to 50 meters, then returns a compact table sorted from lowest composite health score to highest. Each row includes online state, communication status, signal summary, label/timezone metadata, and a `top_concern` string derived from the weakest health component or status/profile error.
+
+For account-level triage, `triage_fleet_for_account` starts from a user email, reuses the account meter listing, caps the fan-out at 50 meters, and returns the same lowest-health-first table. This is the preferred path for "which meters need attention on this account?" because it avoids model-side serial loops.
+
+For threshold questions, `analyze_flow_data` accepts `event_predicates`, a list of `{name, predicate, min_duration_seconds}` specs. The deterministic detector supports a deliberately small predicate language (`flow` / `flow_rate` / `quality` with `>`, `>=`, `<`, `<=`, `==`, or `!=` against a numeric threshold) and stores results under `verified_facts["threshold_events"]`. Malformed predicates return `state="invalid_predicate"` with refusal reasons; valid predicates return contiguous event windows with duration, sample count, and peak flow.
+
+For sufficiently dense Wi-Fi flow windows, `verified_facts["frequency_domain"]` also reports the top dominant non-zero spectral periods from a Welch PSD after fixed-cadence resampling. It refuses with `state="insufficient_cadence"` unless the window is at least 1 hour and `BLUEBOT_METER_NETWORK_TYPE=wifi`, since sparse LoRaWAN cadence is not safe for FFT/PSD interpretation.
 
 #### Local-time filters (business-hours / weekend slicing)
 

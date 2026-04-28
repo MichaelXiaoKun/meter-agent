@@ -25,7 +25,9 @@ import store as store_mod
 @pytest.fixture
 def client_and_store(tmp_path, monkeypatch):
     monkeypatch.setenv("BLUEBOT_CONV_DB", str(tmp_path / "share_api.db"))
-    monkeypatch.delenv("DATABASE_URL", raising=False)
+    # api.py loads repo .env on import; keep DATABASE_URL present-but-empty so
+    # python-dotenv does not repopulate a developer Postgres DSN.
+    monkeypatch.setenv("DATABASE_URL", "")
     store_mod._bootstrapped.clear()
 
     import importlib

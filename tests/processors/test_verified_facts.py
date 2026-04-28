@@ -33,6 +33,8 @@ def test_build_verified_facts_core_keys(synthetic_df):
     for key in [
         "n_rows",
         "flow_rate_descriptive",
+        "flow_volume",
+        "peak_count",
         "sampling_median_interval_seconds",
         "sampling_p75_interval_seconds",
         "sampling_irregular",
@@ -48,11 +50,16 @@ def test_build_verified_facts_core_keys(synthetic_df):
         "coverage_6h",
         "baseline_quality",
         "filter_applied",
+        "diurnal_seasonality",
+        "threshold_events",
+        "frequency_domain",
         "anomaly_attribution",
     ]:
         assert key in facts, f"missing key: {key}"
 
     assert facts["n_rows"] == len(synthetic_df)
+    assert facts["flow_volume"]["total_volume_gallons"] >= 0.0
+    assert isinstance(facts["peak_count"], int)
     assert facts["sampling_median_interval_seconds"] == pytest.approx(2.0)
     assert facts["gap_event_count"] == 0
     assert facts["zero_flow_period_count"] >= 1
@@ -116,6 +123,20 @@ def test_slim_drops_not_requested_filter_applied(synthetic_df):
     assert "filter_applied" not in slim
 
 
+def test_slim_drops_not_requested_diurnal_seasonality(synthetic_df):
+    facts = build_verified_facts(synthetic_df)
+    slim = slim_verified_facts_for_prompt(facts)
+    assert "diurnal_seasonality" in facts
+    assert "diurnal_seasonality" not in slim
+
+
+def test_slim_drops_not_requested_threshold_events(synthetic_df):
+    facts = build_verified_facts(synthetic_df)
+    slim = slim_verified_facts_for_prompt(facts)
+    assert "threshold_events" in facts
+    assert "threshold_events" not in slim
+
+
 def test_slim_keeps_compact_anomaly_attribution(synthetic_df):
     facts = build_verified_facts(synthetic_df)
     facts["anomaly_attribution"]["evidence"] = [
@@ -173,6 +194,139 @@ def test_filter_refusal_short_circuits_downstream_metrics(synthetic_df):
     assert facts["baseline_quality"]["state"] == "not_requested"
     assert "flow_rate_descriptive" not in facts
     assert "anomaly_attribution" not in facts
+
+
+def test_threshold_events_are_built_from_predicates(synthetic_df):
+    facts = build_verified_facts(
+        synthetic_df,
+        event_predicates=[
+            {
+                "name": "sustained_flow",
+                "predicate": "flow > 7",
+                "min_duration_seconds": 60,
+            }
+        ],
+    )
+
+    te = facts["threshold_events"]
+    assert te["state"] == "ready"
+    assert te["valid_count"] == 1
+    event_set = te["event_sets"][0]
+    assert event_set["name"] == "sustained_flow"
+    assert event_set["event_count"] == 1
+    assert event_set["events"][0]["duration_seconds"] >= 60
+
+
+def test_threshold_events_invalid_predicate_is_refusal(synthetic_df):
+    facts = build_verified_facts(
+        synthetic_df,
+        event_predicates=[
+            {
+                "name": "bad",
+                "predicate": "flow between 1 and 2",
+                "min_duration_seconds": 0,
+            }
+        ],
+    )
+
+    te = facts["threshold_events"]
+    assert te["state"] == "invalid_predicate"
+    assert te["reliable"] is False
+    assert te["invalid_count"] == 1
+    assert "bad:" in te["reasons_refused"][0]
+
+
+def test_frequency_domain_refuses_without_wifi_or_long_window(synthetic_df):
+    facts = build_verified_facts(synthetic_df)
+    fd = facts["frequency_domain"]
+    assert fd["state"] == "insufficient_cadence"
+    assert fd["reliable"] is False
+    assert fd["dominant_frequencies"] == []
+
+
+def test_frequency_domain_ready_for_wifi_long_window(monkeypatch):
+    monkeypatch.setenv("BLUEBOT_METER_NETWORK_TYPE", "wifi")
+    ts = np.arange(0, 7200, 10, dtype=float)
+    period = 300.0
+    df = pd.DataFrame(
+        {
+            "timestamp": ts,
+            "flow_rate": 5.0 + np.sin(2 * np.pi * ts / period),
+            "quality": np.full(len(ts), 90.0),
+        }
+    )
+
+    facts = build_verified_facts(df)
+
+    fd = facts["frequency_domain"]
+    assert fd["state"] == "ready"
+    assert fd["reliable"] is True
+    assert fd["dominant_frequencies"][0]["period_seconds"] == pytest.approx(
+        period,
+        rel=0.12,
+    )
+
+
+def test_slim_drops_frequency_domain_refusal(synthetic_df):
+    facts = build_verified_facts(synthetic_df)
+    slim = slim_verified_facts_for_prompt(facts)
+    assert "frequency_domain" in facts
+    assert "frequency_domain" not in slim
+
+
+def test_slim_truncates_threshold_event_rows(synthetic_df):
+    facts = build_verified_facts(synthetic_df)
+    facts["threshold_events"] = {
+        "state": "ready",
+        "reliable": True,
+        "event_sets": [
+            {
+                "state": "ready",
+                "name": "many",
+                "events": [{"start_ts": i} for i in range(12)],
+            }
+        ],
+    }
+    slim = slim_verified_facts_for_prompt(facts)
+    event_set = slim["threshold_events"]["event_sets"][0]
+    assert len(event_set["events"]) == 10
+    assert event_set["events_omitted"] == 2
+
+
+def test_reference_df_adds_diurnal_seasonality_score():
+    ref_rows = []
+    for day in range(1, 8):
+        for hour in range(24):
+            ts = pd.Timestamp(
+                f"2026-04-{day:02d} {hour:02d}:00",
+                tz="UTC",
+            ).timestamp()
+            ref_rows.append((int(ts), float(hour), 90.0))
+    reference_df = pd.DataFrame(
+        {
+            "timestamp": [r[0] for r in ref_rows],
+            "flow_rate": [r[1] for r in ref_rows],
+            "quality": [r[2] for r in ref_rows],
+        }
+    )
+    today_df = pd.DataFrame(
+        {
+            "timestamp": [int(pd.Timestamp("2026-04-08 07:00", tz="UTC").timestamp())],
+            "flow_rate": [20.0],
+            "quality": [90.0],
+        }
+    )
+
+    facts = build_verified_facts(
+        today_df,
+        reference_df=reference_df,
+        seasonality_tz="UTC",
+    )
+
+    ds = facts["diurnal_seasonality"]
+    assert ds["state"] == "scored"
+    assert ds["profile"]["n_days_used"] == 7
+    assert ds["score"]["hourly_scores"]["7"]["observed_median_flow_rate"] == 20.0
 
 
 def test_slim_omits_low_quality_intervals_but_keeps_count(synthetic_df):

@@ -24,7 +24,8 @@ import traceback
 from typing import Optional
 
 from data_client import fetch_flow_data_range
-from agent import analyze
+from agent import analyze as analyze_llm
+from agent_template import analyze_template
 from report import format_report
 from processors.analysis_bundle import build_analysis_bundle
 from processors.daily_rollup import (
@@ -37,6 +38,17 @@ from processors.plots import pop_figures
 from processors.sampling_physics import max_healthy_inter_arrival_seconds
 from processors.verified_facts import build_verified_facts
 from processors.mask_by_local_time import apply_filter
+
+
+def _data_agent_mode() -> str:
+    raw = (os.environ.get("BLUEBOT_DATA_AGENT_MODE") or "llm").strip().lower()
+    return "template" if raw == "template" else "llm"
+
+
+def _analyze_with_mode(df, serial_number: str, verified_facts: dict) -> str:
+    if _data_agent_mode() == "template":
+        return analyze_template(df, serial_number, verified_facts=verified_facts)
+    return analyze_llm(df, serial_number, verified_facts=verified_facts)
 
 
 def _resolve_meter_tz() -> str:
@@ -123,6 +135,8 @@ def _maybe_baseline_inputs(
     )
 
     return {
+        "reference_df": baseline_df,
+        "seasonality_tz": tz,
         "reference_rollups": reference_rollups,
         "today_partial": today_partial,
         "target_weekday": target_weekday,
@@ -155,6 +169,7 @@ def run(
     *,
     baseline_window: Optional[dict] = None,
     filters: Optional[dict] = None,
+    event_predicates: Optional[list[dict]] = None,
 ) -> dict:
     """
     Fetch, process, and analyse flow rate data for a meter over a time range.
@@ -180,6 +195,9 @@ def run(
                         valid, downstream metrics, plots, and analysis run on
                         the filtered subset. Invalid or empty filters
                         short-circuit with ``filter_applied`` refusal details.
+        event_predicates:
+                        Optional list of threshold-event specs
+                        (``{"name", "predicate", "min_duration_seconds"}``).
 
     Returns:
         {
@@ -218,12 +236,21 @@ def run(
                 serial_number=serial_number,
                 filters=filters,
             )
-        verified_facts = build_verified_facts(df, filters=filters, **baseline_kwargs)
+        verified_facts = build_verified_facts(
+            df,
+            filters=filters,
+            event_predicates=event_predicates,
+            **baseline_kwargs,
+        )
         if filter_refused:
             analysis = _filter_refusal_analysis(verified_facts)
             plot_paths = []
         else:
-            analysis = analyze(analysis_df, serial_number, verified_facts=verified_facts)
+            analysis = _analyze_with_mode(
+                analysis_df,
+                serial_number,
+                verified_facts,
+            )
             plot_paths = [path for _, path in pop_figures()]
         report = format_report(
             analysis, serial_number, start, end, verified_facts=verified_facts

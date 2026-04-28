@@ -64,6 +64,7 @@ _ResultCacheKey = tuple[
     str,
     tuple[int, int] | None,
     str | None,
+    str | None,
 ]
 _RESULT_CACHE: OrderedDict[_ResultCacheKey, dict] = OrderedDict()
 _RESULT_CACHE_RESOLUTION = "high-res"
@@ -549,6 +550,36 @@ TOOL_DEFINITION = {
                     },
                 },
             },
+            "event_predicates": {
+                "type": "array",
+                "description": (
+                    "Optional threshold-event detectors to run on the analysis "
+                    "series. Use when the user asks for events such as 'flow "
+                    "above 10 gpm for at least 5 minutes', 'zero flow lasting "
+                    "60 seconds', or 'quality below 60'. Predicate language is "
+                    "small: ``flow``/``flow_rate``/``quality`` plus one of "
+                    ">, >=, <, <=, ==, != and a numeric threshold."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Short label for this event set.",
+                        },
+                        "predicate": {
+                            "type": "string",
+                            "description": "Predicate such as 'flow > 10' or 'quality < 60'.",
+                        },
+                        "min_duration_seconds": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Minimum contiguous duration required for an event.",
+                        },
+                    },
+                    "required": ["name", "predicate", "min_duration_seconds"],
+                },
+            },
         },
         "required": ["serial_number", "start", "end"],
     },
@@ -650,6 +681,38 @@ def _filters_cache_key(filters: dict | None) -> str | None:
         return None
     try:
         return json.dumps(filters, sort_keys=True)
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_event_predicates(
+    spec: object,
+    *,
+    primary_start: int,
+    primary_end: int,
+) -> list | None:
+    """Return a JSON-serialisable event-predicate list or ``None``.
+
+    Predicate grammar validation belongs to the data-processing subprocess so
+    invalid predicates can be represented in ``verified_facts``. The
+    orchestrator only drops missing, empty, non-list, or non-JSON values.
+    """
+    _ = (primary_start, primary_end)
+    if not isinstance(spec, list) or not spec:
+        return None
+    try:
+        canonical = json.dumps(spec, sort_keys=True, allow_nan=False)
+        parsed = json.loads(canonical)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, list) and parsed else None
+
+
+def _event_predicates_cache_key(event_predicates: list | None) -> str | None:
+    if event_predicates is None:
+        return None
+    try:
+        return json.dumps(event_predicates, sort_keys=True)
     except (TypeError, ValueError):
         return None
 
@@ -773,6 +836,7 @@ def analyze_flow_data(
     analysis_mode: str | None = None,
     baseline_window: object | None = None,
     filters: object | None = None,
+    event_predicates: object | None = None,
 ) -> dict:
     """
     Run the data-processing-agent for a meter (by serial number) over a time range.
@@ -860,6 +924,12 @@ def analyze_flow_data(
         primary_end=int(end),
     )
     filters_key = _filters_cache_key(resolved_filters)
+    resolved_event_predicates = resolve_event_predicates(
+        event_predicates,
+        primary_start=int(start),
+        primary_end=int(end),
+    )
+    event_predicates_key = _event_predicates_cache_key(resolved_event_predicates)
     cache_key = (
         str(serial_number),
         int(start),
@@ -871,6 +941,7 @@ def analyze_flow_data(
         mode,
         baseline_bounds,
         filters_key,
+        event_predicates_key,
     )
     cached = _result_cache_get(cache_key)
     if cached is not None:
@@ -888,6 +959,8 @@ def analyze_flow_data(
     env["BLUEBOT_PLOT_TZ"] = plot_tz
     if resolved_filters is not None and filters_key is not None:
         env["BLUEBOT_FILTERS_JSON"] = filters_key
+    if resolved_event_predicates is not None and event_predicates_key is not None:
+        env["BLUEBOT_EVENT_PREDICATES_JSON"] = event_predicates_key
     logger.info(
         "analyze_flow_data subprocess start serial=%r start=%s end=%s",
         serial_number,

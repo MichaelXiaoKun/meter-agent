@@ -26,7 +26,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from data_client import fetch_flow_data_range
-from agent import analyze
+from agent import analyze as analyze_llm
+from agent_template import analyze_template
 from report import format_report
 from processors.analysis_bundle import build_analysis_bundle
 from processors.anomaly_attribution import slim_anomaly_attribution_for_prompt
@@ -52,6 +53,17 @@ _REASONING_SCHEMA_MARKER = "__BLUEBOT_REASONING_SCHEMA__"
 _ANALYSIS_DETAILS_MARKER = "__BLUEBOT_ANALYSIS_DETAILS__"
 _ANALYSIS_METADATA_MARKER = "__BLUEBOT_ANALYSIS_METADATA__"
 _DOWNLOAD_ARTIFACTS_MARKER = "__BLUEBOT_DOWNLOAD_ARTIFACTS__"
+
+
+def _data_agent_mode() -> str:
+    raw = (os.environ.get("BLUEBOT_DATA_AGENT_MODE") or "llm").strip().lower()
+    return "template" if raw == "template" else "llm"
+
+
+def _analyze_with_mode(df, serial: str, verified_facts: dict) -> str:
+    if _data_agent_mode() == "template":
+        return analyze_template(df, serial, verified_facts=verified_facts)
+    return analyze_llm(df, serial, verified_facts=verified_facts)
 
 
 def _safe_filename_part(value: object) -> str:
@@ -142,6 +154,24 @@ def _filters_from_env() -> dict | None:
         )
         return None
     if not isinstance(parsed, dict) or not parsed:
+        return None
+    return parsed
+
+
+def _event_predicates_from_env() -> list[dict] | None:
+    """Parse orchestrator-supplied threshold event predicate specs, if present."""
+    raw = os.environ.get("BLUEBOT_EVENT_PREDICATES_JSON")
+    if raw is None or not raw.strip():
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(
+            f"WARNING: BLUEBOT_EVENT_PREDICATES_JSON is not valid JSON; skipping event predicates: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    if not isinstance(parsed, list) or not parsed:
         return None
     return parsed
 
@@ -260,6 +290,8 @@ def _build_baseline_inputs(
     )
 
     return {
+        "reference_df": baseline_df,
+        "seasonality_tz": tz,
         "reference_rollups": reference_rollups,
         "today_partial": today_partial,
         "target_weekday": target_weekday,
@@ -347,6 +379,7 @@ def main() -> None:
 
     print("Running analysis...", file=sys.stderr)
     filters = _filters_from_env()
+    event_predicates = _event_predicates_from_env()
     analysis_df = df
     filter_result = None
     if filters is not None:
@@ -366,7 +399,12 @@ def main() -> None:
             serial=args.serial,
             filters=filters,
         )
-    verified_facts = build_verified_facts(df, filters=filters, **baseline_kwargs)
+    verified_facts = build_verified_facts(
+        df,
+        filters=filters,
+        event_predicates=event_predicates,
+        **baseline_kwargs,
+    )
     mode_selection = resolve_analysis_mode(
         args.analysis_mode,
         start=args.start,
@@ -414,7 +452,7 @@ def main() -> None:
             analysis, args.serial, args.start, args.end, verified_facts=verified_facts
         )
     else:
-        analysis = analyze(analysis_df, args.serial, verified_facts=verified_facts)
+        analysis = _analyze_with_mode(analysis_df, args.serial, verified_facts)
         report = format_report(
             analysis, args.serial, args.start, args.end, verified_facts=verified_facts
         )

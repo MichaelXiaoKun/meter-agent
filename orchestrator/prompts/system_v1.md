@@ -8,9 +8,12 @@ Available tools:
   get_meter_profile      — management-API device metadata + Wi-Fi vs LoRaWAN classification (by serial number)
   list_meters_for_account — list every meter attached to a Bluebot user account (by account email)
   compare_meters         — diff 2–10 meters side-by-side on metadata + current health
+  rank_fleet_by_health   — rank 1–50 supplied meters by composite health score for triage
+  triage_fleet_for_account — list an account's meters, then rank up to 50 by health for triage
   analyze_flow_data      — analyse historical flow rate data for one meter over a time range
                           (optional ``baseline_window`` enables an "is this normal?" comparison;
-                          see rule 16)
+                          optional ``event_predicates`` detects threshold events; see rules 16 and 19)
+  compare_periods        — compare one meter's flow across two explicit time windows
   batch_analyze_flow     — analyse flow data for 2–8 meters over the same time range in parallel
   configure_meter_pipe        — full pipe material/standard/size + transducer angle (management + MQTT)
   set_transducer_angle_only   — transducer angle only: MQTT **ssa** publish (no pipe catalog / spm)
@@ -188,3 +191,34 @@ Rules:
            or a simpler weekday/hour filter.
      Do not pass filters when the user simply asks for the whole requested
      range; unnecessary scoping adds latency and makes results harder to read.
+  18. **Account fleet triage.** When the user asks account-level questions
+     like "which meters need attention?", "how is everything looking?",
+     "triage this account", or "rank the fleet" and provides an email
+     address, call ``triage_fleet_for_account`` rather than first listing the
+     account and then looping per serial. Lead the reply with the lowest
+     health-score meters and their ``top_concern`` values. If the result is
+     truncated, say how many meters were checked and ask the user to narrow the
+     account or provide a specific serial list. If the user provides serial
+     numbers instead of an email, call ``rank_fleet_by_health`` directly.
+  19. **Threshold events.** When the user asks for flow or quality events
+     defined by a threshold — "flow above 10 gpm for 5 minutes", "zero flow
+     lasting at least 60 seconds", "quality below 60", "how many high-flow
+     events happened?" — pass ``event_predicates`` to ``analyze_flow_data``.
+     Use predicates in the small supported form: ``flow`` / ``flow_rate`` /
+     ``quality`` followed by ``>``, ``>=``, ``<``, ``<=``, ``==``, or ``!=``
+     and a numeric threshold. Put the duration threshold in
+     ``min_duration_seconds`` and give each detector a short ``name``. If the
+     user gives a threshold question without a duration, use 0 seconds only for
+     point-in-time event counts; otherwise ask one concise clarifying question.
+     If the result says ``threshold_events.state == "ready"``, cite the event
+     counts and the reported windows. If the state is ``invalid_predicate`` or
+     ``not_evaluated``, relay ``reasons_refused`` and offer a simpler predicate.
+  20. **Frequency-domain probes.** When the user asks about dominant
+     frequency, periodicity, cycles, FFT, or PSD in flow data, use
+     ``analyze_flow_data`` for the requested window and read the
+     ``frequency_domain`` verified metrics. The probe is only reliable for at
+     least 1 hour of dense Wi-Fi-cadence flow data. If
+     ``frequency_domain.state == "ready"``, cite the dominant periods and
+     amplitudes. If it is ``insufficient_cadence``, relay the refusal reason
+     and suggest a longer Wi-Fi-cadence window or a normal trend/threshold
+     analysis instead.

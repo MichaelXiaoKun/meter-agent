@@ -63,3 +63,87 @@ try {
 }
 
 console.log("api pollStream tests passed");
+
+const originalEventSource = globalThis.EventSource;
+const fallbackUrls = [];
+const eventSources = [];
+const fallbackResponses = [
+  {
+    ok: true,
+    json: async () => ({ stream_id: "stream-fallback", turn_id: "turn-1" }),
+  },
+  {
+    ok: true,
+    json: async () => ({
+      events: [{ type: "tool_progress", tool: "triage_fleet_for_account", message: "still working", seq: 6 }],
+      done: false,
+      next_cursor: 6,
+    }),
+  },
+  {
+    ok: true,
+    json: async () => ({
+      events: [{ type: "done", seq: 7 }],
+      done: true,
+      next_cursor: 7,
+    }),
+  },
+];
+
+class FakeEventSource {
+  constructor(url) {
+    this.url = url;
+    this.closed = false;
+    this.onmessage = null;
+    this.onerror = null;
+    eventSources.push(this);
+  }
+
+  close() {
+    this.closed = true;
+  }
+}
+
+globalThis.EventSource = FakeEventSource;
+globalThis.fetch = async (url) => {
+  fallbackUrls.push(String(url));
+  const res = fallbackResponses.shift();
+  assert.ok(res, "unexpected extra fallback fetch");
+  return res;
+};
+
+try {
+  const events = [];
+  const streamed = api.streamChat(
+    "conv-1",
+    "hello",
+    "token",
+    (event) => events.push(event),
+    undefined,
+    "turn-1",
+  );
+
+  while (eventSources.length === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  eventSources[0].onmessage({
+    data: JSON.stringify({ type: "thinking", seq: 5, turn_id: "turn-1" }),
+  });
+  eventSources[0].onerror(new Error("dropped"));
+
+  await streamed;
+
+  assert.match(fallbackUrls[0], /\/api\/conversations\/conv-1\/chat$/);
+  assert.match(fallbackUrls[1], /\/api\/streams\/stream-fallback\/poll\?cursor=5&/);
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["thinking", "tool_progress", "done"],
+  );
+  assert.equal(eventSources[0].closed, true);
+} finally {
+  globalThis.fetch = originalFetch;
+  globalThis.EventSource = originalEventSource;
+}
+
+console.log("api EventSource fallback tests passed");

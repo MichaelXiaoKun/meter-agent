@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections.abc import Callable
 from collections import deque
 from typing import Any
 
@@ -76,6 +77,7 @@ def wait_for_sliding_tpm_headroom(
     *,
     max_wait_seconds: float | None = None,
     poll_seconds: float = 1.0,
+    on_wait: Callable[[dict[str, int | float]], None] | None = None,
 ) -> None:
     """
     Block until the rolling 60s input sum plus *estimated_next_input_tokens* fits under the TPM guide.
@@ -89,6 +91,26 @@ def wait_for_sliding_tpm_headroom(
     cap = int(tpm_limit * _sliding_budget_fraction())
     if cap <= 0:
         return
+    if estimated_next_input_tokens > cap:
+        s = sliding_input_tokens_sum()
+        overflow = max(0, s + estimated_next_input_tokens - cap)
+        if on_wait is not None:
+            on_wait(
+                {
+                    "current_tokens": s,
+                    "estimated_next_tokens": estimated_next_input_tokens,
+                    "tpm_limit": tpm_limit,
+                    "tpm_cap": cap,
+                    "overflow_tokens": overflow,
+                    "waited_seconds": 0.0,
+                }
+            )
+        raise RuntimeError(
+            f"Input-token rate limit: next call needs ~{estimated_next_input_tokens:,} "
+            f"input tokens, above the configured budget of ~{cap:,}/min even with an empty "
+            "60s window. Raise ORCHESTRATOR_TPM_GUIDE_TOKENS for your Anthropic tier, lower "
+            "ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET, or reduce the conversation context."
+        )
     max_wait = max_wait_seconds
     if max_wait is None:
         raw = os.environ.get("ORCHESTRATOR_TPM_SLIDING_MAX_WAIT_SECONDS", "240")
@@ -96,11 +118,23 @@ def wait_for_sliding_tpm_headroom(
             max_wait = float(raw)
         except ValueError:
             max_wait = 240.0
-    deadline = time.time() + max(5.0, max_wait)
+    start = time.time()
+    deadline = start + max(5.0, max_wait)
     while True:
         s = sliding_input_tokens_sum()
         if s + estimated_next_input_tokens <= cap:
             return
+        if on_wait is not None:
+            on_wait(
+                {
+                    "current_tokens": s,
+                    "estimated_next_tokens": estimated_next_input_tokens,
+                    "tpm_limit": tpm_limit,
+                    "tpm_cap": cap,
+                    "overflow_tokens": max(0, s + estimated_next_input_tokens - cap),
+                    "waited_seconds": max(0.0, time.time() - start),
+                }
+            )
         if time.time() >= deadline:
             raise RuntimeError(
                 f"Input-token rate limit: ~{s:,} input tokens in the last 60s (budget ~{cap:,} "
