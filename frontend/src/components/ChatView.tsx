@@ -184,6 +184,7 @@ export default function ChatView({
   share,
 }: ChatViewProps) {
   const [input, setInput] = useState("");
+  const [composerFocused, setComposerFocused] = useState(false);
   const [replacingConfigActionId, setReplacingConfigActionId] = useState<string | null>(null);
   /**
    * Voice-to-text dictation state. See :hook:`useSpeechRecognition`.
@@ -726,6 +727,16 @@ export default function ChatView({
     share &&
     conversationId != null &&
     messages.length > 0;
+  const welcomeLogoMood = speech.listening
+    ? "listening"
+    : composerFocused || input.trim().length > 0
+      ? "drafting"
+      : "idle";
+  const welcomeLogoExpression = disabled || speech.blockReason || speech.error
+    ? "annoyed"
+    : input.includes("<METER SERIAL>")
+      ? "confused"
+      : "neutral";
 
   // Pair plot paths with assistant messages: collect from tool_result rows,
   // attach to the next assistant message (same logic as the Streamlit app).
@@ -921,6 +932,8 @@ export default function ChatView({
             setInput(next);
           }}
           onKeyDown={handleComposerKeyDown}
+          onFocus={() => setComposerFocused(true)}
+          onBlur={() => setComposerFocused(false)}
           placeholder={speech.listening ? "Listening…" : placeholder}
           disabled={isProcessing}
           autoComplete="off"
@@ -1339,6 +1352,8 @@ export default function ChatView({
                 >
                   <WelcomeBluebotLogo
                     size={welcomeComposerAtBottom ? 88 : 104}
+                    mood={welcomeLogoMood}
+                    expression={welcomeLogoExpression}
                     className="mb-3 sm:mb-4"
                   />
                   <h2 className="welcome-heading px-1 text-center text-2xl font-semibold leading-snug tracking-tight text-brand-900 sm:px-2 sm:text-3xl">

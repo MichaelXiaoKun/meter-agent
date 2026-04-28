@@ -84,7 +84,13 @@ export default function SharedChatView({ token }: { token: string }) {
   if (status === "loading") {
     return (
       <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-3 bg-brand-50 text-brand-muted">
-        <WelcomeBluebotLogo size={64} className="opacity-80" />
+        <WelcomeBluebotLogo
+          size={64}
+          mood="loading"
+          interactive={false}
+          sleepAfterMs={null}
+          className="opacity-80"
+        />
         <p className="text-sm">Loading shared conversation…</p>
       </div>
     );
