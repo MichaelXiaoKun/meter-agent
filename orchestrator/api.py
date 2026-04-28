@@ -539,6 +539,7 @@ def get_analysis_artifact(filename: str, authorization: str = Header(...)):
 # ---------------------------------------------------------------------------
 
 _active_conversations: set[str] = set()
+_active_conversation_streams: dict[str, str] = {}
 _cancelled_conversations: set[str] = set()
 _cancel_events: dict[str, threading.Event] = {}  # Per-conversation cancel events
 _streams: dict[str, dict] = {}
@@ -567,6 +568,10 @@ def _gc_streams() -> None:
         ]
         for sid in stale:
             _streams.pop(sid, None)
+        stale_set = set(stale)
+        for conv_id, active_sid in list(_active_conversation_streams.items()):
+            if active_sid in stale_set:
+                _active_conversation_streams.pop(conv_id, None)
 
 
 def _rewrite_plot_paths(event: dict) -> dict:
@@ -624,7 +629,27 @@ def _rewrite_artifact_urls(event: dict) -> dict:
 @app.get("/api/conversations/{conv_id}/status")
 def conversation_status(conv_id: str):
     """Check whether the server is actively processing this conversation."""
-    return {"processing": conv_id in _active_conversations}
+    with _streams_lock:
+        stream_id = _active_conversation_streams.get(conv_id)
+        stream = _streams.get(stream_id) if stream_id else None
+        if stream_id and stream is None:
+            _active_conversation_streams.pop(conv_id, None)
+            stream_id = None
+        done = bool(stream.get("done")) if stream else False
+        processing = conv_id in _active_conversations or (
+            stream is not None and not done
+        )
+        body: dict[str, object] = {"processing": processing}
+        if stream_id and stream is not None:
+            body.update(
+                {
+                    "stream_id": stream_id,
+                    "turn_id": stream.get("turn_id"),
+                    "event_count": len(stream.get("events") or []),
+                    "done": done,
+                }
+            )
+        return body
 
 
 @app.post("/api/conversations/{conv_id}/cancel")
@@ -641,6 +666,7 @@ def cancel_processing(conv_id: str):
         # Immediately remove from active so checkProcessing returns false
         # (the worker thread will clean up the finally block)
         _active_conversations.discard(conv_id)
+        _active_conversation_streams.pop(conv_id, None)
         # Signal the worker thread to stop (if it has a cancel event)
         if conv_id in _cancel_events:
             _cancel_events[conv_id].set()
@@ -737,6 +763,10 @@ async def chat_init(
             "turn_id": turn_id,
             "conv_id": conv_id,
         }
+        # Mark active as soon as the turn is accepted, not only after the
+        # worker acquires a run slot, so a refresh during queueing can resume.
+        _active_conversations.add(conv_id)
+        _active_conversation_streams[conv_id] = stream_id
 
     def _emit_event(event: dict) -> None:
         with session_cond:
@@ -840,6 +870,7 @@ async def chat_init(
             session_cond.notify_all()
 
     def _run():
+        slot_acquired = False
         try:
             # Check if this conversation was already marked for cancellation
             with _streams_lock:
@@ -858,7 +889,7 @@ async def chat_init(
                     }
                 )
             )
-            _active_conversations.add(conv_id)
+            slot_acquired = True
             try:
                 from message_sanitize import append_turn_activity_block
 
@@ -916,14 +947,16 @@ async def chat_init(
             except Exception as exc:
                 logger.exception("run_turn failed for conv %s", conv_id)
                 _emit_event({"type": "error", "error": _sse_error_message(exc)})
-            finally:
-                _active_conversations.discard(conv_id)
         finally:
             # Clean up cancellation flag and event
             with _streams_lock:
                 _cancelled_conversations.discard(conv_id)
                 _cancel_events.pop(conv_id, None)
-            release_run_turn_slot()
+                _active_conversations.discard(conv_id)
+                if _active_conversation_streams.get(conv_id) == stream_id:
+                    _active_conversation_streams.pop(conv_id, None)
+            if slot_acquired:
+                release_run_turn_slot()
             _mark_done()
 
     thread = threading.Thread(target=_run, daemon=True)
