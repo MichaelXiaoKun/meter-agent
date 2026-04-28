@@ -164,14 +164,35 @@ export async function loadMessages(
   return res.json();
 }
 
+export interface ProcessingStatus {
+  processing: boolean;
+  stream_id?: string;
+  turn_id?: string;
+  event_count?: number;
+  done?: boolean;
+}
+
+export async function getProcessingStatus(
+  convId: string,
+  signal?: AbortSignal
+): Promise<ProcessingStatus> {
+  const res = await fetch(`${BASE}/conversations/${convId}/status`, { signal });
+  if (!res.ok) return { processing: false };
+  const data = await res.json();
+  return {
+    processing: !!data.processing,
+    stream_id: typeof data.stream_id === "string" ? data.stream_id : undefined,
+    turn_id: typeof data.turn_id === "string" ? data.turn_id : undefined,
+    event_count: typeof data.event_count === "number" ? data.event_count : undefined,
+    done: typeof data.done === "boolean" ? data.done : undefined,
+  };
+}
+
 export async function checkProcessing(
   convId: string,
   signal?: AbortSignal
 ): Promise<boolean> {
-  const res = await fetch(`${BASE}/conversations/${convId}/status`, { signal });
-  if (!res.ok) return false;
-  const data = await res.json();
-  return !!data.processing;
+  return (await getProcessingStatus(convId, signal)).processing;
 }
 
 export async function cancelProcessing(
@@ -226,7 +247,7 @@ async function initChatTurn(
   confirmedActionId?: string | null,
   cancelledActionId?: string | null,
   supersededActionId?: string | null,
-): Promise<string> {
+): Promise<{ streamId: string; turnId?: string }> {
   const clientTimezone =
     typeof Intl !== "undefined"
       ? Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -248,10 +269,71 @@ async function initChatTurn(
     signal,
   });
   if (!initRes.ok) throw new Error(await initRes.text());
-  const initBody = (await initRes.json()) as { stream_id?: string };
+  const initBody = (await initRes.json()) as {
+    stream_id?: string;
+    turn_id?: string;
+  };
   const streamId = initBody.stream_id;
   if (!streamId) throw new Error("Missing stream_id in chat init response");
-  return streamId;
+  return {
+    streamId,
+    turnId: typeof initBody.turn_id === "string" ? initBody.turn_id : undefined,
+  };
+}
+
+export async function pollStream(
+  streamId: string,
+  onEvent: (event: SSEEvent) => void,
+  signal?: AbortSignal,
+  startCursor = 0,
+): Promise<void> {
+  let cursor = Math.max(0, startCursor);
+  const POLL_WAIT_MS = 1500;
+
+  while (true) {
+    if (signal?.aborted) {
+      throw new DOMException("aborted", "AbortError");
+    }
+
+    // Cache-buster in the URL on top of ``cache: "no-store"`` — iOS
+    // Safari has a long history of caching same-path GETs even with
+    // varying query strings, and the only truly reliable way to
+    // guarantee each poll hits the network is a unique URL. Cost is
+    // negligible (~20 extra bytes per request).
+    const url =
+      `${BASE}/streams/${streamId}/poll` +
+      `?cursor=${cursor}` +
+      `&wait_ms=${POLL_WAIT_MS}` +
+      `&_=${Date.now()}`;
+    const res = await fetch(url, {
+      signal,
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+    });
+    if (!res.ok) {
+      throw new Error(
+        `Poll failed (${res.status}): ${await res.text().catch(() => res.statusText)}`,
+      );
+    }
+    const body = (await res.json()) as {
+      events?: SSEEvent[];
+      done?: boolean;
+      next_cursor?: number;
+    };
+    const events = body.events ?? [];
+    for (const ev of events) {
+      onEvent(ev);
+    }
+    cursor = body.next_cursor ?? cursor + events.length;
+    if (body.done) return;
+
+    // If the server returned no events (short-circuited with timeout),
+    // add a tiny client-side delay so a pathologically fast server
+    // can't spin us. Normally the server's long-poll absorbs the wait.
+    if (events.length === 0) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
 }
 
 /**
@@ -281,7 +363,7 @@ export async function streamChat(
   cancelledActionId?: string | null,
   supersededActionId?: string | null,
 ): Promise<void> {
-  const streamId = await initChatTurn(
+  const { streamId } = await initChatTurn(
     convId,
     message,
     token,
@@ -365,7 +447,7 @@ export async function streamChatViaPolling(
   cancelledActionId?: string | null,
   supersededActionId?: string | null,
 ): Promise<void> {
-  const streamId = await initChatTurn(
+  const { streamId } = await initChatTurn(
     convId,
     message,
     token,
@@ -378,53 +460,7 @@ export async function streamChatViaPolling(
     supersededActionId,
   );
 
-  let cursor = 0;
-  const POLL_WAIT_MS = 1500;
-
-  while (true) {
-    if (signal?.aborted) {
-      throw new DOMException("aborted", "AbortError");
-    }
-
-    // Cache-buster in the URL on top of ``cache: "no-store"`` — iOS
-    // Safari has a long history of caching same-path GETs even with
-    // varying query strings, and the only truly reliable way to
-    // guarantee each poll hits the network is a unique URL. Cost is
-    // negligible (~20 extra bytes per request).
-    const url =
-      `${BASE}/streams/${streamId}/poll` +
-      `?cursor=${cursor}` +
-      `&wait_ms=${POLL_WAIT_MS}` +
-      `&_=${Date.now()}`;
-    const res = await fetch(url, {
-      signal,
-      cache: "no-store",
-      headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
-    });
-    if (!res.ok) {
-      throw new Error(
-        `Poll failed (${res.status}): ${await res.text().catch(() => res.statusText)}`,
-      );
-    }
-    const body = (await res.json()) as {
-      events?: SSEEvent[];
-      done?: boolean;
-      next_cursor?: number;
-    };
-    const events = body.events ?? [];
-    for (const ev of events) {
-      onEvent(ev);
-    }
-    cursor = body.next_cursor ?? cursor + events.length;
-    if (body.done) return;
-
-    // If the server returned no events (short-circuited with timeout),
-    // add a tiny client-side delay so a pathologically fast server
-    // can't spin us. Normally the server's long-poll absorbs the wait.
-    if (events.length === 0) {
-      await new Promise((r) => setTimeout(r, 50));
-    }
-  }
+  await pollStream(streamId, onEvent, signal);
 }
 
 // ---------------------------------------------------------------------------

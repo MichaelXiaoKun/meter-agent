@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { MutableRefObject } from "react";
-import type { DownloadArtifact, Message, PlotAttachment, PlotSummary, SSEEvent } from "../types";
+import type { Message, SSEEvent } from "../types";
 import * as api from "../api";
-import { artifactsFromEvent } from "../artifactAttachments";
 import {
-  applyThinkingElapsed,
-  isInflightThinkingStep,
-  reduceTurnActivity,
-  type TurnActivityStep,
-} from "../turnActivity";
+  applyStreamEventToChatState,
+  clearChatStreamStateAfterTurn,
+  createChatStreamState,
+  IDLE,
+  resetChatStreamStateForTurn,
+  type AgentStatus,
+  type ChatStreamState,
+} from "../chatStreamReducer";
+
+export type { AgentStatus } from "../chatStreamReducer";
 
 function isAbortOrUnload(err: unknown): boolean {
   if (err instanceof DOMException && err.name === "AbortError") return true;
@@ -16,42 +19,10 @@ function isAbortOrUnload(err: unknown): boolean {
   return false;
 }
 
-/**
- * Per-conversation streaming state — persists across conversation switches
- * so we can restore activity timeline / progress when user returns.
- */
-interface ConvStreamingState {
-  streamStatus: AgentStatus;
-  streamLead: string;
-  streamTail: string;
-  streamPlots: PlotAttachment[];
-  streamArtifacts: DownloadArtifact[];
-  turnActivity: TurnActivityStep[];
-  workspaceEvents: SSEEvent[];
-  assistantError: string | null;
-  // Accumulation refs for text chunks
-  streamLeadAccRef: { current: string };
-  streamTailAccRef: { current: string };
-  sawToolCallRef: { current: boolean };
-  plotsRef: { current: PlotAttachment[] };
-  artifactsRef: { current: DownloadArtifact[] };
-  streamOpenedForTurnRef: { current: boolean };
-  thinkingSegmentStartMsRef: { current: number | null };
-}
-
-export type AgentStatus =
-  | { kind: "idle" }
-  | { kind: "connecting" }
-  | { kind: "thinking" }
-  | { kind: "queued"; message: string }
-  | { kind: "streaming" }
-  | { kind: "tool_call"; tool: string }
-  | { kind: "tool_progress"; tool: string; message: string }
-  | { kind: "tool_result"; tool: string; success: boolean }
-  | { kind: "compressing" }
-  | { kind: "error"; error: string };
-
-const IDLE: AgentStatus = { kind: "idle" };
+type ConvStreamingState = ChatStreamState;
+const initConvStreamingState = createChatStreamState;
+const resetStreamingStateForTurn = resetChatStreamStateForTurn;
+const clearStreamingStateAfterTurn = clearChatStreamStateAfterTurn;
 
 const CTX_USAGE_KEY = (conversationId: string) =>
   `bb_ctx_usage_${conversationId}`;
@@ -91,6 +62,11 @@ function serializeStreamingState(state: ConvStreamingState): string {
     turnActivity: state.turnActivity,
     workspaceEvents: state.workspaceEvents,
     assistantError: state.assistantError,
+    streamId: state.streamId,
+    turnId: state.turnId,
+    cursor: state.cursor,
+    sawToolCall: state.sawToolCallRef.current,
+    streamOpened: state.streamOpenedForTurnRef.current,
   });
 }
 
@@ -109,12 +85,15 @@ function deserializeStreamingState(json: string): ConvStreamingState {
       turnActivity: data.turnActivity ?? [],
       workspaceEvents: data.workspaceEvents ?? [],
       assistantError: data.assistantError ?? null,
+      streamId: typeof data.streamId === "string" ? data.streamId : null,
+      turnId: typeof data.turnId === "string" ? data.turnId : null,
+      cursor: typeof data.cursor === "number" ? Math.max(0, data.cursor) : 0,
       streamLeadAccRef: { current: data.streamLead ?? "" },
       streamTailAccRef: { current: data.streamTail ?? "" },
-      sawToolCallRef: { current: false },
+      sawToolCallRef: { current: data.sawToolCall === true },
       plotsRef: { current: data.streamPlots ?? [] },
       artifactsRef: { current: data.streamArtifacts ?? [] },
-      streamOpenedForTurnRef: { current: false },
+      streamOpenedForTurnRef: { current: data.streamOpened === true },
       thinkingSegmentStartMsRef: { current: null },
     };
   } catch {
@@ -135,53 +114,6 @@ function readStoredStreamingState(
   } catch {
     return null;
   }
-}
-
-/**
- * Drop SSE events from another turn (client sets expected id before fetch) or duplicate seq.
- * Events without turn_id still apply (older servers).
- */
-function shouldApplySseEvent(
-  event: SSEEvent,
-  expectedTurnId: MutableRefObject<string | null>,
-  lastSeq: MutableRefObject<number>
-): boolean {
-  const tid = event.turn_id;
-  if (
-    expectedTurnId.current &&
-    tid != null &&
-    tid !== "" &&
-    tid !== expectedTurnId.current
-  ) {
-    return false;
-  }
-  if (typeof event.seq === "number" && !Number.isNaN(event.seq)) {
-    if (event.seq <= lastSeq.current) {
-      return false;
-    }
-    lastSeq.current = event.seq;
-  }
-  return true;
-}
-
-function initConvStreamingState(): ConvStreamingState {
-  return {
-    streamStatus: IDLE,
-    streamLead: "",
-    streamTail: "",
-    streamPlots: [],
-    streamArtifacts: [],
-    turnActivity: [],
-    workspaceEvents: [],
-    assistantError: null,
-    streamLeadAccRef: { current: "" },
-    streamTailAccRef: { current: "" },
-    sawToolCallRef: { current: false },
-    plotsRef: { current: [] },
-    artifactsRef: { current: [] },
-    streamOpenedForTurnRef: { current: false },
-    thinkingSegmentStartMsRef: { current: null },
-  };
 }
 
 export function useChat(
@@ -242,12 +174,16 @@ export function useChat(
 
   // Helper to update streaming state AND persist to sessionStorage
   const updateAndPersistStreamingState = useCallback(
-    (convId: string | null) => {
+    (convId: string | null, options?: { persist?: boolean }) => {
       if (!convId) return;
       const state = getConvStreamingState(convId);
       if (!state) return;
       try {
-        sessionStorage.setItem(STREAMING_STATE_KEY(convId), serializeStreamingState(state));
+        if (options?.persist === false) {
+          sessionStorage.removeItem(STREAMING_STATE_KEY(convId));
+        } else {
+          sessionStorage.setItem(STREAMING_STATE_KEY(convId), serializeStreamingState(state));
+        }
       } catch {
         // ignore quota / private mode
       }
@@ -261,6 +197,30 @@ export function useChat(
 
   // Get current streaming state for the active conversation
   const currentStreamingState = getConvStreamingState(activeConvId);
+
+  const applyStreamEvent = useCallback(
+    (
+      convId: string,
+      event: SSEEvent,
+    ): { applied: boolean; errorMessage?: string } => {
+      const state = getConvStreamingState(convId);
+      if (!state) return { applied: false };
+      const result = applyStreamEventToChatState(
+        state,
+        event,
+        {
+          expectedTurnId: sseExpectedTurnIdRef,
+          lastSeq: sseLastSeqRef,
+        },
+        { setTokenUsage: setStreamTokenUsage },
+      );
+      if (result.applied) {
+        updateAndPersistStreamingState(convId);
+      }
+      return result;
+    },
+    [getConvStreamingState, updateAndPersistStreamingState]
+  );
 
   useEffect(() => {
     activeConvRef.current = activeConvId;
@@ -334,21 +294,108 @@ export function useChat(
     api.loadMessages(convId, ac.signal).then(async (msgs) => {
       // Ignore stale responses if user switched conversations before this completed.
       if (activeConvRef.current !== convId) return;
+      processingMsgs.current = msgs;
       setViewedMessages(msgs);
       setHistoryLoading(false);
       // If the last message is from the user, ask the server if it's still processing
       const last = msgs[msgs.length - 1];
       if (last?.role === "user" && typeof last.content === "string") {
         try {
-          const active = await api.checkProcessing(convId, ac.signal);
+          const processing = await api.getProcessingStatus(convId, ac.signal);
           if (activeConvRef.current !== convId) return;
-          setServerProcessing(active);
-          // If we have recovered streaming state from sessionStorage and server is still processing,
-          // restore the processingConvId so the activity timeline shows
-          if (active) {
-            const recoveredState = getConvStreamingState(convId);
-            if (recoveredState && (recoveredState.turnActivity.length > 0 || recoveredState.streamStatus.kind !== "idle")) {
-              setProcessingConvId(convId);
+          if (!processing.processing) {
+            setServerProcessing(false);
+            return;
+          }
+
+          const recoveredState = getConvStreamingState(convId);
+          if (!recoveredState) return;
+          const streamId = processing.stream_id ?? recoveredState.streamId;
+          const turnId = processing.turn_id ?? recoveredState.turnId;
+          const sameStoredRun =
+            !processing.stream_id ||
+            recoveredState.streamId === processing.stream_id ||
+            (turnId != null && recoveredState.turnId === turnId);
+          const resumeCursor = sameStoredRun
+            ? Math.max(0, recoveredState.cursor)
+            : 0;
+
+          if (
+            !sameStoredRun ||
+            (recoveredState.turnActivity.length === 0 &&
+              recoveredState.streamStatus.kind === "idle")
+          ) {
+            resetStreamingStateForTurn(recoveredState, {
+              status: streamId ? { kind: "connecting" } : { kind: "thinking" },
+              streamId: streamId ?? null,
+              turnId: turnId ?? null,
+              cursor: resumeCursor,
+              title: streamId
+                ? "Reconnecting to current turn"
+                : "Catching up with current turn",
+            });
+          } else {
+            recoveredState.streamId = streamId ?? null;
+            recoveredState.turnId = turnId ?? null;
+            recoveredState.cursor = resumeCursor;
+          }
+
+          sseExpectedTurnIdRef.current = turnId ?? null;
+          sseLastSeqRef.current = resumeCursor;
+          setProcessingConvId(convId);
+          setServerProcessing(!streamId);
+          updateAndPersistStreamingState(convId);
+
+          if (streamId) {
+            setServerProcessing(false);
+            abortRef.current = ac;
+            let streamErrorMessage: string | null = null;
+            try {
+              await api.pollStream(
+                streamId,
+                (event) => {
+                  const result = applyStreamEvent(convId, event);
+                  if (result.errorMessage) {
+                    streamErrorMessage = result.errorMessage;
+                  }
+                },
+                ac.signal,
+                resumeCursor,
+              );
+              const final = await api.loadMessages(convId, ac.signal);
+              processingMsgs.current = final;
+              if (activeConvRef.current === convId) {
+                setViewedMessages(final);
+              }
+              const state = getConvStreamingState(convId);
+              if (state) {
+                clearStreamingStateAfterTurn(
+                  state,
+                  streamErrorMessage
+                    ? { kind: "error", error: streamErrorMessage }
+                    : IDLE,
+                );
+              }
+              updateAndPersistStreamingState(convId, { persist: false });
+              setProcessingConvId((prev) => (prev === convId ? null : prev));
+            } catch (err) {
+              if (!isAbortOrUnload(err)) {
+                const msg = err instanceof Error ? err.message : String(err);
+                const state = getConvStreamingState(convId);
+                if (state) {
+                  state.assistantError = msg;
+                  clearStreamingStateAfterTurn(state, {
+                    kind: "error",
+                    error: msg,
+                  });
+                  updateAndPersistStreamingState(convId);
+                }
+                setProcessingConvId((prev) => (prev === convId ? null : prev));
+              }
+            } finally {
+              if (abortRef.current === ac) {
+                abortRef.current = null;
+              }
             }
           }
         } catch {
@@ -364,31 +411,43 @@ export function useChat(
     });
 
     return () => ac.abort();
-  }, [activeConvId, getConvStreamingState]);
+  }, [activeConvId, applyStreamEvent, getConvStreamingState, updateAndPersistStreamingState]);
 
   // While streaming on the active conversation, mirror optimistic history from the ref
   useEffect(() => {
     if (!activeConvId || activeConvId !== processingConvId) return;
+    if (processingMsgs.current.length === 0) return;
     setViewedMessages(processingMsgs.current);
-    setServerProcessing(false);
-  }, [activeConvId, processingConvId]);
+    const state = getConvStreamingState(activeConvId);
+    if (state?.streamId) {
+      setServerProcessing(false);
+    }
+  }, [activeConvId, getConvStreamingState, processingConvId]);
 
   // Poll for completion while the server confirms it's actively processing
   useEffect(() => {
-    if (!serverProcessing || !activeConvId || processingConvId) return;
+    if (!serverProcessing || !activeConvId) return;
+    const activeState = getConvStreamingState(activeConvId);
+    if (activeState?.streamId) return;
 
     const convId = activeConvId;
     const ac = new AbortController();
 
     const interval = setInterval(async () => {
       try {
-        const still = await api.checkProcessing(convId, ac.signal);
-        if (!still) {
+        const processing = await api.getProcessingStatus(convId, ac.signal);
+        if (!processing.processing) {
           clearInterval(interval);
           const msgs = await api.loadMessages(convId, ac.signal);
           if (activeConvRef.current === convId) {
             setViewedMessages(msgs);
           }
+          const state = getConvStreamingState(convId);
+          if (state) {
+            clearStreamingStateAfterTurn(state);
+          }
+          updateAndPersistStreamingState(convId, { persist: false });
+          setProcessingConvId((prev) => (prev === convId ? null : prev));
           setServerProcessing(false);
         }
       } catch {
@@ -400,7 +459,7 @@ export function useChat(
       ac.abort();
       clearInterval(interval);
     };
-  }, [serverProcessing, activeConvId, processingConvId]);
+  }, [serverProcessing, activeConvId, getConvStreamingState, updateAndPersistStreamingState]);
 
   const sendMessage = useCallback(
     async (
@@ -431,31 +490,6 @@ export function useChat(
       const state = getConvStreamingState(convId);
       if (!state) return;
 
-      // Reset streaming state for new turn
-      state.streamStatus = { kind: "connecting" };
-      state.streamLead = "";
-      state.streamTail = "";
-      state.streamPlots = [];
-      state.streamArtifacts = [];
-      state.workspaceEvents = [];
-      state.assistantError = null;
-      state.turnActivity = [
-        {
-          seq: 0,
-          kind: "connecting",
-          title: "Sending your message",
-          detail: undefined,
-        },
-      ];
-      state.streamLeadAccRef.current = "";
-      state.streamTailAccRef.current = "";
-      state.sawToolCallRef.current = false;
-      state.streamOpenedForTurnRef.current = false;
-      state.thinkingSegmentStartMsRef.current = null;
-      state.plotsRef.current = [];
-      state.artifactsRef.current = [];
-      sseLastSeqRef.current = 0;
-      updateAndPersistStreamingState(convId);
       // Per-turn nonce for event dedup — server echoes it back on every
       // SSE/poll event so the client can filter stale ones. Must be
       // stable across this single ``sendMessage`` call and unique among
@@ -477,7 +511,10 @@ export function useChat(
           return v.toString(16);
         });
       })();
+      resetStreamingStateForTurn(state, { turnId: turnUuid });
       sseExpectedTurnIdRef.current = turnUuid;
+      sseLastSeqRef.current = 0;
+      updateAndPersistStreamingState(convId);
 
       const controller = new AbortController();
       abortRef.current = controller;
@@ -504,235 +541,11 @@ export function useChat(
           text,
           token,
           (event: SSEEvent) => {
-            if (!shouldApplySseEvent(event, sseExpectedTurnIdRef, sseLastSeqRef)) {
-              return;
+            const result = applyStreamEvent(convId, event);
+            if (result.errorMessage) {
+              streamReportedError = true;
+              streamErrorMessage = result.errorMessage;
             }
-            const state = getConvStreamingState(convId);
-            if (!state) return;
-
-            if (event.type === "thinking") {
-              // Always reset: a new `thinking` SSE (e.g. after rate-limit) starts a fresh window.
-              state.thinkingSegmentStartMsRef.current = Date.now();
-            }
-            if (
-              event.type === "tool_result" ||
-              event.type === "config_confirmation_required" ||
-              event.type === "config_confirmation_cancelled" ||
-              event.type === "config_confirmation_superseded"
-            ) {
-              state.workspaceEvents = [...state.workspaceEvents, event];
-            }
-
-            // Update turn activity
-            let next = reduceTurnActivity(state.turnActivity, event, state.streamOpenedForTurnRef);
-            // Do not end the segment on `compressing` — it can fire after `thinking` during
-            // retries and would clear the timer before the first token/tool. ChatGPT-style
-            // "Thought for" closes on first user-visible work only.
-            const canCloseThinking =
-              event.type === "text_delta" ||
-              event.type === "text_stream" ||
-              event.type === "tool_call" ||
-              event.type === "tool_progress" ||
-              event.type === "tool_result" ||
-              event.type === "config_confirmation_required" ||
-              event.type === "config_confirmation_cancelled" ||
-              event.type === "config_confirmation_superseded" ||
-              event.type === "error" ||
-              event.type === "tool_round_limit" ||
-              event.type === "done";
-            if (canCloseThinking) {
-              const t0 = state.thinkingSegmentStartMsRef.current;
-              const hasOpen = next.some(
-                (step) => step != null && isInflightThinkingStep(step)
-              );
-              if (hasOpen) {
-                const elapsedSec =
-                  t0 != null
-                    ? (Date.now() - t0) / 1000
-                    : 0.1;
-                next = applyThinkingElapsed(
-                  next,
-                  t0 != null ? Math.max(0.05, elapsedSec) : 0.1
-                );
-                if (t0 != null) {
-                  state.thinkingSegmentStartMsRef.current = null;
-                }
-              }
-            }
-            state.turnActivity = next;
-
-            switch (event.type) {
-              case "queued":
-                state.streamStatus = {
-                  kind: "queued",
-                  message: event.message ?? "Waiting for a free slot…",
-                };
-                break;
-              case "intent_route":
-                state.streamStatus = { kind: "thinking" };
-                break;
-              case "thinking":
-                // Server emits ``thinking`` before *every* Claude stream iteration. After the
-                // first ``tool_call`` of this user turn, the next iteration streams the main
-                // reply into ``tail`` — do not clear tail or reset ``sawToolCallRef`` here or
-                // late tokens jump above the activity strip.
-                if (!state.sawToolCallRef.current) {
-                  state.streamLeadAccRef.current = "";
-                  state.streamTailAccRef.current = "";
-                  state.streamLead = "";
-                  state.streamTail = "";
-                }
-                state.streamStatus = { kind: "thinking" };
-                break;
-              case "text_delta":
-              case "text_stream": {
-                const chunk = event.text ?? "";
-                state.streamStatus = { kind: "streaming" };
-                if (!state.sawToolCallRef.current) {
-                  state.streamLeadAccRef.current += chunk;
-                  state.streamLead = state.streamLeadAccRef.current;
-                } else {
-                  state.streamTailAccRef.current += chunk;
-                  state.streamTail = state.streamTailAccRef.current;
-                }
-                break;
-              }
-              case "tool_call":
-                state.sawToolCallRef.current = true;
-                state.streamStatus = { kind: "tool_call", tool: event.tool ?? "" };
-                break;
-              case "tool_progress":
-                state.streamStatus = {
-                  kind: "tool_progress",
-                  tool: event.tool ?? "",
-                  message: event.message ?? "Working…",
-                };
-                break;
-              case "tool_result": {
-                state.streamStatus = {
-                  kind: "tool_result",
-                  tool: event.tool ?? "",
-                  success: event.success ?? false,
-                };
-                const merged: PlotAttachment[] = [];
-                // batch_analyze_flow: per-meter grouping via groupLabel.
-                if (event.meters?.length) {
-                  for (const meter of event.meters) {
-                    const mPaths = meter.plot_paths ?? [];
-                    if (!mPaths.length) continue;
-                    const mSums = meter.plot_summaries;
-                    const mTz = meter.plot_timezone;
-                    for (let i = 0; i < mPaths.length; i++) {
-                      const raw = mPaths[i];
-                      const filename = raw.split("/").pop() ?? raw;
-                      const src = raw.startsWith("/api/") ? raw : `/api/plots/${filename}`;
-                      const s = mSums?.find((x) => x.filename === filename) ?? mSums?.[i];
-                      merged.push({
-                        src,
-                        title: s?.title,
-                        plotTimezone: s?.plot_timezone ?? mTz,
-                        plotType: s?.plot_type,
-                        caption: s?.caption,
-                        groupLabel: meter.serial_number,
-                      });
-                    }
-                  }
-                } else {
-                  // analyze_flow_data: flat paths.
-                  const paths = event.plot_paths;
-                  if (paths?.length) {
-                    const summaries = event.plot_summaries as PlotSummary[] | undefined;
-                    const fallbackTz = event.plot_timezone;
-                    for (let i = 0; i < paths.length; i++) {
-                      const raw = paths[i];
-                      const filename = raw.split("/").pop() ?? raw;
-                      const src = raw.startsWith("/api/") ? raw : `/api/plots/${filename}`;
-                      const s = summaries?.find((x) => x.filename === filename) ?? summaries?.[i];
-                      merged.push({
-                        src,
-                        title: s?.title,
-                        plotTimezone: s?.plot_timezone ?? fallbackTz,
-                        plotType: s?.plot_type,
-                        caption: s?.caption,
-                      });
-                    }
-                  }
-                }
-                if (merged.length) {
-                  state.plotsRef.current = [...state.plotsRef.current, ...merged];
-                  state.streamPlots = [...state.plotsRef.current];
-                }
-                const artifacts = artifactsFromEvent(event);
-                if (artifacts.length) {
-                  state.artifactsRef.current = [
-                    ...state.artifactsRef.current,
-                    ...artifacts,
-                  ];
-                  state.streamArtifacts = [...state.artifactsRef.current];
-                }
-                break;
-              }
-              case "config_confirmation_required":
-                state.streamStatus = {
-                  kind: "tool_result",
-                  tool: event.tool ?? "configuration",
-                  success: true,
-                };
-                break;
-              case "config_confirmation_cancelled":
-                state.streamStatus = {
-                  kind: "tool_result",
-                  tool: event.tool ?? "configuration",
-                  success: true,
-                };
-                break;
-              case "config_confirmation_superseded":
-                state.streamStatus = {
-                  kind: "tool_result",
-                  tool: event.tool ?? "configuration",
-                  success: true,
-                };
-                break;
-              case "token_usage": {
-                const inputTokens = event.tokens ?? 0;
-                setStreamTokenUsage({
-                  tokens: inputTokens,
-                  pct: event.pct ?? 0,
-                });
-                // First server event is often this — move off "Sending…" immediately.
-                if (state.streamStatus.kind === "connecting") {
-                  state.streamStatus = { kind: "thinking" };
-                }
-                break;
-              }
-              case "compressing":
-                state.streamStatus = { kind: "compressing" };
-                break;
-              case "tool_round_limit": {
-                const lim = event.limit ?? 0;
-                const msg =
-                  lim > 0
-                    ? `Stopped after ${lim} assistant steps (safety limit).`
-                    : "Stopped: assistant step limit reached.";
-                state.streamStatus = { kind: "error", error: msg };
-                break;
-              }
-              case "error": {
-                const msg = event.error ?? "Unknown error";
-                streamReportedError = true;
-                streamErrorMessage = msg;
-                state.assistantError = msg;
-                state.streamStatus = {
-                  kind: "error",
-                  error: msg,
-                };
-                break;
-              }
-              case "done":
-                break;
-            }
-
-            updateAndPersistStreamingState(convId);
           },
           controller.signal,
           turnUuid,
@@ -751,27 +564,14 @@ export function useChat(
         }
         const state = getConvStreamingState(convId);
         if (state) {
-          state.streamLead = "";
-          state.streamTail = "";
-          state.streamLeadAccRef.current = "";
-          state.streamTailAccRef.current = "";
-          state.sawToolCallRef.current = false;
-          state.streamPlots = [];
-          state.streamArtifacts = [];
-          state.workspaceEvents = [];
-          state.plotsRef.current = [];
-          state.artifactsRef.current = [];
-          // Always drop the live strip so it never lingers under the persisted bubble
-          // (``streamReportedError`` used to skip this and left Reasoning / Generating orphan rows).
-          state.turnActivity = [];
-          state.streamOpenedForTurnRef.current = false;
-          if (streamReportedError && streamErrorMessage) {
-            state.streamStatus = { kind: "error", error: streamErrorMessage };
-          } else {
-            state.streamStatus = IDLE;
-          }
+          clearStreamingStateAfterTurn(
+            state,
+            streamReportedError && streamErrorMessage
+              ? { kind: "error", error: streamErrorMessage }
+              : IDLE,
+          );
         }
-        updateAndPersistStreamingState(convId);
+        updateAndPersistStreamingState(convId, { persist: false });
         setProcessingConvId(null);
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
@@ -787,18 +587,12 @@ export function useChat(
         }
         const state = getConvStreamingState(convId);
         if (state) {
-          state.streamLead = "";
-          state.streamTail = "";
-          state.streamLeadAccRef.current = "";
-          state.streamTailAccRef.current = "";
-          state.sawToolCallRef.current = false;
-          state.streamPlots = [];
-          state.streamArtifacts = [];
-          state.workspaceEvents = [];
-          state.plotsRef.current = [];
-          state.artifactsRef.current = [];
-          state.turnActivity = [];
-          state.streamOpenedForTurnRef.current = false;
+          clearStreamingStateAfterTurn(
+            state,
+            state.assistantError
+              ? { kind: "error", error: state.assistantError }
+              : IDLE,
+          );
         }
         updateAndPersistStreamingState(convId);
         setProcessingConvId(null);
@@ -806,7 +600,7 @@ export function useChat(
         abortRef.current = null;
       }
     },
-    [activeConvId, token, processingConvId, anthropicApiKey, getConvStreamingState, updateAndPersistStreamingState]
+    [activeConvId, token, processingConvId, anthropicApiKey, applyStreamEvent, getConvStreamingState, updateAndPersistStreamingState]
   );
 
   const clearAssistantError = useCallback(() => {
@@ -829,19 +623,7 @@ export function useChat(
       const state = getConvStreamingState(activeConvId);
       if (state) {
         state.assistantError = null;
-        state.streamStatus = IDLE;
-        state.streamLead = "";
-        state.streamTail = "";
-        state.streamLeadAccRef.current = "";
-        state.streamTailAccRef.current = "";
-        state.sawToolCallRef.current = false;
-        state.streamPlots = [];
-        state.streamArtifacts = [];
-        state.workspaceEvents = [];
-        state.plotsRef.current = [];
-        state.artifactsRef.current = [];
-        state.turnActivity = [];
-        state.streamOpenedForTurnRef.current = false;
+        clearStreamingStateAfterTurn(state);
         // Don't persist to sessionStorage — delete it instead so refresh doesn't auto-restore
       }
       try {

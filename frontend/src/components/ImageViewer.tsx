@@ -1,20 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { downloadPlotImage } from "../plotDownload";
 
 interface ImageViewerProps {
   src: string;
   alt?: string;
   onClose: () => void;
-}
-
-function plotBasename(src: string): string {
-  try {
-    const u = new URL(src, window.location.origin);
-    const seg = u.pathname.split("/").filter(Boolean).pop();
-    return seg && /\.png$/i.test(seg) ? seg : "plot.png";
-  } catch {
-    const seg = src.split("/").pop();
-    return seg && /\.png$/i.test(seg) ? seg : "plot.png";
-  }
 }
 
 export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
@@ -41,26 +32,6 @@ export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, resetView]);
-
-  async function handleDownload() {
-    const name = plotBasename(src);
-    try {
-      const res = await fetch(src);
-      if (!res.ok) throw new Error(String(res.status));
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = name;
-      a.rel = "noopener";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch {
-      window.open(src, "_blank", "noopener,noreferrer");
-    }
-  }
 
   function handleWheel(e: React.WheelEvent) {
     e.stopPropagation();
@@ -89,9 +60,9 @@ export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
     setDragging(false);
   }
 
-  return (
+  const overlay = (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-sm"
       onClick={onClose}
     >
       {/* Toolbar */}
@@ -130,7 +101,7 @@ export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
         <div className="mx-1 h-4 w-px bg-brand-border dark:bg-brand-border/80" />
         <button
           type="button"
-          onClick={() => void handleDownload()}
+          onClick={() => void downloadPlotImage(src)}
           className="rounded-lg px-2.5 py-1 text-xs font-medium text-brand-800 hover:bg-brand-50 dark:text-brand-muted dark:hover:bg-white/10"
           title="Download PNG"
         >
@@ -189,4 +160,6 @@ export default function ImageViewer({ src, alt, onClose }: ImageViewerProps) {
       )}
     </div>
   );
+
+  return createPortal(overlay, document.body);
 }
