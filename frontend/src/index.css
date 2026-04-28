@@ -420,6 +420,25 @@ html.dark {
   -webkit-user-drag: none;
 }
 
+.welcome-bluebot-header-logo {
+  animation: none;
+  filter: drop-shadow(0 2px 5px rgba(74, 128, 192, 0.18));
+}
+
+.welcome-bluebot-header-logo .welcome-logo-bob,
+.welcome-bluebot-header-logo .welcome-logo-breathe {
+  animation: none;
+}
+
+.welcome-bluebot-header-logo .welcome-bluebot-frames,
+.welcome-bluebot-header-logo .welcome-bluebot-img {
+  border-radius: 0.6rem;
+}
+
+.welcome-bluebot-header-logo .welcome-bluebot-wise-swing {
+  animation-duration: 8s;
+}
+
 /*
  * Welcome bluebot — ``close-eye`` raster + synthetic blink. Sleep is toggled by
  * ``.welcome-bluebot--sleeping`` (see ``WelcomeBluebotLogo`` idle timer), not a CSS loop.
@@ -528,6 +547,49 @@ html.dark {
   }
 }
 
+@keyframes welcome-bluebot-ack-surface {
+
+  0%,
+  100% {
+    transform:
+      rotate(var(--bb-tilt)) translate(var(--bb-lift-x), var(--bb-lift-y)) scale(var(--bb-mood-scale)) scale(var(--bb-press-scale));
+  }
+
+  44% {
+    transform:
+      rotate(calc(var(--bb-tilt) - 0.35deg)) translate(var(--bb-lift-x), calc(var(--bb-lift-y) - 1.2px)) scale(1.015, 0.99);
+  }
+}
+
+@keyframes welcome-bluebot-ack-blink {
+
+  0%,
+  100% {
+    transform: scale(var(--bb-eye-local-scale-x), var(--bb-eye-local-scale-y));
+  }
+
+  28%,
+  40% {
+    transform: scale(var(--bb-eye-local-scale-x), 0.14);
+  }
+
+  68% {
+    transform: scale(var(--bb-eye-local-scale-x), 1.08);
+  }
+}
+
+@keyframes welcome-bluebot-overpoked-surface {
+
+  0%,
+  100% {
+    transform: rotate(-1.6deg) translate(-0.7px, 0.4px) scale(0.998);
+  }
+
+  50% {
+    transform: rotate(1.7deg) translate(0.8px, -0.2px) scale(1.004);
+  }
+}
+
 @keyframes welcome-bluebot-listen-shine {
 
   0%,
@@ -612,6 +674,35 @@ html.dark {
   }
 }
 
+@keyframes welcome-bluebot-dizzy-surface {
+
+  0%,
+  100% {
+    transform: rotate(-2.6deg) translate(-0.7px, 1.4px) scale(0.988, 1.012);
+  }
+
+  50% {
+    transform: rotate(2.8deg) translate(0.8px, 0.6px) scale(1.012, 0.99);
+  }
+}
+
+@keyframes welcome-bluebot-dizzy-cross-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) rotate(-10deg) scale(0.58);
+  }
+
+  56% {
+    opacity: 1;
+    transform: translate(-50%, -50%) rotate(3deg) scale(1.12);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) rotate(0deg) scale(1);
+  }
+}
+
 .welcome-bluebot-frames {
   /*
    * Calibrated to ``bluebot.jpg``: eyes sit in the outer horizontal thirds of
@@ -646,6 +737,7 @@ html.dark {
   --bb-eye-local-lid-cover: var(--bb-lid-cover);
   --bb-shine-opacity: 0.62;
   --bb-shine-scale: 1;
+  --bb-eye-ink: var(--color-brand-900);
   --bb-sweat-opacity: 0;
   --bb-mood-scale: 1;
   --bb-press-scale: 1;
@@ -785,6 +877,50 @@ html.dark {
   --bb-mood-filter: brightness(1.045) saturate(1.12);
 }
 
+.welcome-bluebot--acknowledging {
+  --bb-mood-eye-y: -0.36px;
+  --bb-eye-slot-scale: 1.02;
+  --bb-eye-scale-x: 1.1;
+  --bb-eye-scale-y: 1.02;
+  --bb-lid-cover: 0%;
+  --bb-shine-opacity: 0.88;
+  --bb-shine-scale: 1.12;
+  --bb-mood-filter: brightness(1.035) saturate(1.08);
+}
+
+.welcome-bluebot--overpoked {
+  --bb-mood-eye-y: 0.32px;
+  --bb-eye-l-mood-x: -0.12px;
+  --bb-eye-r-mood-x: 0.12px;
+  --bb-eye-slot-scale: 0.92;
+  --bb-eye-scale-x: 1.18;
+  --bb-eye-scale-y: 0.43;
+  --bb-lid-cover: 48%;
+  --bb-shine-opacity: 0.24;
+  --bb-sweat-opacity: 0.88;
+  --bb-mood-filter: brightness(0.975) saturate(0.92);
+}
+
+.welcome-bluebot--dizzy {
+  --bb-mood-eye-y: 1.05px;
+  --bb-eye-l-mood-x: -0.15px;
+  --bb-eye-r-mood-x: 0.15px;
+  --bb-eye-slot-scale: 1.08;
+  --bb-sweat-opacity: 0.82;
+  --bb-mood-filter: brightness(0.975) saturate(0.86);
+}
+
+.welcome-bluebot--loading-tired {
+  --bb-mood-eye-y: 1.1px;
+  --bb-eye-slot-scale: 0.88;
+  --bb-eye-scale-x: 1.12;
+  --bb-eye-scale-y: 0.38;
+  --bb-lid-cover: 58%;
+  --bb-shine-opacity: 0.14;
+  --bb-mood-filter: brightness(0.955) saturate(0.84);
+  --bb-blink-duration: 11s;
+}
+
 .welcome-bluebot-wise-swing {
   transform-origin: 50% 45%;
   animation: welcome-bluebot-wise 6s ease-in-out infinite;
@@ -805,6 +941,24 @@ html.dark {
   filter: brightness(0.92) saturate(0.86) sepia(0.07);
 }
 
+.welcome-bluebot--dizzy .welcome-bluebot-wise-swing {
+  animation: none;
+}
+
+.welcome-bluebot--dizzy .welcome-bluebot-mood-surface {
+  filter: var(--bb-mood-filter);
+  animation: welcome-bluebot-dizzy-surface 520ms ease-in-out infinite;
+}
+
+.welcome-bluebot--acknowledging .welcome-bluebot-mood-surface {
+  animation: welcome-bluebot-ack-surface 720ms cubic-bezier(0.2, 0.88, 0.26, 1) both;
+}
+
+.welcome-bluebot--overpoked .welcome-bluebot-mood-surface {
+  filter: var(--bb-mood-filter);
+  animation: welcome-bluebot-overpoked-surface 155ms ease-in-out 7;
+}
+
 .welcome-bluebot-mood {
   position: absolute;
   inset: 0;
@@ -815,6 +969,10 @@ html.dark {
 
 .welcome-bluebot--sleeping .welcome-bluebot-mood--sleep {
   opacity: 1;
+}
+
+.welcome-bluebot--loading-tired .welcome-bluebot-mood--sleep {
+  opacity: 0.82;
 }
 
 .welcome-bluebot--mood-listening .welcome-bluebot-mood--listening,
@@ -915,6 +1073,11 @@ html.dark {
   transform: translate(-50%, calc(-50% + 3px)) scale(0.9);
 }
 
+.welcome-bluebot--dizzy .welcome-bluebot-eye-slot {
+  transform:
+    translate(-50%, -50%) translate(var(--bb-eye-mood-x), var(--bb-mood-eye-y)) scale(var(--bb-eye-slot-scale));
+}
+
 .welcome-bluebot-eye-slot--l {
   left: var(--bb-eye-l);
   --bb-eye-mood-x: var(--bb-eye-l-mood-x);
@@ -961,7 +1124,7 @@ html.dark {
   box-sizing: border-box;
   transform: translate(-50%, -40%);
   border: 2px solid transparent;
-  border-top-color: var(--color-brand-900);
+  border-top-color: var(--bb-eye-ink);
   border-radius: 50% 50% 0 0;
   pointer-events: none;
   opacity: 0;
@@ -973,9 +1136,48 @@ html.dark {
   height: 0;
   transform: translate(-50%, -50%);
   border: 0;
-  border-top: 2px solid var(--color-brand-900);
+  border-top: 2px solid var(--bb-eye-ink);
   border-radius: 0;
   opacity: 1;
+}
+
+.welcome-bluebot-eye-cross {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 120%;
+  height: 120%;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.72);
+  transform-origin: center;
+}
+
+.welcome-bluebot-eye-cross::before,
+.welcome-bluebot-eye-cross::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 102%;
+  height: 17%;
+  border-radius: 999px;
+  background: var(--bb-eye-ink);
+  box-shadow: 0 0 0 0.5px color-mix(in oklab, var(--color-brand-50) 18%, transparent);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.welcome-bluebot-eye-cross::after {
+  transform: translate(-50%, -50%) rotate(-45deg);
+}
+
+.welcome-bluebot--dizzy .welcome-bluebot-eye-cross {
+  opacity: 1;
+  animation: welcome-bluebot-dizzy-cross-pop 340ms cubic-bezier(0.2, 1.2, 0.32, 1) both;
+}
+
+.welcome-bluebot--dizzy .welcome-bluebot-eye-slot--r .welcome-bluebot-eye-cross {
+  animation-delay: 42ms;
 }
 
 .welcome-bluebot-eye {
@@ -1073,7 +1275,7 @@ html.dark {
   width: 92%;
   height: clamp(2.6px, 3.1cqi, 3.6px);
   border-radius: 999px;
-  background: var(--color-brand-900);
+  background: var(--bb-eye-ink);
   box-shadow: none;
   transform: translate(-50%, -50%);
   animation: none;
@@ -1101,7 +1303,25 @@ html.dark {
   animation-duration: 2.6s;
 }
 
+.welcome-bluebot--acknowledging .welcome-bluebot-eye {
+  animation: welcome-bluebot-ack-blink 720ms ease-out both;
+}
+
+.welcome-bluebot--loading-tired .welcome-bluebot-loading-dot {
+  opacity: 0.24;
+  animation-duration: 1.9s;
+}
+
 .welcome-bluebot--sleeping .welcome-bluebot-eye {
+  opacity: 0;
+}
+
+.welcome-bluebot--dizzy .welcome-bluebot-eye {
+  opacity: 0;
+  animation: none;
+}
+
+.welcome-bluebot--dizzy .welcome-bluebot-eye-line {
   opacity: 0;
 }
 
@@ -1117,6 +1337,10 @@ html.dark .welcome-bluebot-img {
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.12),
     inset 0 0 0 2px rgba(74, 128, 192, 0.22);
+}
+
+html.dark .welcome-bluebot-frames {
+  --bb-eye-ink: #0d121c;
 }
 
 /*
@@ -1161,6 +1385,7 @@ html.dark .welcome-bluebot-eye-lid {
   .welcome-bluebot-eye-shine,
   .welcome-bluebot-eye-lid,
   .welcome-bluebot-eye-line,
+  .welcome-bluebot-eye-cross,
   .welcome-bluebot-eye-slot,
   .welcome-bluebot-mood,
   .welcome-bluebot-zzz,
@@ -1185,6 +1410,7 @@ html.dark .welcome-bluebot-eye-lid {
   .welcome-bluebot-eye-shine,
   .welcome-bluebot-eye-lid,
   .welcome-bluebot-eye-emote,
+  .welcome-bluebot-eye-cross,
   .welcome-bluebot-eye-line,
   .welcome-bluebot-mood {
     transition: none;
@@ -1199,12 +1425,33 @@ html.dark .welcome-bluebot-eye-lid {
     filter: brightness(0.92) saturate(0.86) sepia(0.07);
   }
 
+  .welcome-bluebot--dizzy .welcome-bluebot-mood-surface {
+    transform: rotate(2.4deg) translate(0.8px, 1.2px) scale(0.99);
+    filter: var(--bb-mood-filter);
+  }
+
+  .welcome-bluebot--acknowledging .welcome-bluebot-mood-surface,
+  .welcome-bluebot--overpoked .welcome-bluebot-mood-surface {
+    animation: none;
+    transform: scale(var(--bb-mood-scale));
+    filter: var(--bb-mood-filter);
+  }
+
   .welcome-bluebot-eye {
     transform: scale(var(--bb-eye-local-scale-x), var(--bb-eye-local-scale-y));
     opacity: 1;
   }
 
+  .welcome-bluebot--acknowledging .welcome-bluebot-eye,
+  .welcome-bluebot--loading-tired .welcome-bluebot-loading-dot {
+    animation: none;
+  }
+
   .welcome-bluebot--sleeping .welcome-bluebot-eye {
+    opacity: 0;
+  }
+
+  .welcome-bluebot--dizzy .welcome-bluebot-eye {
     opacity: 0;
   }
 
@@ -1214,6 +1461,11 @@ html.dark .welcome-bluebot-eye-lid {
 
   .welcome-bluebot--sleeping .welcome-bluebot-eye-line {
     opacity: 1;
+  }
+
+  .welcome-bluebot--dizzy .welcome-bluebot-eye-cross {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
   }
 
   .welcome-bluebot-eye-slot {

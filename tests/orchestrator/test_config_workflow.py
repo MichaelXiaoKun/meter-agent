@@ -246,6 +246,343 @@ def test_confirmed_action_executes_and_verifies(monkeypatch: pytest.MonkeyPatch)
     assert "verified" in workflow_statuses
 
 
+def test_sweep_emits_one_pending_confirmation_with_resolved_wifi_angles(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    orch = _load_agent()
+    _stub_common(monkeypatch, orch)
+    events: list[dict] = []
+    dispatch_calls: list[str] = []
+
+    monkeypatch.setattr(
+        orch,
+        "get_meter_profile",
+        lambda serial, token: {
+            "success": True,
+            "network_type": "wifi",
+            "profile": {"label": "Kitchen meter", "deviceTimeZone": "America/New_York"},
+            "transducer_angle_options": ["15º", "25º", "35º", "45º"],
+        },
+    )
+    monkeypatch.setattr(
+        orch,
+        "_dispatch",
+        lambda name, inp, token, *, client_timezone, anthropic_api_key: dispatch_calls.append(name)
+        or json.dumps({"success": True}),
+    )
+    provider = _ScriptedProvider(
+        [
+            _tool_use_response(
+                orch,
+                [
+                    (
+                        "s1",
+                        "sweep_transducer_angles",
+                        {"serial_number": "BB1"},
+                    )
+                ],
+            ),
+            _end_turn_response(),
+        ]
+    )
+    monkeypatch.setattr(orch, "get_provider", lambda *a, **k: provider)
+
+    orch.run_turn(
+        [{"role": "user", "content": "try all angles"}],
+        token="tok",
+        model=orch._MODEL,
+        conversation_id="conv",
+        on_event=events.append,
+    )
+
+    assert dispatch_calls == []
+    assert provider._i == 1
+    pending = [e for e in events if e.get("type") == "config_confirmation_required"]
+    assert len(pending) == 1
+    workflow = pending[0]["config_workflow"]
+    assert workflow["tool"] == "sweep_transducer_angles"
+    assert workflow["proposed_values"]["transducer_angles"] == ["15º", "25º", "35º", "45º"]
+    assert workflow["proposed_values"]["apply_best_after_sweep"] is False
+    assert workflow["proposed_values"]["final_angle_policy"] == "leave_last_successful_tested_angle"
+
+
+def test_sweep_lorawan_all_allowed_uses_lorawan_options(monkeypatch: pytest.MonkeyPatch):
+    orch = _load_agent()
+    _stub_common(monkeypatch, orch)
+    events: list[dict] = []
+
+    monkeypatch.setattr(
+        orch,
+        "get_meter_profile",
+        lambda serial, token: {
+            "success": True,
+            "network_type": "lorawan",
+            "profile": {"label": "Field meter"},
+            "transducer_angle_options": [
+                "10º",
+                "15º",
+                "20º",
+                "25º",
+                "30º",
+                "35º",
+                "40º",
+                "45º",
+            ],
+        },
+    )
+    provider = _ScriptedProvider(
+        [
+            _tool_use_response(
+                orch,
+                [("s1", "sweep_transducer_angles", {"serial_number": "BB-LORA"})],
+            ),
+            _end_turn_response(),
+        ]
+    )
+    monkeypatch.setattr(orch, "get_provider", lambda *a, **k: provider)
+
+    orch.run_turn(
+        [{"role": "user", "content": "try each allowed angle"}],
+        token="tok",
+        model=orch._MODEL,
+        conversation_id="conv",
+        on_event=events.append,
+    )
+
+    workflow = [
+        e
+        for e in events
+        if e.get("type") == "config_confirmation_required"
+    ][0]["config_workflow"]
+    assert workflow["proposed_values"]["network_type"] == "lorawan"
+    assert workflow["proposed_values"]["transducer_angles"] == [
+        "10º",
+        "15º",
+        "20º",
+        "25º",
+        "30º",
+        "35º",
+        "40º",
+        "45º",
+    ]
+
+
+def test_sweep_explicit_angles_are_normalized_and_deduped(monkeypatch: pytest.MonkeyPatch):
+    orch = _load_agent()
+    _stub_common(monkeypatch, orch)
+    events: list[dict] = []
+
+    monkeypatch.setattr(
+        orch,
+        "get_meter_profile",
+        lambda serial, token: {
+            "success": True,
+            "network_type": "wifi",
+            "profile": {"label": "Kitchen meter"},
+            "transducer_angle_options": ["15º", "25º", "35º", "45º"],
+        },
+    )
+    provider = _ScriptedProvider(
+        [
+            _tool_use_response(
+                orch,
+                [
+                    (
+                        "s1",
+                        "sweep_transducer_angles",
+                        {
+                            "serial_number": "BB1",
+                            "transducer_angles": ["45", "45º", "35°"],
+                        },
+                    )
+                ],
+            ),
+            _end_turn_response(),
+        ]
+    )
+    monkeypatch.setattr(orch, "get_provider", lambda *a, **k: provider)
+
+    orch.run_turn(
+        [{"role": "user", "content": "try 45 then 35"}],
+        token="tok",
+        model=orch._MODEL,
+        conversation_id="conv",
+        on_event=events.append,
+    )
+
+    workflow = [
+        e
+        for e in events
+        if e.get("type") == "config_confirmation_required"
+    ][0]["config_workflow"]
+    assert workflow["proposed_values"]["transducer_angles"] == ["45º", "35º"]
+
+
+def test_sweep_invalid_angle_fails_before_pending_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    orch = _load_agent()
+    _stub_common(monkeypatch, orch)
+    events: list[dict] = []
+
+    monkeypatch.setattr(
+        orch,
+        "get_meter_profile",
+        lambda serial, token: {
+            "success": True,
+            "network_type": "wifi",
+            "profile": {"label": "Kitchen meter"},
+            "transducer_angle_options": ["15º", "25º", "35º", "45º"],
+        },
+    )
+    provider = _ScriptedProvider(
+        [
+            _tool_use_response(
+                orch,
+                [
+                    (
+                        "s1",
+                        "sweep_transducer_angles",
+                        {"serial_number": "BB1", "transducer_angles": ["40"]},
+                    )
+                ],
+            ),
+            _end_turn_response(),
+        ]
+    )
+    monkeypatch.setattr(orch, "get_provider", lambda *a, **k: provider)
+
+    orch.run_turn(
+        [{"role": "user", "content": "try 40 degrees"}],
+        token="tok",
+        model=orch._MODEL,
+        conversation_id="conv",
+        on_event=events.append,
+    )
+
+    assert not [e for e in events if e.get("type") == "config_confirmation_required"]
+    failed = [
+        e
+        for e in events
+        if e.get("type") == "tool_result"
+        and e.get("tool") == "sweep_transducer_angles"
+        and e.get("success") is False
+    ]
+    assert failed
+    assert "Valid" in failed[0]["message"]
+
+
+def test_confirmed_sweep_runs_every_angle_and_status_check(monkeypatch: pytest.MonkeyPatch):
+    orch = _load_agent()
+    _stub_common(monkeypatch, orch)
+    events: list[dict] = []
+    set_calls: list[str] = []
+    status_calls: list[str] = []
+    scores = {"15º": 65, "25º": 80, "35º": 72, "45º": 76}
+    action = orch.create_pending_action(
+        conversation_id="conv",
+        user_scope=orch.user_scope_from_token("tok"),
+        tool_name="sweep_transducer_angles",
+        inputs={
+            "serial_number": "BB1",
+            "transducer_angles": ["15º", "25º", "35º", "45º"],
+            "apply_best_after_sweep": False,
+            "network_type": "wifi",
+        },
+    )
+
+    def fake_set(serial, angle, token, *, anthropic_api_key=None):
+        set_calls.append(angle)
+        return {"success": True, "error": None}
+
+    def fake_status(serial, token, *, anthropic_api_key=None):
+        angle = set_calls[-1]
+        status_calls.append(angle)
+        return {
+            "success": True,
+            "status_data": {
+                "serial_number": serial,
+                "online": True,
+                "last_message_at": "2026-04-26T12:00:00Z",
+                "signal": {"level": "good", "score": scores[angle], "reliable": True},
+            },
+        }
+
+    monkeypatch.setattr(orch, "set_transducer_angle_only", fake_set)
+    monkeypatch.setattr(orch, "check_meter_status", fake_status)
+
+    reply, _ = orch.run_turn(
+        [{"role": "user", "content": "confirm"}],
+        token="tok",
+        model=orch._MODEL,
+        conversation_id="conv",
+        confirmed_action_id=action.action_id,
+        on_event=events.append,
+    )
+
+    assert set_calls == ["15º", "25º", "35º", "45º"]
+    assert status_calls == ["15º", "25º", "35º", "45º"]
+    assert "swept 4 transducer angle" in reply
+    result_event = [
+        e
+        for e in events
+        if e.get("type") == "tool_result" and e.get("tool") == "sweep_transducer_angles"
+    ][0]
+    assert result_event["success"] is True
+    assert result_event["tool_activity"].endswith("best 25º, final 45º")
+
+
+def test_confirmed_optimize_sweep_sets_best_again(monkeypatch: pytest.MonkeyPatch):
+    orch = _load_agent()
+    _stub_common(monkeypatch, orch)
+    set_calls: list[str] = []
+    status_calls: list[str] = []
+    scores = {"15º": 60, "25º": 91, "35º": 70}
+    action = orch.create_pending_action(
+        conversation_id="conv",
+        user_scope=orch.user_scope_from_token("tok"),
+        tool_name="sweep_transducer_angles",
+        inputs={
+            "serial_number": "BB1",
+            "transducer_angles": ["15º", "25º", "35º"],
+            "apply_best_after_sweep": True,
+            "network_type": "wifi",
+        },
+    )
+
+    def fake_set(serial, angle, token, *, anthropic_api_key=None):
+        set_calls.append(angle)
+        return {"success": True, "error": None}
+
+    def fake_status(serial, token, *, anthropic_api_key=None):
+        angle = set_calls[-1]
+        status_calls.append(angle)
+        return {
+            "success": True,
+            "status_data": {
+                "serial_number": serial,
+                "online": True,
+                "last_message_at": "2026-04-26T12:00:00Z",
+                "signal": {"level": "excellent", "score": scores[angle], "reliable": True},
+            },
+        }
+
+    monkeypatch.setattr(orch, "set_transducer_angle_only", fake_set)
+    monkeypatch.setattr(orch, "check_meter_status", fake_status)
+
+    reply, _ = orch.run_turn(
+        [{"role": "user", "content": "confirm"}],
+        token="tok",
+        model=orch._MODEL,
+        conversation_id="conv",
+        confirmed_action_id=action.action_id,
+    )
+
+    assert set_calls == ["15º", "25º", "35º", "25º"]
+    assert status_calls == ["15º", "25º", "35º", "25º"]
+    assert "I set the best measured angle, 25º" in reply
+
+
 def test_cancelled_action_consumes_pending_without_dispatch(monkeypatch: pytest.MonkeyPatch):
     orch = _load_agent()
     _stub_common(monkeypatch, orch)

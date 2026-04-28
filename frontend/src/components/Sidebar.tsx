@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useConversationListPrefs } from "../hooks/useConversationListPrefs";
 import type { Conversation } from "../types";
+import BluebotWordmarkLogo from "./BluebotWordmarkLogo";
 import ConversationList from "./ConversationList";
 import { IconPencilWriting, IconSidebarDock } from "./SidebarIconRail";
 import ThemeToggle from "./ThemeToggle";
@@ -184,15 +185,18 @@ export default function Sidebar({
         <div
           className={`flex items-center gap-2 ${showCollapseControl ? "justify-between" : "justify-start"}`}
         >
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/90 shadow-sm ring-1 ring-brand-border/60 dark:bg-brand-100/90">
-            <img
-              src="/api/logo"
-              alt=""
-              width={32}
-              height={32}
-              className="h-8 w-8 rounded-md object-cover"
-            />
-          </div>
+          {showCollapseControl ? (
+            <div className="flex min-w-0 flex-1 items-center pl-1">
+              <BluebotWordmarkLogo
+                scaleLikeSaaS={false}
+                className="h-6 w-auto max-w-[min(9.25rem,100%)] text-brand-900 dark:text-brand-muted"
+              />
+            </div>
+          ) : (
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/90 shadow-sm ring-1 ring-brand-border/60 dark:bg-brand-100/90">
+              <IconSidebarDock className="h-5 w-5 shrink-0 text-brand-800 dark:text-brand-muted" />
+            </div>
+          )}
           {showCollapseControl && (
             <button
               type="button"
@@ -425,4 +429,3 @@ export default function Sidebar({
     </aside>
   );
 }
-

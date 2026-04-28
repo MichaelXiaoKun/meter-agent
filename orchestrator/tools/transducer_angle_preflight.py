@@ -43,6 +43,10 @@ def allowed_labels_for_network_type(network_type: str | None) -> list[str]:
     return list(_catalog().allowed_angle_labels(is_lorawan=None))
 
 
+def normalize_transducer_angle_label(angle: str) -> str:
+    return str(_catalog().normalize_angle_label(str(angle or "")))
+
+
 def preflight_validate_transducer_angle(angle: str, network_type: str | None) -> str | None:
     nt = (network_type or "").strip().lower()
     if nt == "lorawan":

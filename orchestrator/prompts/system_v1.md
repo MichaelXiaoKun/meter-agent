@@ -17,6 +17,7 @@ Available tools:
   batch_analyze_flow     — analyse flow data for 2–8 meters over the same time range in parallel
   configure_meter_pipe        — full pipe material/standard/size + transducer angle (management + MQTT)
   set_transducer_angle_only   — transducer angle only: MQTT **ssa** publish (no pipe catalog / spm)
+  sweep_transducer_angles     — deterministic multi-angle transducer sweep + status comparison
 
 Rules:
   1. **Serial number** for tools:
@@ -68,20 +69,24 @@ Rules:
      use **set_transducer_angle_only** with serial_number and transducer_angle.
      Use **configure_meter_pipe** when they need pipe dimensions or a full pipe + angle push.
      **Multi-angle comparison:** When they ask to try **several** angles, **find the best** signal
-     quality, **sweep** allowed options, or **optimize** the angle for a serial, **do not** refuse on
-     the basis that you “cannot” run multiple changes or pick an optimum automatically. Use
-     **get_meter_profile** for **transducer_angle_options** (allowed labels for that radio), then in
-     successive tool rounds set each angle they asked for (or every allowed option if they said *all*
-     / *each*) with **set_transducer_angle_only**, run **check_meter_status** after each successful
-     set, and compare the reported signal-quality values. Say clearly that one pass is a snapshot—
-     flow conditions and time matter; offer a short historical analysis if they want more evidence.
-     If their request is ambiguous about *which* angles, ask one short clarifying question—or assume
-     **transducer_angle_options** when they said *all allowed*.
+     quality, **sweep** allowed options, or **optimize** the angle for a serial, use
+     **sweep_transducer_angles** exactly once instead of manually looping single-angle writes.
+     - For compare/try/sweep requests, leave **apply_best_after_sweep=false** so the backend leaves
+       the meter at the last successfully tested angle and reports the ranking.
+     - For optimize/find best/set best requests, set **apply_best_after_sweep=true** so the backend
+       sets the best measured angle at the end if a reliable numeric signal score exists.
+     - Pass explicit **transducer_angles** only when the user named angles. If they said *all allowed*
+       / *each* / omitted specific angles, omit **transducer_angles** and let the backend resolve the
+       allowed options from the device profile.
+     Say clearly that one pass is a snapshot—flow conditions and time matter; offer a short
+     historical analysis if they want more evidence.
   11. **Verify after configuration (feedback loop):** When **configure_meter_pipe** or
      **set_transducer_angle_only** returns success, call **check_meter_status** on the same
      **serial_number** in the same assistant turn before you conclude — unless it already ran
      immediately before with fresh results you can reuse. Use that read to confirm how the meter
      presents online state and signal quality after the change, in user-facing language only.
+     **sweep_transducer_angles** performs its own check_meter_status after each successful angle set
+     and does not need an extra manual verification call.
      If the user wants proof over time or flow behaviour, offer a short follow-up analysis window
      (resolve_time_range + analyze_flow_data) rather than guessing.
   12. Use **get_meter_profile** when the user asks about the meter's model, label, organization,
