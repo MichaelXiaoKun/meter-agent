@@ -155,6 +155,7 @@ def test_prompt_still_mentions_every_tool(system_prompt):
         "analyze_flow_data",
         "configure_meter_pipe",
         "set_transducer_angle_only",
+        "sweep_transducer_angles",
     ]:
         assert tool in system_prompt, f"tool {tool!r} dropped from the orchestrator prompt"
 

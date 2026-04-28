@@ -206,19 +206,7 @@ export default function SidebarIconRail({
         title="Open conversations"
         aria-label="Open conversations sidebar"
       >
-        <span className="relative size-8 shrink-0">
-          <img
-            src="/api/logo"
-            alt=""
-            width={32}
-            height={32}
-            className="absolute inset-0 z-0 size-8 rounded-md object-cover"
-          />
-          {/* Opaque sheet on hover fully covers the logo; dock sits on top. */}
-          <span className="absolute inset-0 z-10 flex items-center justify-center rounded-md bg-white opacity-0 transition-[opacity,background-color] duration-200 ease-out motion-reduce:transition-none motion-reduce:duration-0 group-hover:bg-brand-50 group-hover:opacity-100 dark:bg-brand-100 dark:group-hover:bg-brand-100/95">
-            <IconSidebarDock className="h-5 w-5 shrink-0 text-brand-800 transition-colors duration-200 ease-out motion-reduce:transition-none group-hover:text-brand-900 dark:text-brand-muted dark:group-hover:text-brand-900" />
-          </span>
-        </span>
+        <IconSidebarDock className="h-5 w-5 shrink-0 text-brand-800 transition-colors duration-200 ease-out motion-reduce:transition-none group-hover:text-brand-900 dark:text-brand-muted dark:group-hover:text-brand-900" />
       </button>
 
       <button

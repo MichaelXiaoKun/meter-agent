@@ -210,6 +210,7 @@ def test_install_stubs_records_and_returns_canned_results(runner):
         batch_analyze_flow=lambda *a, **k: {"unused": True},
         configure_meter_pipe=lambda *a, **k: {"unused": True},
         set_transducer_angle_only=lambda *a, **k: {"unused": True},
+        sweep_transducer_angles=lambda *a, **k: {"unused": True},
     )
     fixture = {
         "expected_tool_sequence": [
@@ -256,6 +257,7 @@ def test_install_stubs_restores_originals(runner):
         batch_analyze_flow=sentinel_a,
         configure_meter_pipe=sentinel_a,
         set_transducer_angle_only=sentinel_a,
+        sweep_transducer_angles=sentinel_a,
     )
     restore = runner._install_stubs(dummy, {"expected_tool_sequence": []}, [])
     assert dummy.resolve_time_range is not sentinel_a

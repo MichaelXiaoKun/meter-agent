@@ -1,0 +1,34 @@
+{
+  "id": "sweep_transducer_angles",
+  "description": "Multi-angle sweep — route to one deterministic sweep tool and prepare one confirmation.",
+  "user": "Try all allowed transducer angles for meter BB8100015261 and compare signal quality after each setting.",
+  "expected_tool_sequence": [
+    {
+      "tool": "sweep_transducer_angles",
+      "args_contains": {"serial_number": "BB8100015261"},
+      "mock_result": {
+        "success": true,
+        "message": "Prepared angle sweep confirmation."
+      }
+    }
+  ],
+  "forbidden_tools": [
+    "set_transducer_angle_only",
+    "configure_meter_pipe",
+    "analyze_flow_data",
+    "list_meters_for_account",
+    "compare_meters"
+  ],
+  "response_must_not_contain": [
+    "set_transducer_angle_only",
+    "MQTT",
+    "ssa publish",
+    "subprocess",
+    "/Users/"
+  ],
+  "response_must_contain": [
+    "prepared",
+    "Choose Yes"
+  ],
+  "prompt_versions": ["v1"]
+}

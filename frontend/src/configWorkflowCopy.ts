@@ -22,6 +22,15 @@ export function confirmationUserMessage(workflow: ConfigWorkflow): string {
     cleanString(workflow.serial_number) ||
     cleanString(workflow.proposed_values?.serial_number);
   const meterLabel = serial ? `meter ${serial}` : "this meter";
+  if (workflow.tool === "sweep_transducer_angles") {
+    const angles = workflow.proposed_values?.transducer_angles;
+    const count = Array.isArray(angles) ? angles.length : 0;
+    const suffix =
+      workflow.proposed_values?.apply_best_after_sweep === true
+        ? " and set the best measured angle if available"
+        : "";
+    return `Yes, run the ${count ? `${count}-angle ` : ""}transducer angle sweep for ${meterLabel}${suffix}.`;
+  }
   if (workflow.tool === "configure_meter_pipe") {
     return `Yes, apply the pipe configuration for ${meterLabel}.`;
   }
