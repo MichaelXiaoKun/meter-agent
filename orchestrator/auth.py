@@ -275,7 +275,7 @@ def _render_login_form(cookies=None) -> None:
                 {logo_html}
                 <h1 style="font-size:1.6rem;font-weight:700;color:#1a2a4a;
                            margin:0 0 0.3rem;letter-spacing:-0.3px;">
-                    bluebot Assistant
+                    FlowIQ
                 </h1>
                 <p style="color:#5a6a88;font-size:0.93rem;margin:0 0 1.5rem;">
                     Sign in to your account to continue

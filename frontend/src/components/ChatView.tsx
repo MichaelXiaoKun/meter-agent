@@ -775,14 +775,14 @@ export default function ChatView({
   const headerLogoMood =
     isProcessing || serverProcessing || historyLoading ? "loading" : "idle";
   const headerLogoExpression = status.kind === "error" ? "annoyed" : "neutral";
-  const headerTitle = copy?.title ?? "bluebot Assistant";
+  const headerTitle = copy?.title ?? "FlowIQ";
   const headerSubtitle =
     copy?.subtitle ??
-    "Flow analysis, meter health, and pipe configuration — ask with a serial number.";
+    "by bluebot · Data-backed flow insights and expert recommendations.";
   const welcomeTitle = copy?.welcomeTitle ?? "What can I help with?";
-  const welcomePlaceholder = copy?.welcomePlaceholder ?? "Message bluebot Assistant…";
+  const welcomePlaceholder = copy?.welcomePlaceholder ?? "Message FlowIQ...";
   const composerPlaceholder =
-    copy?.composerPlaceholder ?? "Ask about health, flow, or pipe setup (serial number)...";
+    copy?.composerPlaceholder ?? "Ask FlowIQ about meter health, flow trends, or pipe setup...";
 
   // Pair plot paths with assistant messages: collect from tool_result rows,
   // attach to the next assistant message (same logic as the Streamlit app).
@@ -1476,12 +1476,9 @@ export default function ChatView({
                   )}
                 </div>
                 {/*
-                  Welcome suggestions. Mobile/tablet uses the ``compact``
-                  variant (no inline serial input) so the screen has only
-                  one text field — the sticky-bottom chat composer.
-                  Suggestion taps prefill the composer with the serial that
-                  was previously stored, or with a ``<METER SERIAL>``
-                  placeholder for the user to fill in directly.
+                  Welcome suggestions stay secondary to the main composer.
+                  Taps prefill the composer with either a saved meter serial or
+                  a ``<METER SERIAL>`` placeholder for the user to replace.
                 */}
                 <div
                   className={
