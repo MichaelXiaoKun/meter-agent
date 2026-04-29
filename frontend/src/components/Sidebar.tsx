@@ -63,6 +63,9 @@ interface SidebarProps {
   onAnthropicApiKeyChange: (key: string) => void;
   /** From GET /api/config — null until loaded. */
   anthropicServerConfigured: boolean | null;
+  showApiKeyControl?: boolean;
+  accountLabel?: string;
+  logoutLabel?: string;
   /** Hide the sidebar (main pane can show a control to reopen). */
   onCollapse: () => void;
   /**
@@ -89,6 +92,9 @@ export default function Sidebar({
   anthropicApiKey,
   onAnthropicApiKeyChange,
   anthropicServerConfigured,
+  showApiKeyControl = true,
+  accountLabel = "Signed in as",
+  logoutLabel = "Sign out",
   onCollapse,
   collapseShelfBody = false,
   collapseShelfFading = false,
@@ -311,31 +317,33 @@ export default function Sidebar({
           {/* Account section */}
           <div className="shrink-0 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] pt-3">
             <div className="mb-2 truncate text-xs text-brand-muted">
-              Signed in as <span className="font-medium text-brand-900">{user}</span>
+              {accountLabel} <span className="font-medium text-brand-900">{user}</span>
             </div>
             <div className="mb-2 hidden items-center justify-between gap-2 lg:flex">
               <span className="text-xs text-brand-muted">Appearance</span>
               <ThemeToggle size="sm" />
             </div>
-            <button
-              type="button"
-              onClick={() => setKeyModalOpen(true)}
-              className="mb-2 w-full rounded-lg border border-brand-border bg-white px-3 py-1.5 text-left text-sm text-brand-900 transition-colors hover:border-brand-400 hover:bg-brand-50 dark:bg-brand-100/90 dark:hover:border-brand-border dark:hover:bg-white/10"
-            >
-              <span className="font-medium">Claude API key</span>
-              <span className="mt-0.5 block text-xs font-normal text-brand-muted">
-                {anthropicApiKey.trim()
-                  ? "Saved in this browser"
-                  : anthropicServerConfigured === false
-                    ? "Required — server has no key"
-                    : "Optional — uses server key if unset"}
-              </span>
-            </button>
+            {showApiKeyControl && (
+              <button
+                type="button"
+                onClick={() => setKeyModalOpen(true)}
+                className="mb-2 w-full rounded-lg border border-brand-border bg-white px-3 py-1.5 text-left text-sm text-brand-900 transition-colors hover:border-brand-400 hover:bg-brand-50 dark:bg-brand-100/90 dark:hover:border-brand-border dark:hover:bg-white/10"
+              >
+                <span className="font-medium">Claude API key</span>
+                <span className="mt-0.5 block text-xs font-normal text-brand-muted">
+                  {anthropicApiKey.trim()
+                    ? "Saved in this browser"
+                    : anthropicServerConfigured === false
+                      ? "Required — server has no key"
+                      : "Optional — uses server key if unset"}
+                </span>
+              </button>
+            )}
             <button
               onClick={onLogout}
               className="w-full rounded-lg border border-brand-border bg-white px-3 py-1.5 text-sm text-brand-muted transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 dark:bg-brand-100/90 dark:hover:border-red-900/50 dark:hover:bg-red-950/35 dark:hover:text-red-400"
             >
-              Sign out
+              {logoutLabel}
             </button>
           </div>
         </div>

@@ -18,6 +18,12 @@ export const TOOL_LIFECYCLE: Record<string, { now: string; done: string }> = {
   configure_meter_pipe: { now: "Preparing configuration review…", done: "Prepared configuration review" },
   set_transducer_angle_only: { now: "Preparing configuration review…", done: "Prepared configuration review" },
   sweep_transducer_angles: { now: "Preparing angle sweep review…", done: "Prepared angle sweep review" },
+  search_sales_kb: { now: "Searching sales knowledge…", done: "Searched sales knowledge" },
+  qualify_meter_use_case: { now: "Qualifying the use case…", done: "Qualified the use case" },
+  assess_pipe_fit: { now: "Assessing pipe fit…", done: "Assessed pipe fit" },
+  explain_installation_impact: { now: "Checking installation impact…", done: "Checked installation impact" },
+  capture_lead_summary: { now: "Updating lead summary…", done: "Updated lead summary" },
+  recommend_product_line: { now: "Matching product lines…", done: "Matched product lines" },
 };
 
 function narrowStr(v: unknown): string {

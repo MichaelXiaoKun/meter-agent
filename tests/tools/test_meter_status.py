@@ -105,6 +105,24 @@ class TestCheckMeterStatus:
         assert res["status_data"] == structured_payload
         assert res["error"] is None
 
+    def test_verified_facts_are_forwarded_to_subprocess_env(self, monkeypatch):
+        captured = {}
+
+        def fake_run(*_args, **kwargs):
+            captured["env"] = kwargs.get("env") or {}
+            return _fake_completed("report text", "harmless logs\n", 0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        facts = {
+            "gap_event_count": 4,
+            "cusum_drift": {"skipped": False, "drift_detected": "upward"},
+        }
+        res = ms.check_meter_status("BB1", "tok", verified_facts=facts)
+
+        assert res["success"] is True
+        assert json.loads(captured["env"]["BLUEBOT_VERIFIED_FACTS_JSON"]) == facts
+
     def test_success_without_marker_keeps_none_status_data(self, monkeypatch):
         # A legacy subprocess (pre-marker) should still work — report is returned
         # and status_data is None, not an error.

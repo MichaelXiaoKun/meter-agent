@@ -1,0 +1,102 @@
+[
+  {
+    "id": "bluebot-mini",
+    "name": "Bluebot Mini",
+    "line": "Mini",
+    "source_url": "https://www.bluebot.com/shop/bluebot-mini/",
+    "source_accessed": "2026-04-28",
+    "positioning": "Compact entry-level smart water meter for smaller residential-style pipes.",
+    "pipe_size_min_in": 0.75,
+    "pipe_size_max_in": 1.0,
+    "connectivity": ["wifi"],
+    "environment": ["indoor", "outdoor"],
+    "fit_notes": [
+      "Good when the buyer has reliable Wi-Fi near the meter location.",
+      "Good for smaller accessible pipes in the website-listed range."
+    ],
+    "cautions": [
+      "Confirm current pricing, package, and data-plan details on the website before quoting.",
+      "Confirm actual pipe OD/material and access before treating this as a final fit."
+    ]
+  },
+  {
+    "id": "bluebot-flagship",
+    "name": "Bluebot Flagship",
+    "line": "Flagship",
+    "source_url": "https://www.bluebot.com/shop/smart-water-meters/bluebot-smart-water-meter/",
+    "source_accessed": "2026-04-28",
+    "positioning": "Broad-capability smart water meter for common 3/4 inch to 2 inch pipes.",
+    "pipe_size_min_in": 0.75,
+    "pipe_size_max_in": 2.0,
+    "connectivity": ["wifi"],
+    "environment": ["indoor", "outdoor"],
+    "fit_notes": [
+      "Good when Wi-Fi is available and the pipe is in the common 3/4 inch to 2 inch range.",
+      "Good default website-listed option when the buyer wants stronger capability than Mini."
+    ],
+    "cautions": [
+      "Confirm current pricing, package, and data-plan details on the website before quoting.",
+      "Confirm actual pipe OD/material and access before treating this as a final fit."
+    ]
+  },
+  {
+    "id": "bluebot-prolink",
+    "name": "Bluebot ProLink",
+    "line": "ProLink",
+    "source_url": "https://www.bluebot.com/shop/bluebot-prolink-water-meter/",
+    "source_accessed": "2026-04-28",
+    "positioning": "Enterprise-grade long-range option for common 3/4 inch to 2 inch pipes where Wi-Fi is not available or not preferred.",
+    "pipe_size_min_in": 0.75,
+    "pipe_size_max_in": 2.0,
+    "connectivity": ["lorawan", "cellular_optional", "no_wifi_required"],
+    "environment": ["indoor", "outdoor"],
+    "fit_notes": [
+      "Good when the customer says there is no reliable Wi-Fi at the meter location.",
+      "Good for remote, commercial, or long-range connectivity needs in the website-listed pipe range."
+    ],
+    "cautions": [
+      "Confirm network availability and selected backhaul option before quoting.",
+      "Confirm actual pipe OD/material and access before treating this as a final fit."
+    ]
+  },
+  {
+    "id": "bluebot-prime-wifi",
+    "name": "Bluebot Prime Wi-Fi",
+    "line": "Prime",
+    "source_url": "https://www.bluebot.com/shop/bluebot-prime-meters/",
+    "source_accessed": "2026-04-28",
+    "positioning": "Wi-Fi option for larger 2.5 inch, 3 inch, or 4 inch pipes.",
+    "pipe_size_min_in": 2.5,
+    "pipe_size_max_in": 4.0,
+    "connectivity": ["wifi"],
+    "environment": ["indoor", "outdoor"],
+    "fit_notes": [
+      "Good when the pipe is larger than 2 inches and Wi-Fi is available.",
+      "Website-listed for 2.5 inch, 3 inch, and 4 inch pipe options."
+    ],
+    "cautions": [
+      "Confirm exact pipe size and OD; larger-pipe fit is more sensitive to correct sizing.",
+      "Confirm current pricing, package, and data-plan details on the website before quoting."
+    ]
+  },
+  {
+    "id": "bluebot-prolink-prime",
+    "name": "Bluebot ProLink Prime",
+    "line": "ProLink Prime",
+    "source_url": "https://www.bluebot.com/shop/bluebot-prolink-prime/",
+    "source_accessed": "2026-04-28",
+    "positioning": "Long-range no-Wi-Fi-required option for larger 2.5 inch, 3 inch, or 4 inch pipes.",
+    "pipe_size_min_in": 2.5,
+    "pipe_size_max_in": 4.0,
+    "connectivity": ["lorawan", "cellular_optional", "no_wifi_required"],
+    "environment": ["indoor", "outdoor"],
+    "fit_notes": [
+      "Good when the pipe is larger than 2 inches and Wi-Fi is unavailable or not preferred.",
+      "Website-listed as a larger-pipe long-range option."
+    ],
+    "cautions": [
+      "Confirm network availability and selected backhaul option before quoting.",
+      "Confirm exact pipe size and OD; larger-pipe fit is more sensitive to correct sizing."
+    ]
+  }
+]

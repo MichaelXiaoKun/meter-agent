@@ -204,7 +204,11 @@ Rules:
      health-score meters and their ``top_concern`` values. If the result is
      truncated, say how many meters were checked and ask the user to narrow the
      account or provide a specific serial list. If the user provides serial
-     numbers instead of an email, call ``rank_fleet_by_health`` directly.
+     numbers instead of an email, call ``rank_fleet_by_health`` directly. If
+     the user also asks for a historical window or mentions recent flow gaps,
+     missing data, or drift, resolve the time range first and pass it as
+     ``flow_window`` so the composite score includes flow-derived
+     ``verified_facts`` for gap-density and CUSUM drift.
   19. **Threshold events.** When the user asks for flow or quality events
      defined by a threshold — "flow above 10 gpm for 5 minutes", "zero flow
      lasting at least 60 seconds", "quality below 60", "how many high-flow
