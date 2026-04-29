@@ -43,7 +43,7 @@ from streamlit_cookies_controller import CookieController
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="bluebot Assistant",
+    page_title="FlowIQ",
     page_icon="💧",
     layout="wide",
 )
@@ -333,7 +333,7 @@ st.markdown(
     f"<div style='text-align:center;padding:0.6rem 0 0.1rem;'>"
     f"<span style='display:inline-flex;align-items:center;justify-content:center;"
     f"font-size:1.45rem;font-weight:700;color:#1a2a4a;letter-spacing:-0.3px;'>"
-    f"{_logo_header}bluebot Assistant"
+    f"{_logo_header}FlowIQ"
     f"</span></div>",
     unsafe_allow_html=True,
 )
