@@ -17,6 +17,7 @@ import { extractDownloadArtifacts } from "../artifactAttachments";
 import { PlotGrouped } from "./PlotImage";
 import ArtifactLinks from "./ArtifactLinks";
 import WelcomeCard from "./WelcomeCard";
+import type { QuickAction } from "./WelcomeCard";
 import WelcomeBluebotLogo from "./WelcomeBluebotLogo";
 import TurnActivityTimeline from "./TurnActivityTimeline";
 import { MessageSkeleton } from "./MessageSkeleton";
@@ -27,7 +28,7 @@ import ThemeToggle from "./ThemeToggle";
 import SharePopover from "./SharePopover";
 import ConfigConfirmationCard from "./ConfigConfirmationCard";
 import { IconSidebarDock } from "./SidebarIconRail";
-import type { OrchestratorModelOption } from "../api";
+import type { OrchestratorModelOption, PublicShareToken } from "../api";
 import {
   splitActivityAtFirstTool,
   splitTurnActivityAroundStreamBody,
@@ -158,10 +159,22 @@ interface ChatViewProps {
    * Gated by the parent: only pass when a conversation is selected and has messages.
    */
   share?: {
-    userId: string;
-    accessToken: string;
+    userId?: string;
+    accessToken?: string;
     conversationTitle: string;
     onToast: (a: { kind: "success" | "error"; title: string; message?: string }) => void;
+    createShareLink?: (conversationId: string) => Promise<PublicShareToken | string>;
+    revokeShareLink?: (token: string, revokeKey?: string) => Promise<void>;
+  };
+  copy?: {
+    title?: string;
+    subtitle?: string;
+    welcomeTitle?: string;
+    welcomePlaceholder?: string;
+    composerPlaceholder?: string;
+    welcomeActions?: QuickAction[];
+    welcomeHint?: string;
+    requireWelcomeSerial?: boolean;
   };
 }
 
@@ -197,6 +210,7 @@ export default function ChatView({
   anthropicApiKey,
   onToast,
   share,
+  copy,
 }: ChatViewProps) {
   const [input, setInput] = useState("");
   const [composerFocused, setComposerFocused] = useState(false);
@@ -514,6 +528,9 @@ export default function ChatView({
       setShowJumpToLatest(meaningful);
     });
     return () => cancelAnimationFrame(raf);
+    // Deliberately keyed to conversation/window switches; generation state changes
+    // are handled below so finishing a turn does not snap the transcript to top.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId, historyLoading]);
 
   // A running turn should always bring the user back to the latest activity,
@@ -758,6 +775,14 @@ export default function ChatView({
   const headerLogoMood =
     isProcessing || serverProcessing || historyLoading ? "loading" : "idle";
   const headerLogoExpression = status.kind === "error" ? "annoyed" : "neutral";
+  const headerTitle = copy?.title ?? "bluebot Assistant";
+  const headerSubtitle =
+    copy?.subtitle ??
+    "Flow analysis, meter health, and pipe configuration — ask with a serial number.";
+  const welcomeTitle = copy?.welcomeTitle ?? "What can I help with?";
+  const welcomePlaceholder = copy?.welcomePlaceholder ?? "Message bluebot Assistant…";
+  const composerPlaceholder =
+    copy?.composerPlaceholder ?? "Ask about health, flow, or pipe setup (serial number)...";
 
   // Pair plot paths with assistant messages: collect from tool_result rows,
   // attach to the next assistant message (same logic as the Streamlit app).
@@ -1011,7 +1036,7 @@ export default function ChatView({
           handleSubmit();
         }}
       >
-        {composerBody("Message bluebot Assistant…", true)}
+        {composerBody(welcomePlaceholder, true)}
       </form>
     </motion.div>
   );
@@ -1031,7 +1056,7 @@ export default function ChatView({
         }}
       >
         {composerBody(
-          "Ask about health, flow, or pipe setup (serial number)...",
+          composerPlaceholder,
           false,
         )}
       </form>
@@ -1086,7 +1111,7 @@ export default function ChatView({
               </div>
               <div className="min-w-0 flex-1">
                 <h1 className="text-xl font-bold leading-none tracking-tight text-brand-900">
-                  bluebot Assistant
+                  {headerTitle}
                 </h1>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -1098,6 +1123,8 @@ export default function ChatView({
                     conversationTitle={share.conversationTitle}
                     messages={messages}
                     onToast={share.onToast}
+                    createShareLink={share.createShareLink}
+                    revokeShareLink={share.revokeShareLink}
                   />
                 )}
                 <ThemeToggle size="md" className="shrink-0" />
@@ -1129,10 +1156,10 @@ export default function ChatView({
                 </AnimatePresence>
                 <div className="min-w-0 flex-1">
                   <h1 className="text-lg font-bold tracking-tight text-brand-900 sm:text-[1.0625rem]">
-                    bluebot Assistant
+                    {headerTitle}
                   </h1>
                   <p className="hidden max-w-[40rem] text-sm leading-relaxed text-brand-muted lg:mt-0.5 lg:block lg:text-xs lg:leading-snug">
-                    Flow analysis, meter health, and pipe configuration — ask with a serial number.
+                    {headerSubtitle}
                   </p>
                 </div>
               </div>
@@ -1144,6 +1171,8 @@ export default function ChatView({
                   conversationTitle={share.conversationTitle}
                   messages={messages}
                   onToast={share.onToast}
+                  createShareLink={share.createShareLink}
+                  revokeShareLink={share.revokeShareLink}
                 />
               )}
             </div>
@@ -1438,7 +1467,7 @@ export default function ChatView({
                     />
                   </motion.div>
                   <h2 className="welcome-heading px-1 text-center text-2xl font-semibold leading-snug tracking-tight text-brand-900 sm:px-2 sm:text-3xl">
-                    What can I help with?
+                    {welcomeTitle}
                   </h2>
                   {!welcomeComposerAtBottom && (
                     <div className="mt-6 w-full max-w-full sm:mt-8 sm:px-1">
@@ -1463,6 +1492,9 @@ export default function ChatView({
                 >
                   <WelcomeCard
                     compact={welcomeComposerAtBottom}
+                    actions={copy?.welcomeActions}
+                    hint={copy?.welcomeHint}
+                    requireSerial={copy?.requireWelcomeSerial ?? true}
                     onCompose={(text) => {
                       setInput(text);
                       requestAnimationFrame(() => {

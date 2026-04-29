@@ -64,19 +64,39 @@ def _gap_component(verified_facts: dict | None) -> Dict[str, Any]:
     if not isinstance(verified_facts, dict):
         return _component(None, weight=WEIGHTS["gap_density"], reason="flow gap facts unavailable")
     gap_count = verified_facts.get("gap_event_count")
+    coverage = (
+        verified_facts.get("coverage_6h")
+        if isinstance(verified_facts.get("coverage_6h"), dict)
+        else {}
+    )
+    coverage_ratio = None
+    try:
+        issue_buckets = float(coverage.get("buckets_with_issues"))
+        n_buckets = float(coverage.get("n_buckets"))
+        if n_buckets > 0:
+            coverage_ratio = max(0.0, min(1.0, issue_buckets / n_buckets))
+    except (TypeError, ValueError):
+        coverage_ratio = None
     try:
         gaps = max(0.0, float(gap_count))
     except (TypeError, ValueError):
-        return _component(None, weight=WEIGHTS["gap_density"], reason="gap count unavailable")
+        if coverage_ratio is None:
+            return _component(None, weight=WEIGHTS["gap_density"], reason="gap density unavailable")
+        gaps = 0.0
     largest = verified_facts.get("largest_gap_duration_seconds")
     try:
         largest_gap = max(0.0, float(largest or 0.0))
     except (TypeError, ValueError):
         largest_gap = 0.0
-    score = max(0.0, 100.0 - gaps * 8.0)
+    if coverage_ratio is not None:
+        score = 100.0 - min(80.0, coverage_ratio * 80.0) - min(40.0, gaps * 4.0)
+        reason = f"gap_event_count={int(gaps)}, coverage_issue_ratio={coverage_ratio:.2f}"
+    else:
+        score = 100.0 - gaps * 8.0
+        reason = f"gap_event_count={int(gaps)}"
     if largest_gap >= 3600.0:
         score = min(score, 60.0)
-    return _component(score, weight=WEIGHTS["gap_density"], reason=f"gap_event_count={int(gaps)}")
+    return _component(score, weight=WEIGHTS["gap_density"], reason=reason)
 
 
 def _drift_component(verified_facts: dict | None) -> Dict[str, Any]:

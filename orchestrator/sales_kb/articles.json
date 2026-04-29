@@ -1,0 +1,150 @@
+[
+  {
+    "id": "clamp-on-overview",
+    "title": "Clamp-on ultrasonic flow meter overview",
+    "topic": "flow-meter education",
+    "source_url": "https://support.bluebot.com/en/articles/13392717-how-bluebot-works",
+    "source_accessed": "2026-04-28",
+    "supporting_links": [
+      {
+        "label": "How Bluebot works",
+        "url": "https://support.bluebot.com/en/articles/13392717-how-bluebot-works"
+      },
+      {
+        "label": "Bluebot Smart Water Meter overview",
+        "url": "https://www.bluebot.com/how-it-works/"
+      }
+    ],
+    "body": "Bluebot-style ultrasonic flow monitoring is intended to measure flow from outside the pipe with externally mounted transducers. It is useful when buyers want visibility without cutting into the line, interrupting service, or adding wetted parts. The conversation should verify the pipe material, nominal size, liquid, access around the pipe, installation environment, and expected flow range before making a fit recommendation."
+  },
+  {
+    "id": "pipe-impact",
+    "title": "Pipe impact and non-invasive installation",
+    "topic": "effect on pipes",
+    "source_url": "https://support.bluebot.com/en/articles/13403159-how-does-bluebot-work",
+    "source_accessed": "2026-04-28",
+    "supporting_links": [
+      {
+        "label": "How does Bluebot work?",
+        "url": "https://support.bluebot.com/en/articles/13403159-how-does-bluebot-work"
+      },
+      {
+        "label": "Compatibility & specifications",
+        "url": "https://help.bluebot.com/support/solutions/articles/70000575808-compatibility-specifications-by-device"
+      }
+    ],
+    "body": "A clamp-on ultrasonic meter is non-invasive: the transducers mount on the outside of a suitable pipe and do not penetrate the pipe wall. In normal installation it should not restrict flow, introduce pressure drop, add a leak path, or contact the water. The buyer still needs enough straight, accessible pipe, a pipe surface suitable for mounting, and a pipe/liquid combination that supports an ultrasonic signal."
+  },
+  {
+    "id": "pipe-fit",
+    "title": "Pipe compatibility discovery",
+    "topic": "pipe compatibility",
+    "source_url": "https://help.bluebot.com/support/solutions/articles/70000575808-compatibility-specifications-by-device",
+    "source_accessed": "2026-04-28",
+    "supporting_links": [
+      {
+        "label": "Compatibility & specifications",
+        "url": "https://help.bluebot.com/support/solutions/articles/70000575808-compatibility-specifications-by-device"
+      },
+      {
+        "label": "Picking good pipe",
+        "url": "https://help.bluebot.com/support/solutions/articles/70000582050-picking-good-pipe"
+      },
+      {
+        "label": "Poor ultrasonic signal",
+        "url": "https://help.bluebot.com/support/solutions/articles/70000582842-poor-ultrasonic-signal"
+      }
+    ],
+    "body": "Good qualification questions include pipe material, nominal pipe size or outside diameter, wall thickness or schedule if known, whether the pipe is full, whether the liquid is mostly water, whether the pipe is accessible around the outside, surface condition, insulation, and how much straight pipe is available upstream and downstream. If the buyer does not know pipe size, ask for a photo of pipe labeling, measured outside diameter, or the trade size from drawings."
+  },
+  {
+    "id": "installation",
+    "title": "Installation requirements",
+    "topic": "installation requirements",
+    "source_url": "https://help.bluebot.com/support/solutions/articles/70000582050-picking-good-pipe",
+    "source_accessed": "2026-04-28",
+    "supporting_links": [
+      {
+        "label": "Picking good pipe",
+        "url": "https://help.bluebot.com/support/solutions/articles/70000582050-picking-good-pipe"
+      },
+      {
+        "label": "Meter orientation",
+        "url": "https://help.bluebot.com/support/solutions/articles/70000582816-can-i-put-bluebot-horizonal-vertical-or-upside-down-"
+      }
+    ],
+    "body": "A typical installation needs access to the outside of the pipe, a stable mounting location, a clean pipe surface, and enough space for the sensor assembly. Avoid promising fit when the pipe is buried, inaccessible, heavily corroded, badly scaled, not full, or carrying a liquid with heavy solids, bubbles, or unknown acoustic properties. For uncertainty, recommend a sales or field review."
+  },
+  {
+    "id": "product-fit",
+    "title": "Product fit and common applications",
+    "topic": "product fit",
+    "source_url": "https://www.bluebot.com/shop/",
+    "source_accessed": "2026-04-28",
+    "supporting_links": [
+      {
+        "label": "Bluebot shop",
+        "url": "https://www.bluebot.com/shop/"
+      },
+      {
+        "label": "Bluebot Wi-Fi Essential",
+        "url": "https://www.bluebot.com/shop/smart-water-meters/bluebot-smart-water-meter/"
+      },
+      {
+        "label": "Bluebot ProLink",
+        "url": "https://www.bluebot.com/shop/bluebot-prolink-water-meter/"
+      }
+    ],
+    "body": "Common fit signals include a customer who needs continuous water usage visibility, leak or abnormal-use alerts, operational reporting, irrigation or building water monitoring, remote sites where visits are expensive, or non-invasive retrofit monitoring. Weak fit signals include unknown liquid properties, no pipe access, very small or unusual pipe geometry, temporary troubleshooting only, or a need for custody-transfer-grade guarantees without engineering review."
+  },
+  {
+    "id": "network-power",
+    "title": "Network and power qualification",
+    "topic": "network/power/environment constraints",
+    "source_url": "https://support.bluebot.com/en/articles/13403159-how-does-bluebot-work",
+    "source_accessed": "2026-04-28",
+    "supporting_links": [
+      {
+        "label": "Connection types and power",
+        "url": "https://support.bluebot.com/en/articles/13403159-how-does-bluebot-work"
+      },
+      {
+        "label": "Bluebot ProLink",
+        "url": "https://www.bluebot.com/shop/bluebot-prolink-water-meter/"
+      }
+    ],
+    "body": "Ask whether the site has reliable Wi-Fi or needs a low-power wide-area option, whether the meter will be indoors or outdoors, whether power access is constrained, and whether the buyer expects dashboard reporting or alerts. Do not promise connectivity without checking the site environment and selected device/network option."
+  },
+  {
+    "id": "lead-qualification",
+    "title": "Lead qualification fields",
+    "topic": "buyer qualification questions",
+    "source_url": "https://www.bluebot.com/shop/",
+    "source_accessed": "2026-04-28",
+    "body": "A useful sales lead summary should capture application, industry, site count, pipe material, pipe size, liquid, expected flow range, pipe access, installation environment, reporting goals, network or power constraints, urgency or timeline, buyer role, and contact details if the customer volunteers them. The agent should not pressure for personal details before it has provided useful guidance."
+  },
+  {
+    "id": "bluebot-com-product-finder",
+    "title": "bluebot.com product finder guidance",
+    "topic": "website-derived product fit",
+    "source_url": "https://www.bluebot.com/shop/",
+    "source_accessed": "2026-04-28",
+    "body": "The public bluebot site frames selection around Wi-Fi availability and pipe size. It describes standard Bluebot options for pipes from 3/4 inch to 2 inches, larger Prime options for 2.5 inch, 3 inch, and 4 inch pipes, and ProLink options when no Wi-Fi is available. Treat this as sales guidance, not a binding quote; confirm current product availability, pricing, data plans, and site conditions before final recommendation."
+  },
+  {
+    "id": "bluebot-com-installation-faq",
+    "title": "bluebot.com installation and compatibility FAQ",
+    "topic": "website-derived installation requirements",
+    "source_url": "https://help.bluebot.com/support/solutions/articles/70000575808-compatibility-specifications-by-device",
+    "source_accessed": "2026-04-28",
+    "body": "The public bluebot site describes installation as clamp-on and app-guided, with package accessories for preparing the pipe surface. It lists compatible materials including common copper, PVC, CPVC, galvanized, PEX, PE, and stainless steel variants, and notes that a short straight, unobstructed pipe section is needed for best readings. In conversation, ask the buyer to verify pipe material, size, surface condition, and access before assuming fit."
+  },
+  {
+    "id": "bluebot-com-applications",
+    "title": "bluebot.com application themes",
+    "topic": "website-derived applications",
+    "source_url": "https://www.bluebot.com/how-it-works/",
+    "source_accessed": "2026-04-28",
+    "body": "The public bluebot site emphasizes water intelligence for homes and businesses, leak/waste awareness, irrigation monitoring, multiple properties, tenant or cost allocation use cases, alerts, dashboards, and real-time water usage insight. Use these themes to answer early buyer questions, then qualify the actual site, pipe, network, and reporting needs."
+  }
+]

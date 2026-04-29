@@ -4,6 +4,8 @@ import { clearAuth, getStoredAuth, setAuth } from "./authStorage";
 import LoginPage from "./components/LoginPage";
 import ForgotPasswordPage from "./components/ForgotPasswordPage";
 import CheckMailPage from "./components/CheckMailPage";
+import EntryChoicePage from "./components/EntryChoicePage";
+import SalesChatPage from "./components/SalesChatPage";
 import Sidebar from "./components/Sidebar";
 import SidebarIconRail from "./components/SidebarIconRail";
 import ChatView from "./components/ChatView";
@@ -55,9 +57,27 @@ const SHELF_SWAP_TAIL_MS = 50;
 const SHELF_SWAP_MS =
   Math.max(SHELF_STRIP_MS, SHELF_WIDTH_MS) + SHELF_SWAP_TAIL_MS;
 
+type PreLoginMode = "choice" | "admin" | "sales";
+
+function isSalesRoute(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.location.pathname === "/sales" || window.location.hash === "#/sales";
+}
+
+function initialPreLoginMode(): PreLoginMode {
+  if (typeof window === "undefined") return "choice";
+  if (isSalesRoute()) return "sales";
+  const authView = getAuthViewFromHash();
+  if (authView !== "login") return "admin";
+  return "choice";
+}
+
 export default function App() {
   const toast = useToast();
   const [authView, setAuthView] = useState<AuthGateView>(() => getAuthViewFromHash());
+  const [preLoginMode, setPreLoginMode] = useState<PreLoginMode>(() =>
+    initialPreLoginMode()
+  );
   const [token, setToken] = useState(() => getStoredAuth().token);
   const [user, setUser] = useState(() => getStoredAuth().user);
   const [tpmInputGuideTokens, setTpmInputGuideTokens] =
@@ -208,14 +228,38 @@ export default function App() {
   const isLoggedIn = !!token && !!user;
 
   const goAuth = useCallback((v: AuthGateView) => {
+    setPreLoginMode("admin");
     setAuthView(v);
     setHashForAuthView(v);
   }, []);
 
+  const goSales = useCallback(() => {
+    setPreLoginMode("sales");
+    if (typeof window !== "undefined" && window.location.hash !== "#/sales") {
+      window.history.pushState(null, "", "#/sales");
+    }
+  }, []);
+
+  const goChoice = useCallback(() => {
+    setPreLoginMode("choice");
+    setAuthView("login");
+    setHashForAuthView("login");
+  }, []);
+
   useEffect(() => {
-    const onHash = () => setAuthView(getAuthViewFromHash());
+    const onHash = () => {
+      setAuthView(getAuthViewFromHash());
+      setPreLoginMode((mode) => {
+        if (isSalesRoute()) return "sales";
+        return mode === "sales" ? "choice" : mode;
+      });
+    };
     window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
+    window.addEventListener("popstate", onHash);
+    return () => {
+      window.removeEventListener("hashchange", onHash);
+      window.removeEventListener("popstate", onHash);
+    };
   }, []);
 
   const handleSelectConversation = useCallback(
@@ -324,6 +368,7 @@ export default function App() {
     setUser(username);
     setUserChoseWelcome(true);
     setActiveConvId(null);
+    setPreLoginMode("admin");
     setAuthView("login");
     setHashForAuthView("login");
   }
@@ -337,8 +382,7 @@ export default function App() {
     setActiveConvId(null);
     localStorage.removeItem("bb_active_conv");
     setAnthropicApiKey("");
-    setAuthView("login");
-    setHashForAuthView("login");
+    goChoice();
   }
 
   function handleNewConversation() {
@@ -410,6 +454,20 @@ export default function App() {
   }
 
   if (!isLoggedIn) {
+    if (preLoginMode === "sales") {
+      return <SalesChatPage onBackToEntry={goChoice} />;
+    }
+    if (preLoginMode === "choice") {
+      return (
+        <EntryChoicePage
+          onChooseAdmin={() => {
+            setPreLoginMode("admin");
+            goAuth("login");
+          }}
+          onChooseSales={goSales}
+        />
+      );
+    }
     if (authView === "forgot") {
       return (
         <ForgotPasswordPage
@@ -421,7 +479,15 @@ export default function App() {
     if (authView === "check-mail") {
       return <CheckMailPage onBackToLogin={() => goAuth("login")} />;
     }
-    return <LoginPage onLogin={handleLogin} onForgotPassword={() => goAuth("forgot")} />;
+    return (
+      <LoginPage
+        onLogin={handleLogin}
+        onForgotPassword={() => goAuth("forgot")}
+        onBackToEntry={() => {
+          goChoice();
+        }}
+      />
+    );
   }
 
   const sidebarProps = {

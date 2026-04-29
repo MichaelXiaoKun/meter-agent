@@ -62,11 +62,20 @@ interface WelcomeCardProps {
    * so the user can finish typing it inline.
    */
   compact?: boolean;
+  actions?: QuickAction[];
+  requireSerial?: boolean;
+  hint?: string;
 }
 
 const SERIAL_PLACEHOLDER = "<METER SERIAL>";
 
-export default function WelcomeCard({ onCompose, compact = false }: WelcomeCardProps) {
+export default function WelcomeCard({
+  onCompose,
+  compact = false,
+  actions = QUICK_ACTIONS,
+  requireSerial = true,
+  hint,
+}: WelcomeCardProps) {
   const serialId = useId();
   const serialInputRef = useRef<HTMLInputElement>(null);
   const [serial, setSerial] = useState(readStoredSerial);
@@ -83,6 +92,10 @@ export default function WelcomeCard({ onCompose, compact = false }: WelcomeCardP
 
   function runAction(build: (s: string) => string) {
     const t = serial.trim();
+    if (!requireSerial) {
+      onCompose(build(""));
+      return;
+    }
     if (!t) {
       // Compact mode (mobile): no inline serial input, so we can't focus or
       // error on it. Fall through with a placeholder the user can fill in
@@ -104,7 +117,7 @@ export default function WelcomeCard({ onCompose, compact = false }: WelcomeCardP
       role="list"
       className="flex flex-wrap justify-center gap-2"
     >
-      {QUICK_ACTIONS.map((a) => (
+      {actions.map((a) => (
         <li key={a.id}>
           <button
             type="button"
@@ -123,7 +136,9 @@ export default function WelcomeCard({ onCompose, compact = false }: WelcomeCardP
       <div className="w-full">
         {pillRow}
         <p className="mx-auto mt-3 max-w-md px-2 text-center text-[11px] leading-snug text-brand-muted">
-          {serial.trim() ? (
+          {hint ? (
+            <>{hint}</>
+          ) : serial.trim() ? (
             <>
               Uses saved serial{" "}
               <span className="font-mono text-brand-800 dark:text-brand-900">{serial.trim()}</span>.
@@ -142,44 +157,55 @@ export default function WelcomeCard({ onCompose, compact = false }: WelcomeCardP
 
   return (
     <div className="w-full">
-      {/* Desktop: slim serial input + pill row, no section headers or tips. */}
-      <div
-        className={[
-          "mx-auto flex max-w-md items-center gap-2 rounded-full border bg-white px-3 py-1.5 shadow-sm transition-colors dark:border-brand-border dark:bg-brand-100",
-          serialError
-            ? "border-amber-300 ring-2 ring-amber-100"
-            : "border-slate-200/90 dark:border-brand-border",
-        ].join(" ")}
-      >
-        <label
-          htmlFor={serialId}
-          className="shrink-0 text-xs font-medium text-brand-muted"
-        >
-          Serial
-        </label>
-        <input
-          id={serialId}
-          ref={serialInputRef}
-          type="text"
-          autoComplete="off"
-          spellCheck={false}
-          placeholder="e.g. BB8100015261"
-          value={serial}
-          onChange={(e) => {
-            setSerial(e.target.value);
-            setSerialError(false);
-          }}
-          className="min-w-0 flex-1 bg-transparent text-sm text-brand-900 outline-none placeholder:text-brand-muted/45"
-          inputMode="text"
-        />
-      </div>
-      {serialError && (
-        <p className="mt-1.5 text-center text-xs font-medium text-amber-800 dark:text-amber-200" role="status">
-          Add a serial to use a suggestion.
-        </p>
+      {requireSerial && (
+        <>
+          {/* Desktop: slim serial input + pill row, no section headers or tips. */}
+          <div
+            className={[
+              "mx-auto flex max-w-md items-center gap-2 rounded-full border bg-white px-3 py-1.5 shadow-sm transition-colors dark:border-brand-border dark:bg-brand-100",
+              serialError
+                ? "border-amber-300 ring-2 ring-amber-100"
+                : "border-slate-200/90 dark:border-brand-border",
+            ].join(" ")}
+          >
+            <label
+              htmlFor={serialId}
+              className="shrink-0 text-xs font-medium text-brand-muted"
+            >
+              Serial
+            </label>
+            <input
+              id={serialId}
+              ref={serialInputRef}
+              type="text"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="e.g. BB8100015261"
+              value={serial}
+              onChange={(e) => {
+                setSerial(e.target.value);
+                setSerialError(false);
+              }}
+              className="min-w-0 flex-1 bg-transparent text-sm text-brand-900 outline-none placeholder:text-brand-muted/45"
+              inputMode="text"
+            />
+          </div>
+          {serialError && (
+            <p className="mt-1.5 text-center text-xs font-medium text-amber-800 dark:text-amber-200" role="status">
+              Add a serial to use a suggestion.
+            </p>
+          )}
+        </>
       )}
 
-      <div className="mt-4">{pillRow}</div>
+      <div className={requireSerial ? "mt-4" : ""}>{pillRow}</div>
+      {hint && !requireSerial && (
+        <p className="mx-auto mt-3 max-w-md px-2 text-center text-[11px] leading-snug text-brand-muted">
+          {hint}
+        </p>
+      )}
     </div>
   );
 }
+
+export type { QuickAction };

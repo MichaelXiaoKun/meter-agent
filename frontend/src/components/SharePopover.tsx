@@ -9,6 +9,7 @@ import {
 import { createPortal } from "react-dom";
 import { toDataURL as createQrDataUrl } from "qrcode";
 import { createShare, revokeShare } from "../api";
+import type { PublicShareToken } from "../api";
 import { exportTranscriptToPdf } from "../utils/pdfExport";
 import { stripTurnActivityBlocks } from "../utils/messageStrip";
 import type { Message } from "../types";
@@ -35,12 +36,14 @@ function ShareIcon({ className }: { className?: string }) {
 
 export interface SharePopoverProps {
   conversationId: string;
-  userId: string;
-  accessToken: string;
+  userId?: string;
+  accessToken?: string;
   /** Sidebar / thread title for PDF filename. */
   conversationTitle: string;
   messages: Message[];
   onToast: (a: { kind: "success" | "error"; title: string; message?: string }) => void;
+  createShareLink?: (conversationId: string) => Promise<PublicShareToken | string>;
+  revokeShareLink?: (token: string, revokeKey?: string) => Promise<void>;
   className?: string;
 }
 
@@ -51,6 +54,7 @@ interface MenuRect {
 
 interface ShareInfo {
   token: string;
+  revokeKey?: string;
   url: string;
   createdAt: number;
   qrDataUrl: string;
@@ -117,12 +121,14 @@ export default function SharePopover({
   conversationTitle,
   messages,
   onToast,
+  createShareLink,
+  revokeShareLink,
   className,
 }: SharePopoverProps) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<"pdf" | "link" | "revoke" | null>(null);
   /** Last created share token in this browser session (enables Revoke). */
-  const [sessionShareToken, setSessionShareToken] = useState<string | null>(null);
+  const [sessionShare, setSessionShare] = useState<Pick<ShareInfo, "token" | "revokeKey"> | null>(null);
   const [shareInfo, setShareInfo] = useState<ShareInfo | null>(null);
   const [copied, setCopied] = useState(false);
   const [menuPos, setMenuPos] = useState<MenuRect | null>(null);
@@ -260,11 +266,15 @@ export default function SharePopover({
     if (busy) return;
     setBusy("link");
     try {
-      const token = await createShare(conversationId, userId, accessToken);
-      setSessionShareToken(token);
+      const created = createShareLink
+        ? await createShareLink(conversationId)
+        : await createShare(conversationId, userId ?? "", accessToken ?? "");
+      const token = typeof created === "string" ? created : created.token;
+      const revokeKey = typeof created === "string" ? undefined : created.revokeKey;
+      setSessionShare({ token, revokeKey });
       const url = `${window.location.origin}${window.location.pathname}#/share/${token}`;
       const qrDataUrl = await createQrDataUrl(url, { margin: 1, width: 160 });
-      setShareInfo({ token, url, createdAt: Date.now(), qrDataUrl });
+      setShareInfo({ token, revokeKey, url, createdAt: Date.now(), qrDataUrl });
       try {
         await copyText(url);
         markCopied();
@@ -304,12 +314,16 @@ export default function SharePopover({
   }
 
   async function handleRevoke() {
-    const token = shareInfo?.token ?? sessionShareToken;
-    if (!token || busy) return;
+    const currentShare = shareInfo ?? sessionShare;
+    if (!currentShare?.token || busy) return;
     setBusy("revoke");
     try {
-      await revokeShare(token, userId, accessToken);
-      setSessionShareToken(null);
+      if (revokeShareLink) {
+        await revokeShareLink(currentShare.token, currentShare.revokeKey);
+      } else {
+        await revokeShare(currentShare.token, userId ?? "", accessToken ?? "");
+      }
+      setSessionShare(null);
       setShareInfo(null);
       setCopied(false);
       onToast({ kind: "success", title: "Share link revoked" });
@@ -444,7 +458,7 @@ export default function SharePopover({
                 </span>
                 Copy public link
               </button>
-              {sessionShareToken && (
+              {sessionShare && (
                 <button
                   type="button"
                   role="menuitem"

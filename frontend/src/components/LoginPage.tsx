@@ -7,6 +7,7 @@ interface LoginPageProps {
   /** ``persist: false`` stores the session in ``sessionStorage`` (tab-only), like SaaS without “keep me logged in”. */
   onLogin: (token: string, user: string, options?: { persist?: boolean }) => void;
   onForgotPassword: () => void;
+  onBackToEntry?: () => void;
 }
 
 function EyeIcon({ show }: { show: boolean }) {
@@ -31,7 +32,11 @@ function EyeIcon({ show }: { show: boolean }) {
  * ``AuthCardWrapper``, ``AuthLogin`` + ``AuthFooter``) without
  * pulling in MUI / Next — same Vite + Tailwind stack as the rest of this app.
  */
-export default function LoginPage({ onLogin, onForgotPassword }: LoginPageProps) {
+export default function LoginPage({
+  onLogin,
+  onForgotPassword,
+  onBackToEntry,
+}: LoginPageProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -181,6 +186,15 @@ export default function LoginPage({ onLogin, onForgotPassword }: LoginPageProps)
                   </button>
                 </div>
               </form>
+              {onBackToEntry && (
+                <button
+                  type="button"
+                  onClick={onBackToEntry}
+                  className="mt-5 text-sm font-medium text-brand-muted underline-offset-2 hover:text-brand-700 hover:underline"
+                >
+                  Back to options
+                </button>
+              )}
         </div>
       </div>
     </AuthPageShell>
