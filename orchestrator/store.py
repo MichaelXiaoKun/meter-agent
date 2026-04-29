@@ -19,6 +19,7 @@ import os
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from plots_paths import resolved_plots_dir
@@ -35,6 +36,25 @@ def _use_postgres() -> bool:
 def _ph() -> str:
     """Placeholder token for the active backend."""
     return "%s" if _use_postgres() else "?"
+
+
+def _sqlite_db_path() -> str:
+    """
+    Resolve the SQLite DB path.
+
+    Railway volumes are often exposed as a directory path. If BLUEBOT_CONV_DB
+    points at a directory/mount root, store the database inside it instead of
+    passing the directory itself to sqlite3.connect().
+    """
+    raw = os.environ.get(
+        "BLUEBOT_CONV_DB",
+        os.path.join(os.path.dirname(__file__), "conversations.db"),
+    )
+    path = Path(raw).expanduser()
+    if str(raw).endswith(("/", os.sep)) or path.exists() and path.is_dir():
+        path = path / "conversations.db"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 
 def _q(sql: str) -> str:
@@ -80,11 +100,7 @@ def _conn():
             pool.putconn(conn)
     else:
         import sqlite3
-        db_path = os.environ.get(
-            "BLUEBOT_CONV_DB",
-            os.path.join(os.path.dirname(__file__), "conversations.db"),
-        )
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(_sqlite_db_path())
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         cur = conn.cursor()
