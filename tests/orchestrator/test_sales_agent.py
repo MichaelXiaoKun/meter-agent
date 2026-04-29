@@ -90,6 +90,23 @@ def test_capture_lead_summary_persists_structured_fields(tmp_path, monkeypatch):
     assert store.load_sales_lead_summary(conv_id)["pipe_size"] == "4 inch"
 
 
+def test_sqlite_env_can_point_to_volume_directory(tmp_path, monkeypatch):
+    volume_dir = tmp_path / "railway-volume"
+    volume_dir.mkdir()
+    monkeypatch.setenv("BLUEBOT_CONV_DB", str(volume_dir))
+    monkeypatch.setenv("DATABASE_URL", "")
+    sys.modules.pop("store", None)
+    import store
+
+    importlib.reload(store)
+    store._bootstrapped.clear()
+    store._ensure_ready()
+
+    conv_id = store.create_sales_conversation("Volume-backed")
+    assert conv_id
+    assert (volume_dir / "conversations.db").exists()
+
+
 def test_recommend_product_line_uses_pipe_size_and_wifi_requirements():
     import sales_tools
 
