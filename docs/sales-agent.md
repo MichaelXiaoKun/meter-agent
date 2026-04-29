@@ -46,6 +46,12 @@ Non-responsibilities:
   <img src="assets/sales_agent_entrance.gif" alt="Sales assistant entrance and chat UI preview" width="760">
 </p>
 
+Full sales chat workflow:
+
+<p>
+  <img src="assets/sales_agent_chat_workflow.gif" alt="Sales assistant conversation workflow preview" width="760">
+</p>
+
 <a id="conversation-behavior"></a>
 
 ## Conversation behavior
