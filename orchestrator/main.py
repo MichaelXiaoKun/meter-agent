@@ -141,11 +141,11 @@ def main() -> None:
             sys.exit(1)
         conversation_id = args.resume
         turns = sum(1 for m in messages if m["role"] == "user")
-        print(f"bluebot Assistant  (resuming {conversation_id}, {turns} previous turns)")
+        print(f"FlowIQ  (resuming {conversation_id}, {turns} previous turns)")
     else:
         messages = []
         conversation_id = store.create_conversation("")
-        print(f"bluebot Assistant  (new conversation {conversation_id})")
+        print(f"FlowIQ  (new conversation {conversation_id})")
 
     print("Type your question and press Enter. Type 'exit' to quit.\n")
 

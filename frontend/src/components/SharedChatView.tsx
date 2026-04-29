@@ -105,7 +105,7 @@ export default function SharedChatView({ token }: { token: string }) {
           onClick={openAppHome}
           className="rounded-lg border border-brand-border bg-white px-4 py-2 text-sm font-medium text-brand-700 shadow-sm hover:bg-brand-50"
         >
-          Open bluebot Assistant
+          Open FlowIQ
         </button>
       </div>
     );

@@ -1343,6 +1343,16 @@ html.dark .welcome-bluebot-frames {
   --bb-eye-ink: #0d121c;
 }
 
+html.dark .welcome-bluebot--sleeping .welcome-bluebot-mood-surface {
+  filter: brightness(0.98) saturate(0.9);
+}
+
+html.dark .welcome-bluebot--sleeping .welcome-bluebot-eye-line {
+  border-top-color: #020617;
+  border-top-width: 2.5px;
+  box-shadow: 0 0.5px 0 rgba(255, 255, 255, 0.12);
+}
+
 /*
  * Dark UI: semantic ``brand-900`` is a light text token — using it as the pupil
  * wash made the vector eyes read as a dim gray blob. Use a dark iris + crisp

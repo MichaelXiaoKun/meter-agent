@@ -758,8 +758,8 @@ export default function SalesChatPage({ onBackToEntry }: SalesChatPageProps) {
             revokeShareLink: revokeSalesShare,
           }}
           copy={{
-            title: "bluebot Sales Assistant",
-            subtitle: "Product fit, pipe impact, and buyer qualification.",
+            title: "FlowIQ Sales",
+            subtitle: "by bluebot · Product fit, pipe impact, and buyer qualification.",
             welcomeTitle: "What are you trying to monitor?",
             welcomePlaceholder: "Ask about product fit, installation, or pipe impact...",
             composerPlaceholder: "Ask about product fit, installation, or pipe impact...",

@@ -28,7 +28,7 @@ from summarizer import update_title
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="bluebot Assistant",
+    page_title="FlowIQ",
     page_icon="💧",
     layout="centered",
 )
@@ -179,7 +179,7 @@ with st.sidebar:
 # Header
 # ---------------------------------------------------------------------------
 
-st.title("💧 bluebot Assistant")
+st.title("💧 FlowIQ")
 st.caption(
     "Health and flow: use the serial number as the user gave it. Pipe / angle tools use the physical serial on the meter."
 )

@@ -47,7 +47,7 @@ export default function EntryChoicePage({
             >
               <span className="min-w-0">
                 <span className="block text-base font-bold text-brand-900">
-                  Sales Assistant
+                  FlowIQ Sales
                 </span>
                 <span className="mt-1 block text-sm leading-snug text-brand-muted">
                   Product fit, pipe impact, installation, and quote qualification.
@@ -63,10 +63,10 @@ export default function EntryChoicePage({
             >
               <span className="min-w-0">
                 <span className="block text-base font-bold text-brand-900">
-                  Admin / Support Login
+                  FlowIQ Expert
                 </span>
                 <span className="mt-1 block text-sm leading-snug text-brand-muted">
-                  Meter health, flow analysis, fleet tools, and pipe configuration.
+                  Data-backed flow insights, meter diagnostics, and expert support.
                 </span>
               </span>
               <ArrowRightIcon className="h-5 w-5 shrink-0 text-brand-600 transition group-hover:translate-x-0.5" />
