@@ -2,10 +2,6 @@
 
 Conversational AI for bluebot ultrasonic flow meters. This repo contains a **FastAPI** orchestrator, a **React / Vite** web UI, a public pre-login **sales assistant**, an authenticated **admin assistant**, and specialist agents for flow analysis, meter status, and pipe configuration.
 
-<p>
-  <img src="bluebot.jpg" alt="bluebot ultrasonic flow meter" width="720">
-</p>
-
 The sales assistant helps prospects understand product fit, pipe impact, and installation requirements. The admin assistant supports diagnostics, live meter/account lookups, flow analysis, and pipe configuration workflows.
 
 For line-by-line environment variable comments, see [`.env.example`](.env.example).
@@ -14,6 +10,7 @@ For line-by-line environment variable comments, see [`.env.example`](.env.exampl
 
 ## Contents
 
+- [Project background](#project-background)
 - [Product surfaces](#product-surfaces)
 - [UI preview](#ui-preview)
 - [Architecture](#architecture)
@@ -22,6 +19,19 @@ For line-by-line environment variable comments, see [`.env.example`](.env.exampl
 - [File guide](#file-guide)
 - [Testing](#testing)
 - [Support](#support)
+
+---
+
+<a id="project-background"></a>
+
+## Project background
+
+bluebot flow-meter users ask two very different kinds of questions:
+
+- **Prospective buyers and installers** need help understanding whether a clamp-on ultrasonic meter fits their pipe, liquid, environment, network, and reporting needs before they ever log in.
+- **Internal support/admin users** need authenticated tools for meter diagnostics, flow-history analysis, account lookup, pipe configuration, and operational triage.
+
+This project brings those workflows into one conversational stack while keeping their permissions separate. Public sales chat can educate, qualify, recommend product lines, and create shareable lead context. Authenticated admin chat can call live bluebot systems and specialist analysis agents. The goal is to make product selection and field troubleshooting easier without exposing protected device/account capabilities to public users.
 
 ---
 
