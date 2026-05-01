@@ -13,6 +13,7 @@ It should educate clearly, ask discovery questions before recommending, and end 
 - [Knowledge base and product links](#knowledge-base-and-product-links)
 - [API routes](#api-routes)
 - [Frontend behavior](#frontend-behavior)
+- [Admin parity and response style](#admin-parity-and-response-style)
 - [Persistence and sharing](#persistence-and-sharing)
 - [Test coverage](#test-coverage)
 
@@ -195,6 +196,21 @@ Shared UI pieces:
 - [`../frontend/src/features/share/components/SharePopover.tsx`](../frontend/src/features/share/components/SharePopover.tsx)
 - [`../frontend/src/core/turnActivity.ts`](../frontend/src/core/turnActivity.ts)
 
+<a id="admin-parity-and-response-style"></a>
+
+## Admin parity and response style
+
+Sales and Admin intentionally share the same chat surface primitives. Sales should feel like the same product experience, with a safer public tool boundary:
+
+- Live stream events feed the shared chat reducer and turn-activity timeline.
+- Completed Sales turns persist a slim `turn_activity` block on the final assistant message, matching Admin history replay behavior.
+- The UI owns process status such as thinking, validation, tool work, generation, completion, and errors.
+- Assistant prose should stay customer-facing: direct answer first, concise explanation, short bullets only when they help scanning.
+- Sales prose should not mention internal tool names, event names, prompt files, Python modules, raw API details, filesystem paths, or implementation mechanics.
+- Safe small talk may frame the chat around "Bluebot product fit," but should not make unverified product, compatibility, installation, connectivity, support, or capability claims.
+
+This split matters for scaling the experience: backend events are the durable process trace, while the assistant message is the buyer-facing answer.
+
 <a id="persistence-and-sharing"></a>
 
 ## Persistence and sharing
@@ -206,6 +222,7 @@ Important behavior:
 - Closing and reopening the browser should restore known sales conversations when the server database still has them.
 - Switching conversations should not lose the in-flight status of another sales conversation.
 - Refreshing during generation should recover stream status through the public status endpoint.
+- Completed conversations should replay the status timeline from persisted `turn_activity` blocks.
 - Share links are read-only snapshots; revocation requires the generated revoke key.
 
 <a id="test-coverage"></a>
@@ -224,4 +241,6 @@ Covered areas include:
 - Conversation CRUD.
 - Share snapshot creation/revocation.
 - Cancel and status recovery endpoints.
+- Persisted turn-activity replay for Sales history.
+- Stripping persisted `turn_activity` before Sales messages are sent back to the model.
 - SQLite volume-directory handling for Railway.

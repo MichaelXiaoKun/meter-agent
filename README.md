@@ -146,6 +146,7 @@ For the deeper system map, see [docs/architecture.md](docs/architecture.md).
 
 | Need | Read |
 |------|------|
+| Developer onboarding and reading path | [docs/developer-guide.md](docs/developer-guide.md) |
 | Product surfaces, repo layout, and ownership boundaries | [docs/architecture.md](docs/architecture.md) |
 | Public sales assistant behavior, KB, tools, API, and UI persistence | [docs/sales-agent.md](docs/sales-agent.md) |
 | Authenticated admin assistant, live tools, and flow/status/pipe sub-agents | [docs/admin-agent.md](docs/admin-agent.md) |
