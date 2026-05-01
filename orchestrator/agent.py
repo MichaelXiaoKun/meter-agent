@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import sys as _sys
 
-from admin_chat import turn_loop as _impl
+try:
+    from admin_chat import turn_loop as _impl
+except ModuleNotFoundError:  # pragma: no cover - package-style import.
+    from .admin_chat import turn_loop as _impl
 
 _sys.modules[__name__] = _impl

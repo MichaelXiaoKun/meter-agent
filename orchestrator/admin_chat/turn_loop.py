@@ -25,11 +25,15 @@ import time
 
 import sys as _sys
 import os as _os
-_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
+_ORCHESTRATOR_DIR = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..")
+_REPO_ROOT = _os.path.join(_ORCHESTRATOR_DIR, "..")
+for _path in (_ORCHESTRATOR_DIR, _REPO_ROOT):
+    if _path not in _sys.path:
+        _sys.path.insert(0, _path)
 
 import httpx
 
-from config_workflow import (
+from admin_chat.config_workflow import (
     PendingConfigAction,
     clear_pending_actions_for_tests,
     consume_pending_action,
@@ -41,7 +45,7 @@ from config_workflow import (
 from llm import get_provider, LLMRateLimitError
 from llm.registry import MODEL_CATALOG, get_cheap_model
 
-from tpm_window import (
+from shared.tpm_window import (
     record_input_tokens,
     sliding_input_tokens_sum,
     wait_for_sliding_tpm_headroom,
@@ -108,14 +112,14 @@ from tools.tickets import (
     list_tickets,
     update_ticket,
 )
-from message_sanitize import messages_for_anthropic_api  # still used for _rough_input_token_fallback
-from observability import current_turn_id, emit_event, turn_context, timed
+from shared.message_sanitize import messages_for_anthropic_api  # still used for _rough_input_token_fallback
+from shared.observability import current_turn_id, emit_event, turn_context, timed
 from prompts import load_system_prompt
 from store import record_tool_evidence
 
 def TOOLS() -> list:
     """Return the full list of tool definitions from the meter registry."""
-    from meter_tools import METER_REGISTRY
+    from admin_chat.meter_tools import METER_REGISTRY
     return METER_REGISTRY.definitions()
 
 # ---------------------------------------------------------------------------
@@ -420,7 +424,7 @@ def _route_intent_haiku(
 
 def _tools_for_intent_label(label: str) -> list:
     """Return a non-empty subset of tools for the given intent; fallback to full list if something is off."""
-    from meter_tools import METER_REGISTRY
+    from admin_chat.meter_tools import METER_REGISTRY
     names = _TOOL_NAMES_BY_INTENT.get(label) or _TOOL_NAMES_BY_INTENT["general"]
     out = METER_REGISTRY.definitions(names=list(names))
     return out if out else METER_REGISTRY.definitions()
@@ -439,7 +443,7 @@ def _resolve_routed_tools(
     """
     mode = _intent_router_mode()
     if mode == "off":
-        from meter_tools import METER_REGISTRY
+        from admin_chat.meter_tools import METER_REGISTRY
         return (METER_REGISTRY.definitions(), "full", "off")
     user_text = _recent_user_text_for_routing(messages)
     if mode == "haiku":
@@ -565,28 +569,28 @@ _MAX_PARALLEL_TOOL_WORKERS = 6
 
 def _is_dedupable_read(tool_name: str) -> bool:
     """Return True if the tool result can be cached/deduplicated within a turn."""
-    from meter_tools import METER_REGISTRY
+    from admin_chat.meter_tools import METER_REGISTRY
     tool = METER_REGISTRY.get(tool_name)
     return tool is not None and tool.is_dedupable_read
 
 
 def _is_write(tool_name: str) -> bool:
     """Return True if the tool performs a mutation (write)."""
-    from meter_tools import METER_REGISTRY
+    from admin_chat.meter_tools import METER_REGISTRY
     tool = METER_REGISTRY.get(tool_name)
     return tool is not None and tool.is_write
 
 
 def _is_serial_only(tool_name: str) -> bool:
     """Return True if the tool must run serially, not in parallel."""
-    from meter_tools import METER_REGISTRY
+    from admin_chat.meter_tools import METER_REGISTRY
     tool = METER_REGISTRY.get(tool_name)
     return tool is not None and tool.is_serial_only
 
 
 def _is_heartbeat_progress(tool_name: str) -> bool:
     """Return True if the tool emits progress events (SSE heartbeats)."""
-    from meter_tools import METER_REGISTRY
+    from admin_chat.meter_tools import METER_REGISTRY
     tool = METER_REGISTRY.get(tool_name)
     return tool is not None and tool.is_heartbeat_progress
 
@@ -2339,7 +2343,7 @@ def _dispatch(
     conversation_id: str | None = None,
 ) -> str:
     """Route a tool call to the correct function and return the result as JSON."""
-    from meter_tools import METER_REGISTRY
+    from admin_chat.meter_tools import METER_REGISTRY
     result = METER_REGISTRY.dispatch(
         name,
         inputs,

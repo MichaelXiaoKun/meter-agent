@@ -1,5 +1,5 @@
 import { useLayoutEffect, useMemo, useState, type RefObject } from "react";
-import { itemHeight, type ListItem } from "../conversationListModel";
+import { itemHeight, type ListItem } from "../core/conversationListModel";
 
 /**
  * Windowed slice for long flat lists: only indices ``[start, end]`` mount;

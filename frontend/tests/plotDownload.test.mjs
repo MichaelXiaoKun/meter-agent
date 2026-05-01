@@ -6,7 +6,7 @@ import ts from "typescript";
 
 const outDir = join(tmpdir(), "bluebot-plot-download-tests");
 await mkdir(outDir, { recursive: true });
-const plotDownloadUrl = new URL("../src/plotDownload.ts", import.meta.url);
+const plotDownloadUrl = new URL("../src/core/plotDownload.ts", import.meta.url);
 
 async function importTsModule(srcUrl, name) {
   const source = await readFile(srcUrl, "utf8");

@@ -32,9 +32,9 @@ def _install_processors_time_range_stub() -> None:
 
 
 def _ensure_subprocess_env_module() -> None:
-    if "subprocess_env" in sys.modules:
+    if "shared.subprocess_env" in sys.modules:
         return
-    mod = ModuleType("subprocess_env")
+    mod = ModuleType("shared.subprocess_env")
 
     def _tool_subprocess_env(token, anthropic_api_key=None):
         env = {"BLUEBOT_TOKEN": token or ""}
@@ -43,7 +43,7 @@ def _ensure_subprocess_env_module() -> None:
         return env
 
     mod.tool_subprocess_env = _tool_subprocess_env
-    sys.modules["subprocess_env"] = mod
+    sys.modules["shared.subprocess_env"] = mod
 
 
 _install_processors_time_range_stub()

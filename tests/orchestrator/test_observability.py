@@ -1,5 +1,5 @@
 """
-Tests for ``orchestrator.observability`` — JSONL event sink + turn context +
+Tests for ``shared.observability`` — JSONL event sink + turn context +
 ``timed`` helper.
 
 We drive the file sink (``BLUEBOT_EVENT_LOG_PATH``) and read the lines back
@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-import observability as obs
+from shared import observability as obs
 
 
 @pytest.fixture

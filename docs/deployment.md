@@ -24,7 +24,7 @@ Use this guide for local setup, environment variables, Docker, Railway, and conv
 
 ## Local development
 
-Run the API and frontend in two terminals. The Vite dev server proxies `/api` to the orchestrator on port `8000` through [`../frontend/vite.config.ts`](../frontend/vite.config.ts).
+The Vite dev server proxies `/api` to the orchestrator on port `8000` through [`../frontend/vite.config.ts`](../frontend/vite.config.ts).
 
 ### 1. Configure environment
 
@@ -36,21 +36,43 @@ cp .env.example .env
 
 Edit `.env` and set at least the required variables below. For a first successful admin login, Auth0 and either `ANTHROPIC_API_KEY` or a browser-provided key are mandatory.
 
-The API loads `.streamlit/secrets.toml` into the environment if present, using the same keys as the Streamlit app. Otherwise it relies on `.env` or your shell.
+The API loads `.streamlit/secrets.toml` into the environment if present as a legacy local fallback. New local setups should use `.env`; hosted deployments should set environment variables directly.
 
-### 2. Install and run the orchestrator API
+### 2. Start the local servers
+
+For the usual local setup, start both processes from the `meter_agent` directory:
 
 ```bash
-cd orchestrator
+./run_project.sh --reload
+```
+
+To run the backend and frontend independently, use two terminals:
+
+```bash
+./run_backend.sh --reload
+```
+
+```bash
+./run_frontend.sh
+```
+
+The scripts create/install missing local dependencies automatically. Add `--install` to force reinstalling dependencies, or `--sqlite` on `run_backend.sh` / `run_project.sh` to ignore `DATABASE_URL` and use local SQLite storage.
+
+Backend health check: open `http://127.0.0.1:8000/api/config`, which is public JSON and does not require auth.
+
+### 3. Manual command equivalent
+
+If you want to run the same commands by hand, start the orchestrator API:
+
+```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-api.txt
+pip install -r orchestrator/requirements-api.txt
+cd orchestrator
 uvicorn api:app --reload --port 8000 --log-level info
 ```
 
-Leave this process running. Health check: open `http://127.0.0.1:8000/api/config`, which is public JSON and does not require auth.
-
-### 3. Install and run the frontend
+Then start the frontend:
 
 ```bash
 cd frontend
@@ -96,6 +118,11 @@ Copy [`../.env.example`](../.env.example) to `.env` and set values. The example 
 |----------|---------|
 | `ORCHESTRATOR_MODEL` | Main admin chat model. |
 | `SALES_AGENT_MODEL` | Sales chat model override. If unset, sales falls back to the orchestrator model/default. |
+| `SALES_RESPONSE_VERIFICATION` | Public sales-answer verifier toggle. Defaults to `on`; set `off` only for controlled development. |
+| `SALES_RESPONSE_GENERAL_VALIDATION` | Validation mode for general sales replies: `rough` by default, `strong` to force the verifier, or `skip` to skip general validation while still escalating factual claims. |
+| `SALES_RESPONSE_VERIFIER_MODEL` | Optional sales verifier model. Weaker overrides are ignored unless explicitly allowed. |
+| `SALES_RESPONSE_ALLOW_WEAKER_VERIFIER` | Dev-only escape hatch to allow a weaker verifier override. Defaults to disabled. |
+| `SALES_RESPONSE_VERIFICATION_ATTEMPTS` | Maximum verifier/rewrite attempts for a sales answer. Defaults to `3`, capped at `5`. |
 | `ORCHESTRATOR_INTENT_ROUTER` | Optional per-turn tool subset for the main model: `off`, `rules`, or `haiku`. |
 | `ORCHESTRATOR_TPM_GUIDE_TOKENS` / `ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET` | Token budget and compression targets. |
 | `CORS_ORIGINS` | Comma-separated origins allowed for the API. Set this for non-default dev ports or deployed UIs. |

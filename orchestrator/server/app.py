@@ -23,15 +23,23 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
-
-# Load .env from the repo root (one level up from orchestrator/) for local dev.
-try:
-    from dotenv import load_dotenv
-    load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
-except ImportError:
-    pass
 from pathlib import Path
 from typing import Any, AsyncGenerator
+
+_SERVER_DIR = Path(__file__).resolve().parent
+_ORCHESTRATOR_DIR = _SERVER_DIR.parent
+_REPO_ROOT = _ORCHESTRATOR_DIR.parent
+for _path in (_ORCHESTRATOR_DIR, _REPO_ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+# Load .env from the repo root for local dev.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(_REPO_ROOT / ".env")
+except ImportError:
+    pass
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request
@@ -84,16 +92,17 @@ _enable_tcp_nodelay_on_accept()
 
 import store
 from admin_chat.turn_loop import get_rate_limit_config_for_api, run_turn
-from plots_paths import resolved_plots_dir
-from sales_agent import run_sales_turn
-from turn_gate import acquire_run_turn_slot, configured_max_slots, release_run_turn_slot
-from summarizer import update_title
+from sales_chat.agent import run_sales_turn
+from shared.message_sanitize import append_turn_activity_block
+from shared.plots_paths import resolved_plots_dir
+from shared.summarizer import update_title
+from shared.turn_gate import acquire_run_turn_slot, configured_max_slots, release_run_turn_slot
 
 # ---------------------------------------------------------------------------
-# Load .streamlit/secrets.toml into env (same values the Streamlit app uses)
+# Load legacy .streamlit/secrets.toml values into env for older local setups.
 # ---------------------------------------------------------------------------
 
-_SECRETS_PATH = Path(__file__).parent / ".streamlit" / "secrets.toml"
+_SECRETS_PATH = _ORCHESTRATOR_DIR / ".streamlit" / "secrets.toml"
 
 def _load_secrets_to_env() -> None:
     """Read key = "value" lines from secrets.toml into os.environ as fallbacks."""
@@ -118,6 +127,10 @@ logger.info(
     "ORCHESTRATOR_MAX_CONCURRENT_TURNS=%s (max parallel chat turns per process)",
     configured_max_slots(),
 )
+
+
+class TurnCancelledByUser(RuntimeError):
+    """Raised inside worker threads when a client intentionally cancels a turn."""
 
 
 def _ensure_flow_tool_stderr_logging() -> None:
@@ -606,13 +619,13 @@ logger.info("PLOTS_DIR=%s (exists=%s)", _PLOTS_DIR, _PLOTS_DIR.is_dir())
 _ANALYSES_DIR = Path(
     os.environ.get(
         "BLUEBOT_ANALYSES_DIR",
-        str(Path(__file__).parent.parent / "data-processing-agent" / "analyses"),
+        str(_REPO_ROOT / "data-processing-agent" / "analyses"),
     )
 ).expanduser().resolve()
 logger.info("ANALYSES_DIR=%s (exists=%s)", _ANALYSES_DIR, _ANALYSES_DIR.is_dir())
 _LOGO_PATH = Path(os.environ.get(
     "LOGO_PATH",
-    str(Path(__file__).parent.parent / "bluebot.jpg"),
+    str(_REPO_ROOT / "bluebot.jpg"),
 ))
 
 
@@ -783,6 +796,119 @@ def _rewrite_artifact_urls(event: dict) -> dict:
     return _rewrite_download_artifacts(_rewrite_plot_paths(event))
 
 
+_TURN_ACTIVITY_TYPES = frozenset(
+    {
+        "queued",
+        "intent_route",
+        "thinking",
+        "token_usage",
+        "compressing",
+        "rate_limit_wait",
+        "validation_start",
+        "validation_result",
+        "tool_call",
+        "tool_progress",
+        "tool_result",
+        "config_confirmation_required",
+        "config_confirmation_cancelled",
+        "config_confirmation_superseded",
+        "text_delta",
+        "text_stream",
+        "tool_round_limit",
+        "done",
+        "error",
+    }
+)
+_TURN_ACTIVITY_PERSIST_KEYS = frozenset(
+    {
+        "type",
+        "seq",
+        "turn_id",
+        "tool",
+        "input",
+        "success",
+        "message",
+        "tool_activity",
+        "display_range",
+        "report_truncated",
+        "plot_timezone",
+        "download_artifacts",
+        "analysis_details",
+        "meter_context",
+        "diagnostic_summary",
+        "config_workflow",
+        "sweep_result",
+        "ticket",
+        "tickets",
+        "verdict",
+        "next_action",
+        "validation_mode",
+        "draft_model",
+        "validator_model",
+        "escalated",
+        "validation_points_count",
+        "unsupported_points_count",
+        "tokens",
+        "pct",
+        "model",
+        "intent",
+        "source",
+        "tools",
+        "rate_limit_wait_seconds",
+        "current_tokens",
+        "estimated_next_tokens",
+        "tpm_limit",
+        "tpm_cap",
+        "overflow_tokens",
+        "waited_seconds",
+        "attempt",
+        "text",
+        "limit",
+        "deduped",
+    }
+)
+
+
+def _slim_turn_events_for_history(raw: list[dict], tid: str) -> list[dict]:
+    """Persist replayable turn-status events without storing token spam."""
+    out: list[dict] = []
+    for ev in raw:
+        t = ev.get("type")
+        if t not in _TURN_ACTIVITY_TYPES:
+            continue
+        if t == "text_delta":
+            if not out or out[-1].get("type") != "text_stream":
+                out.append(
+                    {
+                        "type": "text_stream",
+                        "turn_id": tid,
+                        "seq": ev.get("seq", 0),
+                    }
+                )
+            continue
+        s = {k: ev[k] for k in _TURN_ACTIVITY_PERSIST_KEYS if k in ev}
+        s["type"] = t
+        s.setdefault("turn_id", tid)
+        s.setdefault("seq", ev.get("seq", 0))
+        if t == "tool_result" and "plot_paths" in ev and ev.get("plot_paths"):
+            s["plot_paths"] = [
+                str(p).split("/")[-1] for p in (ev.get("plot_paths") or [])[:8]
+            ]
+        if t == "tool_result" and "download_artifacts" in ev and ev.get("download_artifacts"):
+            s["download_artifacts"] = [
+                a
+                for a in (
+                    _rewrite_download_artifacts(
+                        {"download_artifacts": ev.get("download_artifacts") or []}
+                    ).get("download_artifacts")
+                    or []
+                )[:8]
+                if isinstance(a, dict)
+            ]
+        out.append(s)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Public sales chat
 # ---------------------------------------------------------------------------
@@ -885,12 +1011,23 @@ def cancel_sales_processing(conv_id: str):
     """Request cancellation of an active public sales turn."""
     active_key = f"sales:{conv_id}"
     with _streams_lock:
-        _cancelled_conversations.add(active_key)
-        _active_conversations.discard(active_key)
-        _active_conversation_streams.pop(active_key, None)
-        if active_key in _cancel_events:
-            _cancel_events[active_key].set()
-    return {"cancelled": True}
+        cancel_event = _cancel_events.get(active_key)
+        is_active = (
+            active_key in _active_conversations
+            or cancel_event is not None
+            or active_key in _active_conversation_streams
+        )
+        if is_active:
+            _active_conversations.discard(active_key)
+            _active_conversation_streams.pop(active_key, None)
+            if cancel_event is not None:
+                _cancelled_conversations.add(active_key)
+                cancel_event.set()
+            else:
+                _cancelled_conversations.discard(active_key)
+        else:
+            _cancelled_conversations.discard(active_key)
+    return {"cancelled": cancel_event is not None}
 
 
 @app.post("/api/public/sales/conversations/{conv_id}/chat")
@@ -916,6 +1053,7 @@ async def sales_chat_init(conv_id: str, body: SalesChatRequest):
     stream_id = str(uuid.uuid4())
     active_key = f"sales:{conv_id}"
     cancel_event = threading.Event()
+    captured_events: list[dict] = []
 
     with _streams_lock:
         _streams[stream_id] = {
@@ -944,8 +1082,12 @@ async def sales_chat_init(conv_id: str, body: SalesChatRequest):
 
     def _emit_event(event: dict) -> None:
         if cancel_event.is_set():
-            raise RuntimeError("Turn cancelled by user")
+            raise TurnCancelledByUser("Turn cancelled by user")
         _append_event(event)
+        with _streams_lock:
+            sess = _streams.get(stream_id)
+            if sess and sess.get("events"):
+                captured_events.append(dict(sess["events"][-1]))
 
     def _mark_done() -> None:
         with session_cond:
@@ -960,7 +1102,7 @@ async def sales_chat_init(conv_id: str, body: SalesChatRequest):
         try:
             with _streams_lock:
                 if active_key in _cancelled_conversations:
-                    _append_event({"type": "error", "error": "Turn was cancelled before it started."})
+                    _append_event({"type": "done"})
                     return
             acquire_run_turn_slot(
                 on_wait=lambda: _emit_event(
@@ -979,7 +1121,21 @@ async def sales_chat_init(conv_id: str, body: SalesChatRequest):
                 conversation_id=conv_id,
                 on_event=_emit_event,
             )
-            store.append_sales_messages(conv_id, messages[checkpoint + 1 :])
+            new_tail = messages[checkpoint + 1 :]
+            slim = _slim_turn_events_for_history(captured_events, turn_id)
+            if slim:
+                slim.append(
+                    {
+                        "type": "done",
+                        "turn_id": turn_id,
+                        "seq": len(slim) + 1,
+                    }
+                )
+                for msg in reversed(new_tail):
+                    if isinstance(msg, dict) and msg.get("role") == "assistant":
+                        append_turn_activity_block(msg, slim)
+                        break
+            store.append_sales_messages(conv_id, new_tail)
             _emit_event(
                 {
                     "type": "lead_summary",
@@ -987,6 +1143,9 @@ async def sales_chat_init(conv_id: str, body: SalesChatRequest):
                 }
             )
             _emit_event({"type": "done"})
+        except TurnCancelledByUser:
+            logger.info("sales turn cancelled for conv %s", conv_id)
+            _append_event({"type": "done"})
         except Exception as exc:
             logger.exception("sales turn failed for conv %s", conv_id)
             _append_event({"type": "error", "error": _sse_error_message(exc)})
@@ -1151,15 +1310,26 @@ def cancel_processing(conv_id: str):
     may take a few seconds to notice and stop if it's in the middle of a tool execution.
     """
     with _streams_lock:
-        _cancelled_conversations.add(conv_id)
-        # Immediately remove from active so checkProcessing returns false
-        # (the worker thread will clean up the finally block)
-        _active_conversations.discard(conv_id)
-        _active_conversation_streams.pop(conv_id, None)
-        # Signal the worker thread to stop (if it has a cancel event)
-        if conv_id in _cancel_events:
-            _cancel_events[conv_id].set()
-    return {"cancelled": True}
+        cancel_event = _cancel_events.get(conv_id)
+        is_active = (
+            conv_id in _active_conversations
+            or cancel_event is not None
+            or conv_id in _active_conversation_streams
+        )
+        if is_active:
+            # Immediately remove from active so checkProcessing returns false
+            # (the worker thread will clean up the finally block)
+            _active_conversations.discard(conv_id)
+            _active_conversation_streams.pop(conv_id, None)
+            # Signal the worker thread to stop (if it has a cancel event)
+            if cancel_event is not None:
+                _cancelled_conversations.add(conv_id)
+                cancel_event.set()
+            else:
+                _cancelled_conversations.discard(conv_id)
+        else:
+            _cancelled_conversations.discard(conv_id)
+    return {"cancelled": cancel_event is not None}
 
 
 @app.post("/api/conversations/{conv_id}/chat")
@@ -1363,7 +1533,7 @@ async def chat_init(
     def _emit_event_with_capture(event: dict) -> None:
         # Check for cancellation on every event emission
         if cancel_event.is_set():
-            raise RuntimeError("Turn cancelled by user")
+            raise TurnCancelledByUser("Turn cancelled by user")
         _emit_event(event)
         with _streams_lock:
             sess = _streams.get(stream_id)
@@ -1384,7 +1554,7 @@ async def chat_init(
             # Check if this conversation was already marked for cancellation
             with _streams_lock:
                 if conv_id in _cancelled_conversations:
-                    _emit_event({"type": "error", "error": "Turn was cancelled before it started."})
+                    _emit_event({"type": "done"})
                     return
 
             acquire_run_turn_slot(
@@ -1400,7 +1570,7 @@ async def chat_init(
             )
             slot_acquired = True
             try:
-                from message_sanitize import append_turn_activity_block
+                from shared.message_sanitize import append_turn_activity_block
 
                 _, history_replaced = run_turn(
                     api_messages,
@@ -1468,6 +1638,9 @@ async def chat_init(
                     )
                 store.append_messages(conv_id, new_tail)
                 update_title(conv_id, api_messages, anthropic_api_key=user_anthropic_key)
+                _emit_event({"type": "done"})
+            except TurnCancelledByUser:
+                logger.info("chat turn cancelled for conv %s", conv_id)
                 _emit_event({"type": "done"})
             except Exception as exc:
                 logger.exception("run_turn failed for conv %s", conv_id)
@@ -1670,7 +1843,7 @@ async def chat_stream_poll(
 _FRONTEND_DIST = Path(
     os.environ.get(
         "FRONTEND_DIST",
-        str(Path(__file__).resolve().parent.parent / "frontend" / "dist"),
+        str(_REPO_ROOT / "frontend" / "dist"),
     )
 )
 

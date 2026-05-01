@@ -23,7 +23,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from plots_paths import resolved_plots_dir
+try:
+    from shared.plots_paths import resolved_plots_dir
+except ModuleNotFoundError:  # pragma: no cover - package-style import.
+    from ..shared.plots_paths import resolved_plots_dir
 
 
 TICKET_STATUSES = {"open", "in_progress", "waiting_on_human", "resolved", "cancelled"}

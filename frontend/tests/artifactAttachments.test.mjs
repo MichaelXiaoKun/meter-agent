@@ -22,7 +22,7 @@ async function importTsModule(srcUrl, name) {
 }
 
 const mod = await importTsModule(
-  new URL("../src/artifactAttachments.ts", import.meta.url),
+  new URL("../src/core/artifactAttachments.ts", import.meta.url),
   "artifactAttachments",
 );
 

@@ -1,10 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
-import App from "./App";
-import SharedChatView from "./components/SharedChatView";
-import SalesChatPage from "./components/SalesChatPage";
-import { ThemeProvider } from "./context/ThemeProvider";
+import App from "./app/App";
+import SharedChatView from "./features/share/SharedChatView";
+import SalesChatPage from "./features/sales/SalesChatPage";
+import { ThemeProvider } from "./features/theme/ThemeProvider";
 
 const hash = typeof window !== "undefined" ? window.location.hash : "";
 const shareMatch = hash.match(/^#\/share\/([a-f0-9]{8,64})$/i);

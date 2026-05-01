@@ -9,7 +9,7 @@ await mkdir(outDir, { recursive: true });
 const outfile = join(outDir, `chatStreamReducer-${Date.now()}.mjs`);
 
 await build({
-  entryPoints: [new URL("../src/chatStreamReducer.ts", import.meta.url).pathname],
+  entryPoints: [new URL("../src/core/chatStreamReducer.ts", import.meta.url).pathname],
   outfile,
   bundle: true,
   format: "esm",
@@ -143,6 +143,8 @@ assert.deepEqual(validationState.streamStatus, {
   kind: "validation",
   message: "Checking evidence",
 });
+assert.equal(validationState.turnActivity.at(-1).kind, "validation");
+assert.equal(validationState.turnActivity.at(-1).title, "Validating the answer");
 reducer.applyStreamEventToChatState(
   validationState,
   {
@@ -157,5 +159,53 @@ reducer.applyStreamEventToChatState(
 );
 assert.equal(validationState.turnActivity.at(-1).kind, "validation");
 assert.equal(validationState.turnActivity.at(-1).title, "Needs more evidence");
+
+const roughValidationState = reducer.createChatStreamState();
+reducer.resetChatStreamStateForTurn(roughValidationState, {
+  streamId: "stream-5",
+  turnId: "turn-5",
+});
+reducer.applyStreamEventToChatState(
+  roughValidationState,
+  {
+    type: "validation_start",
+    validation_mode: "rough",
+    message: "Quick-checking whether this general reply needs Bluebot evidence.",
+    turn_id: "turn-5",
+    seq: 1,
+  },
+  {
+    expectedTurnId: { current: "turn-5" },
+    lastSeq: { current: 0 },
+  },
+);
+assert.equal(roughValidationState.turnActivity.at(-1).kind, "validation");
+assert.equal(roughValidationState.turnActivity.at(-1).title, "Preparing answer");
+assert.deepEqual(roughValidationState.streamStatus, {
+  kind: "validation",
+  message: "Quick-checking whether this general reply needs Bluebot evidence.",
+});
+
+const strongValidationState = reducer.createChatStreamState();
+reducer.resetChatStreamStateForTurn(strongValidationState, {
+  streamId: "stream-6",
+  turnId: "turn-6",
+});
+reducer.applyStreamEventToChatState(
+  strongValidationState,
+  {
+    type: "validation_start",
+    validation_mode: "strong",
+    message: "Checking key product claims against Bluebot public website knowledge.",
+    turn_id: "turn-6",
+    seq: 1,
+  },
+  {
+    expectedTurnId: { current: "turn-6" },
+    lastSeq: { current: 0 },
+  },
+);
+assert.equal(strongValidationState.turnActivity.at(-1).kind, "validation");
+assert.equal(strongValidationState.turnActivity.at(-1).title, "Validating product claims");
 
 console.log("chatStreamReducer tests passed");

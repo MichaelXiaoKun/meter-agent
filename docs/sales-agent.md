@@ -77,7 +77,7 @@ When a customer asks for human support, a person, a callback, sales review, quot
 
 ## Tools and guardrails
 
-Sales-only tools live in [`../orchestrator/sales_tools.py`](../orchestrator/sales_tools.py):
+Sales-only tools live in [`../orchestrator/sales_chat/tools.py`](../orchestrator/sales_chat/tools.py):
 
 | Tool | Purpose |
 |------|---------|
@@ -88,18 +88,34 @@ Sales-only tools live in [`../orchestrator/sales_tools.py`](../orchestrator/sale
 | `capture_lead_summary` | Persist a structured lead object. |
 | `recommend_product_line` | Recommend product-line candidates from the curated catalog. |
 
-Sales mode must not expose live Bluebot device/account tools, flow-analysis subprocesses, pipe configuration writes, or MQTT actions. The allowlist is enforced in [`../orchestrator/sales_agent.py`](../orchestrator/sales_agent.py) and covered by tests.
+Sales mode must not expose live Bluebot device/account tools, flow-analysis subprocesses, pipe configuration writes, or MQTT actions. The allowlist is enforced in [`../orchestrator/sales_chat/agent.py`](../orchestrator/sales_chat/agent.py) and covered by tests.
 
-Final sales answers are verified before they are shown to the customer. The
-assistant first generates a draft privately, then [`../orchestrator/sales_verifier.py`](../orchestrator/sales_verifier.py)
-uses a stronger verifier model and the scraped/reviewed Bluebot KB context from
-[`../orchestrator/sales_tools.py`](../orchestrator/sales_tools.py) to check factual
-claims. Unsupported claims are rewritten and re-checked up to
-`SALES_RESPONSE_VERIFICATION_ATTEMPTS` times. The verifier model can be set with
-`SALES_RESPONSE_VERIFIER_MODEL`, and verification can be disabled only for
-controlled development with `SALES_RESPONSE_VERIFICATION=off`. Customers may see
-safe validation status events such as "checking against Bluebot public website
-knowledge", but they should not see unverified drafts or internal reasoning.
+Final sales answers are checked before they are shown to the customer. The
+assistant first generates a draft privately, then [`../orchestrator/sales_chat/verifier.py`](../orchestrator/sales_chat/verifier.py)
+classifies whether the response needs evidence-backed validation. General
+greetings, clarification questions, lead-summary acknowledgements, and safe
+off-topic redirects use the default rough deterministic check. Product, pipe-fit,
+compatibility, installation, support, pricing/package, connectivity, capability,
+recommendation, or evidence-tool claims escalate to the stronger verifier.
+Unsupported claims are rewritten and re-checked up to
+`SALES_RESPONSE_VERIFICATION_ATTEMPTS` times.
+
+By default this follows a "fast drafter, stronger validator" pattern:
+
+- `claude-haiku-4-5` drafts are validated by `claude-sonnet-4-6`.
+- `gpt-4o-mini` drafts are validated by `gpt-4o`.
+- Gemini Flash drafts are validated by `gemini-2.5-pro`.
+
+The verifier model can be set with `SALES_RESPONSE_VERIFIER_MODEL`, but a weaker
+override is ignored unless `SALES_RESPONSE_ALLOW_WEAKER_VERIFIER=true` is set for
+a controlled local experiment. Verification can be disabled only for controlled
+development with `SALES_RESPONSE_VERIFICATION=off`.
+`SALES_RESPONSE_GENERAL_VALIDATION` controls general replies: `rough` is the
+default, `strong` preserves always-strong verification, and `skip` suppresses
+general validation while still escalating detected factual claims. Customers may
+see safe validation status events such as "checking against Bluebot public
+website knowledge", but they should not see unverified drafts or internal
+reasoning.
 
 <a id="knowledge-base-and-product-links"></a>
 
@@ -155,13 +171,13 @@ Public sales routes live under `/api/public/sales/...` in [`../orchestrator/api.
 | `POST /api/public/sales/conversations/{id}/share` | Create a read-only share snapshot. |
 | `DELETE /api/public/sales/shares/{token}` | Revoke a sales share link with its revoke key. |
 
-Frontend API helpers live in [`../frontend/src/api.ts`](../frontend/src/api.ts).
+Frontend API helpers live in [`../frontend/src/api/client.ts`](../frontend/src/api/client.ts).
 
 <a id="frontend-behavior"></a>
 
 ## Frontend behavior
 
-The sales UI lives in [`../frontend/src/components/SalesChatPage.tsx`](../frontend/src/components/SalesChatPage.tsx) and should visually match the admin assistant:
+The sales UI lives in [`../frontend/src/features/sales/SalesChatPage.tsx`](../frontend/src/features/sales/SalesChatPage.tsx) and should visually match the admin assistant:
 
 - Same sidebar treatment.
 - Conversation history.
@@ -174,10 +190,10 @@ The sales UI lives in [`../frontend/src/components/SalesChatPage.tsx`](../fronte
 
 Shared UI pieces:
 
-- [`../frontend/src/components/ChatView.tsx`](../frontend/src/components/ChatView.tsx)
-- [`../frontend/src/components/Sidebar.tsx`](../frontend/src/components/Sidebar.tsx)
-- [`../frontend/src/components/SharePopover.tsx`](../frontend/src/components/SharePopover.tsx)
-- [`../frontend/src/turnActivity.ts`](../frontend/src/turnActivity.ts)
+- [`../frontend/src/features/chat/components/ChatView.tsx`](../frontend/src/features/chat/components/ChatView.tsx)
+- [`../frontend/src/features/conversations/components/Sidebar.tsx`](../frontend/src/features/conversations/components/Sidebar.tsx)
+- [`../frontend/src/features/share/components/SharePopover.tsx`](../frontend/src/features/share/components/SharePopover.tsx)
+- [`../frontend/src/core/turnActivity.ts`](../frontend/src/core/turnActivity.ts)
 
 <a id="persistence-and-sharing"></a>
 

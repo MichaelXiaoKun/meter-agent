@@ -19,7 +19,7 @@ from copy import deepcopy
 logger = logging.getLogger(__name__)
 
 from processors.time_range import display_tz_name_for_user, format_unix_range_display
-from subprocess_env import tool_subprocess_env
+from shared.subprocess_env import tool_subprocess_env
 from tools.plot_tz import resolve_plot_tz_name as _resolve_plot_tz_name
 
 _AGENT_DIR = os.path.abspath(

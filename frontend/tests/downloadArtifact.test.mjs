@@ -6,7 +6,7 @@ import ts from "typescript";
 
 const outDir = join(tmpdir(), "bluebot-download-artifact-tests");
 await mkdir(outDir, { recursive: true });
-const apiUrl = new URL("../src/api.ts", import.meta.url);
+const apiUrl = new URL("../src/api/client.ts", import.meta.url);
 
 async function importTsModule(srcUrl, name) {
   const source = await readFile(srcUrl, "utf8");

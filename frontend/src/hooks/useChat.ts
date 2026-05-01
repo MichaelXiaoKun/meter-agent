@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { Message, SSEEvent } from "../types";
-import * as api from "../api";
+import type { Message, SSEEvent } from "../core/types";
+import * as api from "../api/client";
 import {
   applyStreamEventToChatState,
   clearChatStreamStateAfterTurn,
@@ -9,9 +9,9 @@ import {
   resetChatStreamStateForTurn,
   type AgentStatus,
   type ChatStreamState,
-} from "../chatStreamReducer";
+} from "../core/chatStreamReducer";
 
-export type { AgentStatus } from "../chatStreamReducer";
+export type { AgentStatus } from "../core/chatStreamReducer";
 
 function isAbortOrUnload(err: unknown): boolean {
   if (err instanceof DOMException && err.name === "AbortError") return true;
@@ -128,6 +128,7 @@ export function useChat(
   model?: string | null,
 ) {
   const [viewedMessages, setViewedMessages] = useState<Message[]>([]);
+  const viewedMessagesRef = useRef<Message[]>([]);
   const [processingConvId, setProcessingConvId] = useState<string | null>(null);
   const [serverProcessing, setServerProcessing] = useState(false);
   const [streamTokenUsage, setStreamTokenUsage] = useState(() =>
@@ -140,9 +141,14 @@ export function useChat(
   /** Trigger re-render when streaming state changes for the active conversation. */
   const [, setActiveConvStreamingState] = useState<ConvStreamingState | null>(null);
 
-  const processingMsgs = useRef<Message[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const activeConvRef = useRef(activeConvId);
+  const messagesByConvRef = useRef<Map<string, Message[]>>(new Map());
+  const activeClientStreamIdsRef = useRef<Map<string, string>>(new Map());
+  const inFlightSendConvIdsRef = useRef<Set<string>>(new Set());
+  const wakeRefreshAbortRef = useRef<AbortController | null>(null);
+  const wakePollStreamIdsRef = useRef<Set<string>>(new Set());
+  const lastWakeRefreshMsRef = useRef(0);
   // Model is held in a ref so the picker can change mid-session without
   // rebinding sendMessage. Each send reads the latest value at fetch time.
   const modelRef = useRef<string | null>(model ?? null);
@@ -188,12 +194,54 @@ export function useChat(
         // ignore quota / private mode
       }
       // Trigger re-render for active conversation
-      if (convId === activeConvId) {
+      if (convId === activeConvRef.current) {
         setActiveConvStreamingState({ ...state });
       }
     },
-    [activeConvId, getConvStreamingState]
+    [getConvStreamingState]
   );
+
+  const publishMessagesForConv = useCallback(
+    (convId: string, messages: Message[]) => {
+      messagesByConvRef.current.set(convId, messages);
+      if (activeConvRef.current === convId) {
+        viewedMessagesRef.current = messages;
+        setViewedMessages(messages);
+      }
+    },
+    [],
+  );
+
+  const appendOptimisticMessageForConv = useCallback(
+    (convId: string, message: Message) => {
+      const baseline =
+        messagesByConvRef.current.get(convId) ??
+        (activeConvRef.current === convId ? viewedMessagesRef.current : []);
+      const last = baseline[baseline.length - 1];
+      const alreadyAppended =
+        last?.role === message.role && last?.content === message.content;
+      const next = alreadyAppended ? baseline : [...baseline, message];
+      messagesByConvRef.current.set(convId, next);
+      if (activeConvRef.current === convId) {
+        viewedMessagesRef.current = next;
+        setViewedMessages(next);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    viewedMessagesRef.current = viewedMessages;
+  }, [viewedMessages]);
+
+  useEffect(() => {
+    const wakePollStreamIds = wakePollStreamIdsRef.current;
+    return () => {
+      wakeRefreshAbortRef.current?.abort();
+      wakeRefreshAbortRef.current = null;
+      wakePollStreamIds.clear();
+    };
+  }, []);
 
   // Get current streaming state for the active conversation
   const currentStreamingState = getConvStreamingState(activeConvId);
@@ -271,6 +319,7 @@ export function useChat(
   useEffect(() => {
     if (!activeConvId) {
       prevLoadedConvIdRef.current = null;
+      viewedMessagesRef.current = [];
       setViewedMessages([]);
       setServerProcessing(false);
       setHistoryLoading(false);
@@ -283,7 +332,9 @@ export function useChat(
     prevLoadedConvIdRef.current = activeConvId;
 
     if (switched) {
-      setViewedMessages([]);
+      const cached = messagesByConvRef.current.get(activeConvId) ?? [];
+      viewedMessagesRef.current = cached;
+      setViewedMessages(cached);
       setServerProcessing(false);
     }
 
@@ -294,8 +345,7 @@ export function useChat(
     api.loadMessages(convId, ac.signal).then(async (msgs) => {
       // Ignore stale responses if user switched conversations before this completed.
       if (activeConvRef.current !== convId) return;
-      processingMsgs.current = msgs;
-      setViewedMessages(msgs);
+      publishMessagesForConv(convId, msgs);
       setHistoryLoading(false);
       // If the last message is from the user, ask the server if it's still processing
       const last = msgs[msgs.length - 1];
@@ -348,6 +398,10 @@ export function useChat(
 
           if (streamId) {
             setServerProcessing(false);
+            if (activeClientStreamIdsRef.current.get(convId) === streamId) {
+              return;
+            }
+            activeClientStreamIdsRef.current.set(convId, streamId);
             abortRef.current = ac;
             let streamErrorMessage: string | null = null;
             try {
@@ -363,10 +417,7 @@ export function useChat(
                 resumeCursor,
               );
               const final = await api.loadMessages(convId, ac.signal);
-              processingMsgs.current = final;
-              if (activeConvRef.current === convId) {
-                setViewedMessages(final);
-              }
+              publishMessagesForConv(convId, final);
               const state = getConvStreamingState(convId);
               if (state) {
                 clearStreamingStateAfterTurn(
@@ -393,6 +444,9 @@ export function useChat(
                 setProcessingConvId((prev) => (prev === convId ? null : prev));
               }
             } finally {
+              if (activeClientStreamIdsRef.current.get(convId) === streamId) {
+                activeClientStreamIdsRef.current.delete(convId);
+              }
               if (abortRef.current === ac) {
                 abortRef.current = null;
               }
@@ -411,13 +465,14 @@ export function useChat(
     });
 
     return () => ac.abort();
-  }, [activeConvId, applyStreamEvent, getConvStreamingState, updateAndPersistStreamingState]);
+  }, [activeConvId, applyStreamEvent, getConvStreamingState, publishMessagesForConv, updateAndPersistStreamingState]);
 
   // While streaming on the active conversation, mirror optimistic history from the ref
   useEffect(() => {
     if (!activeConvId || activeConvId !== processingConvId) return;
-    if (processingMsgs.current.length === 0) return;
-    setViewedMessages(processingMsgs.current);
+    const cached = messagesByConvRef.current.get(activeConvId);
+    if (!cached || cached.length === 0) return;
+    setViewedMessages(cached);
     const state = getConvStreamingState(activeConvId);
     if (state?.streamId) {
       setServerProcessing(false);
@@ -439,9 +494,7 @@ export function useChat(
         if (!processing.processing) {
           clearInterval(interval);
           const msgs = await api.loadMessages(convId, ac.signal);
-          if (activeConvRef.current === convId) {
-            setViewedMessages(msgs);
-          }
+          publishMessagesForConv(convId, msgs);
           const state = getConvStreamingState(convId);
           if (state) {
             clearStreamingStateAfterTurn(state);
@@ -459,7 +512,151 @@ export function useChat(
       ac.abort();
       clearInterval(interval);
     };
-  }, [serverProcessing, activeConvId, getConvStreamingState, updateAndPersistStreamingState]);
+  }, [serverProcessing, activeConvId, getConvStreamingState, publishMessagesForConv, updateAndPersistStreamingState]);
+
+  const refreshActiveConversationSmoothly = useCallback(async () => {
+    const convId = activeConvRef.current;
+    if (!convId) return;
+
+    const now = Date.now();
+    if (now - lastWakeRefreshMsRef.current < 750) return;
+    lastWakeRefreshMsRef.current = now;
+
+    wakeRefreshAbortRef.current?.abort();
+    const ac = new AbortController();
+    wakeRefreshAbortRef.current = ac;
+
+    try {
+      const processing = await api.getProcessingStatus(convId, ac.signal);
+      if (activeConvRef.current !== convId) return;
+
+      if (!processing.processing) {
+        const msgs = await api.loadMessages(convId, ac.signal);
+        if (activeConvRef.current !== convId) return;
+        publishMessagesForConv(convId, msgs);
+        const state = getConvStreamingState(convId);
+        if (state) {
+          clearStreamingStateAfterTurn(state);
+          updateAndPersistStreamingState(convId, { persist: false });
+        }
+        setProcessingConvId((prev) => (prev === convId ? null : prev));
+        setServerProcessing(false);
+        setHistoryLoading(false);
+        return;
+      }
+
+      const state = getConvStreamingState(convId);
+      if (!state) return;
+      const streamId = processing.stream_id ?? state.streamId;
+      const turnId = processing.turn_id ?? state.turnId;
+      const sameStoredRun =
+        !processing.stream_id ||
+        state.streamId === processing.stream_id ||
+        (turnId != null && state.turnId === turnId);
+      const resumeCursor = sameStoredRun ? Math.max(0, state.cursor) : 0;
+
+      if (!sameStoredRun || state.streamStatus.kind === "idle") {
+        resetStreamingStateForTurn(state, {
+          status: streamId ? { kind: "connecting" } : { kind: "thinking" },
+          streamId: streamId ?? null,
+          turnId: turnId ?? null,
+          cursor: resumeCursor,
+          title: streamId
+            ? "Refreshing current turn"
+            : "Catching up with current turn",
+        });
+      } else {
+        state.streamId = streamId ?? null;
+        state.turnId = turnId ?? null;
+        state.cursor = resumeCursor;
+      }
+
+      sseExpectedTurnIdRef.current = turnId ?? null;
+      sseLastSeqRef.current = resumeCursor;
+      setProcessingConvId(convId);
+      updateAndPersistStreamingState(convId);
+
+      if (!streamId) {
+        setServerProcessing(true);
+        return;
+      }
+
+      setServerProcessing(false);
+      if (wakePollStreamIdsRef.current.has(streamId)) return;
+      wakePollStreamIdsRef.current.add(streamId);
+      let streamErrorMessage: string | null = null;
+
+      try {
+        await api.pollStream(
+          streamId,
+          (event) => {
+            const result = applyStreamEvent(convId, event);
+            if (result.errorMessage) {
+              streamErrorMessage = result.errorMessage;
+            }
+          },
+          ac.signal,
+          resumeCursor,
+        );
+        const final = await api.loadMessages(convId, ac.signal);
+        if (activeConvRef.current !== convId) return;
+        publishMessagesForConv(convId, final);
+        const finalState = getConvStreamingState(convId);
+        if (finalState) {
+          clearStreamingStateAfterTurn(
+            finalState,
+            streamErrorMessage
+              ? { kind: "error", error: streamErrorMessage }
+              : IDLE,
+          );
+          updateAndPersistStreamingState(convId, { persist: false });
+        }
+        setProcessingConvId((prev) => (prev === convId ? null : prev));
+        setServerProcessing(false);
+      } catch (err) {
+        if (!isAbortOrUnload(err)) {
+          console.warn("Failed to refresh active chat stream:", err);
+        }
+      } finally {
+        wakePollStreamIdsRef.current.delete(streamId);
+      }
+    } catch (err) {
+      if (!isAbortOrUnload(err)) {
+        console.warn("Failed to refresh active chat:", err);
+      }
+    } finally {
+      if (wakeRefreshAbortRef.current === ac) {
+        wakeRefreshAbortRef.current = null;
+      }
+    }
+  }, [
+    applyStreamEvent,
+    getConvStreamingState,
+    publishMessagesForConv,
+    updateAndPersistStreamingState,
+  ]);
+
+  useEffect(() => {
+    const wake = () => {
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "hidden"
+      ) {
+        return;
+      }
+      void refreshActiveConversationSmoothly();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") wake();
+    };
+
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [refreshActiveConversationSmoothly]);
 
   const sendMessage = useCallback(
     async (
@@ -473,6 +670,17 @@ export function useChat(
     ) => {
       const convId = convIdOverride ?? activeConvId;
       if (!convId || !token || !text.trim()) return;
+      if (
+        inFlightSendConvIdsRef.current.has(convId) ||
+        activeClientStreamIdsRef.current.has(convId) ||
+        processingConvId === convId
+      ) {
+        return;
+      }
+
+      const state = getConvStreamingState(convId);
+      if (!state) return;
+      inFlightSendConvIdsRef.current.add(convId);
 
       if (processingConvId && processingConvId !== convId) {
         abortRef.current?.abort();
@@ -481,14 +689,7 @@ export function useChat(
       setProcessingConvId(convId);
 
       const userMsg: Message = { role: "user", content: text };
-      setViewedMessages((prev) => {
-        const next = [...prev, userMsg];
-        processingMsgs.current = next;
-        return next;
-      });
-
-      const state = getConvStreamingState(convId);
-      if (!state) return;
+      appendOptimisticMessageForConv(convId, userMsg);
 
       // Per-turn nonce for event dedup — server echoes it back on every
       // SSE/poll event so the client can filter stale ones. Must be
@@ -554,14 +755,20 @@ export function useChat(
           options?.confirmedActionId ?? null,
           options?.cancelledActionId ?? null,
           options?.supersededActionId ?? null,
+          (info) => {
+            activeClientStreamIdsRef.current.set(convId, info.streamId);
+            const liveState = getConvStreamingState(convId);
+            if (liveState) {
+              liveState.streamId = info.streamId;
+              liveState.turnId = info.turnId ?? turnUuid;
+              updateAndPersistStreamingState(convId);
+            }
+          },
         );
 
         // Stream finished — load final persisted messages
         const final = await api.loadMessages(convId);
-        processingMsgs.current = final;
-        if (activeConvRef.current === convId) {
-          setViewedMessages(final);
-        }
+        publishMessagesForConv(convId, final);
         const state = getConvStreamingState(convId);
         if (state) {
           clearStreamingStateAfterTurn(
@@ -597,10 +804,12 @@ export function useChat(
         updateAndPersistStreamingState(convId);
         setProcessingConvId(null);
       } finally {
+        inFlightSendConvIdsRef.current.delete(convId);
+        activeClientStreamIdsRef.current.delete(convId);
         abortRef.current = null;
       }
     },
-    [activeConvId, token, processingConvId, anthropicApiKey, applyStreamEvent, getConvStreamingState, updateAndPersistStreamingState]
+    [activeConvId, token, processingConvId, anthropicApiKey, applyStreamEvent, appendOptimisticMessageForConv, getConvStreamingState, publishMessagesForConv, updateAndPersistStreamingState]
   );
 
   const clearAssistantError = useCallback(() => {
@@ -614,38 +823,53 @@ export function useChat(
     }
   }, [activeConvId, getConvStreamingState, updateAndPersistStreamingState]);
 
-  const cancel = useCallback(() => {
-    abortRef.current?.abort();
+  const cancel = useCallback((convIdOverride?: string) => {
+    const targetConvId = convIdOverride ?? activeConvId;
+    if (!targetConvId) return;
+
+    const targetIsActiveView = targetConvId === activeConvId;
+    const shouldCancelServer =
+      processingConvId === targetConvId ||
+      activeClientStreamIdsRef.current.has(targetConvId) ||
+      (targetIsActiveView && serverProcessing);
+
+    if (shouldCancelServer) {
+      abortRef.current?.abort();
+    }
     sseExpectedTurnIdRef.current = null;
     sseLastSeqRef.current = 0;
 
-    if (activeConvId) {
-      const state = getConvStreamingState(activeConvId);
-      if (state) {
-        state.assistantError = null;
-        clearStreamingStateAfterTurn(state);
-        // Don't persist to sessionStorage — delete it instead so refresh doesn't auto-restore
-      }
-      try {
-        sessionStorage.removeItem(CTX_USAGE_KEY(activeConvId));
-        // Completely remove streaming state so cancel is permanent even after refresh
-        sessionStorage.removeItem(STREAMING_STATE_KEY(activeConvId));
-      } catch {
-        /* ignore */
-      }
+    const state = getConvStreamingState(targetConvId);
+    if (state) {
+      state.assistantError = null;
+      clearStreamingStateAfterTurn(state);
+      // Don't persist to sessionStorage — delete it instead so refresh doesn't auto-restore
+    }
+    try {
+      sessionStorage.removeItem(CTX_USAGE_KEY(targetConvId));
+      // Completely remove streaming state so cancel is permanent even after refresh
+      sessionStorage.removeItem(STREAMING_STATE_KEY(targetConvId));
+    } catch {
+      /* ignore */
+    }
+    activeClientStreamIdsRef.current.delete(targetConvId);
+
+    if (shouldCancelServer) {
       // Tell the backend to cancel processing
       try {
-        api.cancelProcessing(activeConvId).catch(() => {
+        api.cancelProcessing(targetConvId).catch(() => {
           // Ignore if cancel fails — frontend is already stopped
         });
       } catch {
         /* ignore */
       }
     }
-    setStreamTokenUsage({ tokens: 0, pct: 0 });
-    setServerProcessing(false);
-    setProcessingConvId(null);
-  }, [activeConvId, getConvStreamingState]);
+    if (targetIsActiveView) {
+      setStreamTokenUsage({ tokens: 0, pct: 0 });
+      setServerProcessing(false);
+    }
+    setProcessingConvId((prev) => (prev === targetConvId ? null : prev));
+  }, [activeConvId, getConvStreamingState, processingConvId, serverProcessing]);
 
   const isViewingProcessing =
     !!processingConvId && activeConvId === processingConvId;

@@ -9,7 +9,7 @@ await mkdir(outDir, { recursive: true });
 const outfile = join(outDir, `configCompat-${Date.now()}.mjs`);
 
 await build({
-  entryPoints: [new URL("../src/configCompat.ts", import.meta.url).pathname],
+  entryPoints: [new URL("../src/core/configCompat.ts", import.meta.url).pathname],
   outfile,
   bundle: true,
   format: "esm",

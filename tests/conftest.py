@@ -98,6 +98,9 @@ def pytest_configure(config):
     }
     for k in list(config._saved_env):
         os.environ.pop(k, None)
+    # api.py loads the repo .env on import; keep DATABASE_URL present-but-empty
+    # so python-dotenv does not rehydrate a developer's local Postgres DSN.
+    os.environ["DATABASE_URL"] = ""
     os.environ["BLUEBOT_CONV_DB"] = str(
         Path(tempfile.gettempdir()) / f"bluebot_meter_agent_tests_{os.getpid()}.db"
     )
@@ -107,5 +110,7 @@ def pytest_unconfigure(config):
     saved = getattr(config, "_saved_env", {})
     if "BLUEBOT_CONV_DB" not in saved:
         os.environ.pop("BLUEBOT_CONV_DB", None)
+    if "DATABASE_URL" not in saved:
+        os.environ.pop("DATABASE_URL", None)
     for k, v in saved.items():
         os.environ[k] = v

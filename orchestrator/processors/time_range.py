@@ -29,7 +29,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from llm import get_provider
 from llm.registry import get_cheap_model
 
-from tpm_window import record_input_tokens
+try:
+    from shared.tpm_window import record_input_tokens
+except ModuleNotFoundError:  # pragma: no cover - package-style import.
+    from ..shared.tpm_window import record_input_tokens
 
 
 def _safe_zoneinfo(name: str | None):

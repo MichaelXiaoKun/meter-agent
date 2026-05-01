@@ -18,10 +18,12 @@ sys.path.insert(0, _orch)
 def _fresh_modules(tmp_path, monkeypatch):
     monkeypatch.setenv("BLUEBOT_CONV_DB", str(tmp_path / "sales_content.db"))
     monkeypatch.setenv("DATABASE_URL", "")
-    for name in ("store", "sales_tools", "sales_content_sync"):
+    for name in ("store", "sales_chat.tools", "sales_content_sync"):
         sys.modules.pop(name, None)
+    if "sales_chat" in sys.modules:
+        sys.modules["sales_chat"].__dict__.pop("tools", None)
     import sales_content_sync
-    import sales_tools
+    sales_tools = importlib.import_module("sales_chat.tools")
     import store
 
     importlib.reload(store)

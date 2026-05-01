@@ -91,7 +91,7 @@ def event_log_path(tmp_path, monkeypatch: pytest.MonkeyPatch):
     path = tmp_path / "events.jsonl"
     monkeypatch.setenv("BLUEBOT_EVENT_LOG_PATH", str(path))
     monkeypatch.delenv("BLUEBOT_EVENT_LOG_STDERR", raising=False)
-    import observability as obs  # pyright: ignore[reportMissingImports]
+    from shared import observability as obs  # pyright: ignore[reportMissingImports]
 
     obs._reset_for_tests()
     yield path

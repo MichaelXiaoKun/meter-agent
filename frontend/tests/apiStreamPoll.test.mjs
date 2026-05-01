@@ -21,7 +21,7 @@ async function importTsModule(srcUrl, name) {
   return import(`file://${outPath}`);
 }
 
-const api = await importTsModule(new URL("../src/api.ts", import.meta.url), "api");
+const api = await importTsModule(new URL("../src/api/client.ts", import.meta.url), "api");
 
 const originalFetch = globalThis.fetch;
 const urls = [];

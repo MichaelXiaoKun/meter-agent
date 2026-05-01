@@ -2,7 +2,7 @@
 
 import pytest
 
-from orchestrator.tool_registry import Tool, ToolRegistry
+from orchestrator.shared.tool_registry import Tool, ToolRegistry
 
 
 class TestToolRegistry:

@@ -100,13 +100,14 @@ flowchart TD
 
 - **Public vs admin:** Sales chat is pre-login and can only call sales-only tools. Admin chat is Auth0-protected and owns live meter/account lookup, flow analysis, pipe configuration, MQTT-related actions, and tickets.
 - **No live browsing during chat:** the Sales assistant reads reviewed/runtime records. Website refresh happens through `orchestrator.sales_content_sync`, not during a customer turn.
+- **Evidence-aware sales validation:** general Sales replies use a rough deterministic check by default, while product, pipe-fit, installation, support, pricing/package, connectivity, recommendation, and capability claims escalate to the stronger verifier.
 - **Durable state:** `store.py` persists conversations, public sales conversations, share snapshots, tickets, sales content records, and sync events in PostgreSQL when `DATABASE_URL` is set, otherwise SQLite.
 - **Ephemeral state:** active stream sessions, cancellation flags, and per-process turn limits live in the FastAPI process. Generated plots/CSV artifacts are files under `PLOTS_DIR` / `BLUEBOT_ANALYSES_DIR`.
 - **Backpressure:** `ORCHESTRATOR_MAX_CONCURRENT_TURNS` limits simultaneous model turns per API process. Admin tools also dedupe/cache some read calls within a turn and parallelize safe read-only work.
 
 ### Sales content refresh
 
-The Sales assistant can start from checked-in JSON files and still work with an empty database. When synced records exist, `sales_tools.py` merges DB records over those snapshots.
+The Sales assistant can start from checked-in JSON files and still work with an empty database. When synced records exist, `sales_chat/tools.py` merges DB records over those snapshots.
 
 `orchestrator.sales_content_sync` fetches only `www.bluebot.com`, `support.bluebot.com`, and `help.bluebot.com`, rejects off-domain redirects, extracts readable text, redacts pricing/package wording, validates records, and writes only valid content. Failed fetches or validation errors are logged without overwriting previous known-good records.
 
@@ -161,7 +162,7 @@ For the deeper system map, see [docs/architecture.md](docs/architecture.md).
 
 ## Quick start
 
-Run the **API** and **frontend** in two terminals from `meter_agent/`.
+Run from the `meter_agent/` directory.
 
 ```bash
 cp .env.example .env
@@ -169,22 +170,20 @@ cp .env.example .env
 
 Set the required variables in `.env`, especially Auth0 values for admin login and either `ANTHROPIC_API_KEY` or a browser-provided key. Full environment details are in [docs/deployment.md](docs/deployment.md).
 
-Start the API:
+Start both servers with the wrapper:
 
 ```bash
-cd orchestrator
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-api.txt
-uvicorn api:app --reload --port 8000 --log-level info
+./run_project.sh --reload
 ```
 
-Start the frontend:
+Or start them separately in two terminals:
 
 ```bash
-cd frontend
-npm ci
-npm run dev
+./run_backend.sh --reload
+```
+
+```bash
+./run_frontend.sh
 ```
 
 Open the Vite URL, usually [http://localhost:5173](http://localhost:5173). Choose **Sales** for the public assistant or **Admin** for the Auth0-protected assistant.
@@ -195,13 +194,14 @@ Open the Vite URL, usually [http://localhost:5173](http://localhost:5173). Choos
 
 | If you are changing... | Start here |
 |------------------------|------------|
-| Sales assistant behavior | [`orchestrator/prompts/sales_system_v1.md`](orchestrator/prompts/sales_system_v1.md), [`orchestrator/sales_agent.py`](orchestrator/sales_agent.py), [`orchestrator/sales_tools.py`](orchestrator/sales_tools.py) |
-| Sales KB / product links | [`orchestrator/sales_content_sync.py`](orchestrator/sales_content_sync.py), [`orchestrator/sales_kb/articles.json`](orchestrator/sales_kb/articles.json), [`orchestrator/sales_kb/product_catalog.json`](orchestrator/sales_kb/product_catalog.json) |
-| Sales UI | [`frontend/src/components/SalesChatPage.tsx`](frontend/src/components/SalesChatPage.tsx), [`frontend/src/hooks/useSalesConversations.ts`](frontend/src/hooks/useSalesConversations.ts) |
-| Shared chat UI | [`frontend/src/components/ChatView.tsx`](frontend/src/components/ChatView.tsx), [`frontend/src/components/Sidebar.tsx`](frontend/src/components/Sidebar.tsx), [`frontend/src/components/SharePopover.tsx`](frontend/src/components/SharePopover.tsx) |
-| API routes | [`orchestrator/server/app.py`](orchestrator/server/app.py), [`orchestrator/server/routers/`](orchestrator/server/routers/), [`orchestrator/api.py`](orchestrator/api.py), [`frontend/src/api.ts`](frontend/src/api.ts) |
+| Sales assistant behavior | [`orchestrator/prompts/sales_system_v1.md`](orchestrator/prompts/sales_system_v1.md), [`orchestrator/sales_chat/agent.py`](orchestrator/sales_chat/agent.py), [`orchestrator/sales_chat/tools.py`](orchestrator/sales_chat/tools.py) |
+| Sales KB / product links | [`orchestrator/sales_chat/content_sync.py`](orchestrator/sales_chat/content_sync.py), [`orchestrator/sales_content_sync.py`](orchestrator/sales_content_sync.py), [`orchestrator/sales_kb/articles.json`](orchestrator/sales_kb/articles.json), [`orchestrator/sales_kb/product_catalog.json`](orchestrator/sales_kb/product_catalog.json) |
+| Sales UI | [`frontend/src/features/sales/SalesChatPage.tsx`](frontend/src/features/sales/SalesChatPage.tsx), [`frontend/src/hooks/useSalesConversations.ts`](frontend/src/hooks/useSalesConversations.ts) |
+| Shared chat UI | [`frontend/src/features/chat/components/ChatView.tsx`](frontend/src/features/chat/components/ChatView.tsx), [`frontend/src/features/conversations/components/Sidebar.tsx`](frontend/src/features/conversations/components/Sidebar.tsx), [`frontend/src/features/share/components/SharePopover.tsx`](frontend/src/features/share/components/SharePopover.tsx) |
+| API routes | [`orchestrator/server/app.py`](orchestrator/server/app.py), [`orchestrator/server/routers/`](orchestrator/server/routers/), [`orchestrator/api.py`](orchestrator/api.py), [`frontend/src/api/client.ts`](frontend/src/api/client.ts) |
 | Conversation persistence | [`orchestrator/persistence/`](orchestrator/persistence/), [`orchestrator/store.py`](orchestrator/store.py) |
 | Admin assistant routing | [`orchestrator/prompts/system_v1.md`](orchestrator/prompts/system_v1.md), [`orchestrator/admin_chat/`](orchestrator/admin_chat/), [`orchestrator/agent.py`](orchestrator/agent.py), [`orchestrator/tools/`](orchestrator/tools/) |
+| Shared orchestrator helpers | [`orchestrator/shared/`](orchestrator/shared/) |
 | Flow analysis internals | [`data-processing-agent/`](data-processing-agent/) |
 | Meter status internals | [`meter-status-agent/`](meter-status-agent/) |
 | Pipe configuration internals | [`pipe-configuration-agent/`](pipe-configuration-agent/) |

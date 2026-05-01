@@ -21,7 +21,7 @@ sys.path.insert(0, _orch)
 def _client_and_modules(tmp_path, monkeypatch):
     monkeypatch.setenv("BLUEBOT_CONV_DB", str(tmp_path / "sales_agent.db"))
     monkeypatch.setenv("DATABASE_URL", "")
-    for name in ("api", "store", "agent", "sales_agent", "sales_tools"):
+    for name in ("api", "store", "agent", "sales_chat.agent", "sales_chat.tools"):
         sys.modules.pop(name, None)
 
     import api as api_mod  # noqa: WPS433
@@ -34,8 +34,29 @@ def _client_and_modules(tmp_path, monkeypatch):
     return TestClient(api_mod.app), api_mod, store
 
 
+_FORBIDDEN_GENERAL_OPENING_CLAIMS = (
+    "bluebot can",
+    "bluebot supports",
+    "bluebot offers",
+    "flow meter",
+    "ultrasonic",
+    "compatible",
+    "installation",
+    "connectivity",
+    "can monitor",
+)
+
+
+def _assert_safe_general_opening(reply: str) -> None:
+    lowered = reply.lower()
+    assert "?" in reply
+    assert "bluebot product fit" in lowered
+    assert "application" in lowered or "pipe" in lowered
+    assert not any(fragment in lowered for fragment in _FORBIDDEN_GENERAL_OPENING_CLAIMS)
+
+
 def test_sales_tool_set_excludes_live_device_and_write_tools():
-    import sales_agent
+    from sales_chat import agent as sales_agent
 
     forbidden = {
         "check_meter_status",
@@ -52,7 +73,7 @@ def test_sales_tool_set_excludes_live_device_and_write_tools():
 
 
 def test_sales_prompt_includes_human_support_handoff_contact():
-    import sales_agent
+    from sales_chat import agent as sales_agent
 
     prompt = sales_agent._SYSTEM_PROMPT
     assert "human support" in prompt
@@ -62,7 +83,7 @@ def test_sales_prompt_includes_human_support_handoff_contact():
 
 
 def test_sales_prompt_rejects_off_topic_requests_kindly():
-    import sales_agent
+    from sales_chat import agent as sales_agent
 
     prompt = sales_agent._SYSTEM_PROMPT
     assert "Off-topic guardrail" in prompt
@@ -73,8 +94,410 @@ def test_sales_prompt_rejects_off_topic_requests_kindly():
     assert "bluebot product fit" in prompt
 
 
+def test_sales_prompt_keeps_greetings_general_without_tool_or_claim():
+    from sales_chat import agent as sales_agent
+
+    prompt = sales_agent._SYSTEM_PROMPT
+    assert "greeting or general opening" in prompt
+    assert "do not call tools" in prompt
+    assert "do not make Bluebot product" in prompt
+    assert "ask one concise discovery question" in prompt
+
+
+def test_sales_prompt_matches_admin_facing_style_without_internal_names():
+    from sales_chat import agent as sales_agent
+
+    prompt = sales_agent._SYSTEM_PROMPT
+    assert "Match the admin assistant's user-facing style" in prompt
+    assert "concise, practical, and direct" in prompt
+    assert "avoid internal tool" in prompt
+    assert "The UI shows process status" in prompt
+
+
+def test_sales_verifier_defaults_to_stronger_model_for_fast_drafts(monkeypatch):
+    from sales_chat.verifier import active_sales_verifier_model
+
+    monkeypatch.delenv("SALES_RESPONSE_VERIFIER_MODEL", raising=False)
+
+    assert active_sales_verifier_model("claude-haiku-4-5") == "claude-sonnet-4-6"
+    assert active_sales_verifier_model("gpt-4o-mini") == "gpt-4o"
+    assert active_sales_verifier_model("gemini-2.0-flash") == "gemini-2.5-pro"
+
+
+def test_sales_verifier_rejects_weaker_override_unless_explicitly_allowed(monkeypatch):
+    from sales_chat.verifier import active_sales_verifier_model
+
+    monkeypatch.setenv("SALES_RESPONSE_VERIFIER_MODEL", "claude-haiku-4-5")
+    monkeypatch.delenv("SALES_RESPONSE_ALLOW_WEAKER_VERIFIER", raising=False)
+    assert active_sales_verifier_model("claude-sonnet-4-6") == "claude-sonnet-4-6"
+
+    monkeypatch.setenv("SALES_RESPONSE_ALLOW_WEAKER_VERIFIER", "true")
+    assert active_sales_verifier_model("claude-sonnet-4-6") == "claude-haiku-4-5"
+
+
+def test_general_sales_reply_uses_rough_validation_without_verifier_provider(monkeypatch):
+    from llm.base import LLMResponse
+    from sales_chat import agent as sales_agent
+
+    class DraftProvider:
+        def count_tokens(self, *args, **kwargs):
+            return 1
+
+        def complete(self, model, messages, *, system, tools, max_tokens):
+            text = "Hi! I can help with Bluebot product fit. What pipe size are you working with?"
+            return LLMResponse(
+                text=text,
+                stop_reason="end_turn",
+                assistant_content=[{"type": "text", "text": text}],
+            )
+
+        def stream(self, *args, **kwargs):  # pragma: no cover - not used here
+            raise AssertionError("sales should not stream")
+
+    provider_calls: list[str] = []
+
+    def fake_get_provider(model, **_kwargs):
+        provider_calls.append(model)
+        if model == "claude-haiku-4-5":
+            return DraftProvider()
+        raise AssertionError("rough validation should not allocate a verifier provider")
+
+    monkeypatch.setenv("SALES_AGENT_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("SALES_RESPONSE_VERIFICATION", "on")
+    monkeypatch.delenv("SALES_RESPONSE_GENERAL_VALIDATION", raising=False)
+    monkeypatch.setattr(sales_agent, "get_provider", fake_get_provider)
+
+    events = []
+    messages = [{"role": "user", "content": "hello"}]
+    reply = sales_agent.run_sales_turn(messages, conversation_id="sales-test", on_event=events.append)
+
+    assert "What pipe size" in reply
+    assert provider_calls == ["claude-haiku-4-5"]
+    assert any(e.get("validation_mode") == "rough" for e in events)
+    assert not any(e.get("validation_mode") == "strong" for e in events)
+
+
+def test_claimy_greeting_draft_is_normalized_before_validation(monkeypatch):
+    from llm.base import LLMResponse
+    from sales_chat import agent as sales_agent
+
+    class DraftProvider:
+        def count_tokens(self, *args, **kwargs):
+            return 1
+
+        def complete(self, model, messages, *, system, tools, max_tokens):
+            text = (
+                "Hi! Bluebot offers ultrasonic flow meters for water monitoring. "
+                "What pipe size are you working with?"
+            )
+            return LLMResponse(
+                text=text,
+                stop_reason="end_turn",
+                assistant_content=[{"type": "text", "text": text}],
+            )
+
+        def stream(self, *args, **kwargs):  # pragma: no cover - not used here
+            raise AssertionError("sales should not stream")
+
+    provider_calls: list[str] = []
+
+    def fake_get_provider(model, **_kwargs):
+        provider_calls.append(model)
+        if model == "claude-haiku-4-5":
+            return DraftProvider()
+        raise AssertionError("general greeting should not allocate a verifier provider")
+
+    monkeypatch.setenv("SALES_AGENT_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("SALES_RESPONSE_VERIFICATION", "on")
+    monkeypatch.delenv("SALES_RESPONSE_GENERAL_VALIDATION", raising=False)
+    monkeypatch.setattr(sales_agent, "get_provider", fake_get_provider)
+
+    events = []
+    messages = [{"role": "user", "content": "hello"}]
+    reply = sales_agent.run_sales_turn(messages, conversation_id="sales-test", on_event=events.append)
+
+    assert reply != "Hi! What pipe size or application are you looking at?"
+    assert reply.startswith("Hi!")
+    assert "narrow down Bluebot product fit" in reply
+    _assert_safe_general_opening(reply)
+    assert provider_calls == ["claude-haiku-4-5"]
+    assert not any(e.get("validation_mode") == "strong" for e in events)
+    assert any(e.get("validation_mode") == "rough" for e in events)
+
+
+def test_how_are_you_greeting_draft_is_normalized_before_validation(monkeypatch):
+    from llm.base import LLMResponse
+    from sales_chat import agent as sales_agent
+
+    class DraftProvider:
+        def count_tokens(self, *args, **kwargs):
+            return 1
+
+        def complete(self, model, messages, *, system, tools, max_tokens):
+            text = "I'm doing well! Bluebot can monitor water use and flow."
+            return LLMResponse(
+                text=text,
+                stop_reason="end_turn",
+                assistant_content=[{"type": "text", "text": text}],
+            )
+
+        def stream(self, *args, **kwargs):  # pragma: no cover - not used here
+            raise AssertionError("sales should not stream")
+
+    def fake_get_provider(model, **_kwargs):
+        if model == "claude-haiku-4-5":
+            return DraftProvider()
+        raise AssertionError("general greeting should not allocate a verifier provider")
+
+    monkeypatch.setenv("SALES_AGENT_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("SALES_RESPONSE_VERIFICATION", "on")
+    monkeypatch.delenv("SALES_RESPONSE_GENERAL_VALIDATION", raising=False)
+    monkeypatch.setattr(sales_agent, "get_provider", fake_get_provider)
+
+    events = []
+    messages = [{"role": "user", "content": "how are you"}]
+    reply = sales_agent.run_sales_turn(messages, conversation_id="sales-test", on_event=events.append)
+
+    assert reply != "Hi! What pipe size or application are you looking at?"
+    assert "I'm doing well, thanks for asking." in reply
+    _assert_safe_general_opening(reply)
+    assert not any(e.get("validation_mode") == "strong" for e in events)
+
+
+def test_safe_general_opening_templates_vary_by_user_intent():
+    from sales_chat import agent as sales_agent
+
+    hello = sales_agent._safe_general_opening_reply([{"role": "user", "content": "hello"}])
+    how_are_you = sales_agent._safe_general_opening_reply(
+        [{"role": "user", "content": "how are you"}]
+    )
+    thanks = sales_agent._safe_general_opening_reply([{"role": "user", "content": "thanks"}])
+    help_me = sales_agent._safe_general_opening_reply(
+        [{"role": "user", "content": "can you help"}]
+    )
+
+    assert hello != how_are_you
+    assert how_are_you != thanks
+    assert help_me != hello
+    for reply in (hello, how_are_you, thanks, help_me):
+        _assert_safe_general_opening(reply)
+
+
+def test_run_sales_turn_strips_persisted_turn_activity_before_provider(monkeypatch):
+    from llm.base import LLMResponse
+    from sales_chat import agent as sales_agent
+
+    class DraftProvider:
+        def count_tokens(self, model, messages, *, system, tools):
+            self._assert_no_turn_activity(messages)
+            return 1
+
+        def complete(self, model, messages, *, system, tools, max_tokens):
+            self._assert_no_turn_activity(messages)
+            text = "I can help narrow down Bluebot product fit. What application are you looking at?"
+            return LLMResponse(
+                text=text,
+                stop_reason="end_turn",
+                assistant_content=[{"type": "text", "text": text}],
+            )
+
+        def stream(self, *args, **kwargs):  # pragma: no cover - not used here
+            raise AssertionError("sales should not stream")
+
+        @staticmethod
+        def _assert_no_turn_activity(messages):
+            for msg in messages:
+                content = msg.get("content") if isinstance(msg, dict) else None
+                if isinstance(content, list):
+                    assert not any(
+                        isinstance(block, dict) and block.get("type") == "turn_activity"
+                        for block in content
+                    )
+
+    def fake_get_provider(model, **_kwargs):
+        return DraftProvider()
+
+    monkeypatch.setenv("SALES_AGENT_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("SALES_RESPONSE_VERIFICATION", "off")
+    monkeypatch.setattr(sales_agent, "get_provider", fake_get_provider)
+
+    messages = [
+        {"role": "user", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Hi!"},
+                {"type": "turn_activity", "v": 1, "events": [{"type": "done"}]},
+            ],
+        },
+        {"role": "user", "content": "how are you"},
+    ]
+
+    reply = sales_agent.run_sales_turn(messages, conversation_id="sales-test")
+
+    assert "Bluebot product fit" in reply
+    assert messages[-1]["role"] == "assistant"
+
+
+def test_general_validation_classifier_keeps_neutral_replies_rough():
+    from sales_chat.verifier import classify_sales_validation
+
+    assert classify_sales_validation(
+        "Thanks, what pipe size is it?",
+        [{"role": "user", "content": "I want to monitor irrigation."}],
+    ).mode == "rough"
+    assert classify_sales_validation(
+        "I can't help with that unrelated request, but I can help with Bluebot product fit.",
+        [{"role": "user", "content": "write a poem about the moon"}],
+    ).mode == "rough"
+    assert classify_sales_validation(
+        "I can help with Bluebot product fit. Bluebot can monitor irrigation.",
+        [{"role": "user", "content": "Can it help with irrigation?"}],
+    ).mode == "strong"
+
+
+def test_general_validation_skip_mode_only_skips_general_replies():
+    from sales_chat.verifier import classify_sales_validation
+
+    general = classify_sales_validation(
+        "Hi! I can help with Bluebot product fit. What pipe size are you working with?",
+        [{"role": "user", "content": "hello"}],
+        configured_mode="skip",
+    )
+    pipe = classify_sales_validation(
+        "Bluebot supports pipes up to 24 inches.",
+        [{"role": "user", "content": "What pipe sizes work?"}],
+        configured_mode="skip",
+    )
+
+    assert general.mode == "skipped"
+    assert general.escalated is False
+    assert pipe.mode == "strong"
+    assert pipe.escalated is True
+
+
+def test_evidence_claims_escalate_to_strong_validation():
+    from sales_chat.verifier import classify_sales_validation
+
+    tool_messages = [
+        {"role": "user", "content": "Can Bluebot help with irrigation?"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "search_sales_kb",
+                    "input": {"query": "irrigation"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": "{\"success\": true}",
+                }
+            ],
+        },
+    ]
+
+    product = classify_sales_validation(
+        "I recommend Bluebot ProLink Prime for this site.",
+        [{"role": "user", "content": "What should I buy?"}],
+    )
+    pipe = classify_sales_validation(
+        "Bluebot supports pipes up to 24 inches.",
+        [{"role": "user", "content": "What pipe sizes work?"}],
+    )
+    evidence = classify_sales_validation(
+        "Based on Bluebot materials, it can help with irrigation monitoring.",
+        tool_messages,
+    )
+    neutral = classify_sales_validation("Thanks, what pipe size is it?", tool_messages)
+
+    assert product.mode == "strong"
+    assert pipe.mode == "strong"
+    assert evidence.mode == "strong"
+    assert neutral.mode == "rough"
+    assert product.escalated is True
+    assert pipe.escalated is True
+
+
+def test_general_validation_strong_env_preserves_always_strong_behavior(monkeypatch):
+    from llm.base import LLMResponse
+    from sales_chat import agent as sales_agent
+
+    class DraftProvider:
+        def count_tokens(self, *args, **kwargs):
+            return 1
+
+        def complete(self, model, messages, *, system, tools, max_tokens):
+            text = "Hi! What pipe size are you working with?"
+            return LLMResponse(
+                text=text,
+                stop_reason="end_turn",
+                assistant_content=[{"type": "text", "text": text}],
+            )
+
+        def stream(self, *args, **kwargs):  # pragma: no cover - not used here
+            raise AssertionError("sales should not stream")
+
+    class VerifierProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, model, messages, *, system, tools, max_tokens):
+            self.calls += 1
+            payload = {
+                "passed": True,
+                "verdict": "pass",
+                "message": "General reply is safe.",
+                "validation_points": [],
+                "issues": [],
+                "corrected_answer": "",
+            }
+            return LLMResponse(
+                text=json.dumps(payload),
+                stop_reason="end_turn",
+                assistant_content=[{"type": "text", "text": json.dumps(payload)}],
+            )
+
+        def stream(self, *args, **kwargs):  # pragma: no cover - not used here
+            raise AssertionError("verifier should not stream")
+
+        def count_tokens(self, *args, **kwargs):  # pragma: no cover - not used here
+            return 1
+
+    verifier_provider = VerifierProvider()
+
+    def fake_get_provider(model, **_kwargs):
+        if model == "claude-sonnet-4-6":
+            return verifier_provider
+        return DraftProvider()
+
+    monkeypatch.setenv("SALES_AGENT_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("SALES_RESPONSE_VERIFICATION", "on")
+    monkeypatch.setenv("SALES_RESPONSE_GENERAL_VALIDATION", "strong")
+    monkeypatch.setattr(sales_agent, "get_provider", fake_get_provider)
+
+    events = []
+    messages = [{"role": "user", "content": "hello"}]
+    reply = sales_agent.run_sales_turn(messages, conversation_id="sales-test", on_event=events.append)
+
+    assert "pipe size" in reply
+    assert verifier_provider.calls == 1
+    assert any(
+        e.get("validation_mode") == "strong" and e.get("escalated") is False
+        for e in events
+        if e["type"] == "validation_start"
+    )
+
+
 def test_sales_verifier_partially_validates_pipe_size_claims():
-    from sales_verifier import validate_sales_answer_points
+    from sales_chat.verifier import validate_sales_answer_points
 
     points = validate_sales_answer_points(
         "bluebot can support 1, 2, 3 inches, and up to 24 inches."
@@ -92,7 +515,7 @@ def test_sales_verifier_partially_validates_pipe_size_claims():
 
 def test_sales_verifier_rewrites_until_supported_by_scraped_context():
     from llm.base import LLMResponse
-    from sales_verifier import verify_sales_response
+    from sales_chat.verifier import verify_sales_response
 
     class FakeVerifierProvider:
         def __init__(self):
@@ -155,7 +578,7 @@ def test_sales_verifier_rewrites_until_supported_by_scraped_context():
 
 def test_sales_verifier_uses_evidence_answer_when_model_returns_no_correction():
     from llm.base import LLMResponse
-    from sales_verifier import verify_sales_response
+    from sales_chat.verifier import verify_sales_response
 
     class MalformedVerifierProvider:
         def complete(self, model, messages, *, system, tools, max_tokens):
@@ -190,7 +613,7 @@ def test_sales_verifier_uses_evidence_answer_when_model_returns_no_correction():
 
 def test_run_sales_turn_sends_only_verified_sales_text(monkeypatch):
     from llm.base import LLMResponse
-    import sales_agent
+    from sales_chat import agent as sales_agent
 
     class DraftProvider:
         def count_tokens(self, *args, **kwargs):
@@ -265,12 +688,20 @@ def test_run_sales_turn_sends_only_verified_sales_text(monkeypatch):
     assert text_events == [reply]
     assert messages[-1]["content"][0]["text"] == reply
     assert any(e["type"] == "validation_start" for e in events)
+    assert any(
+        e.get("draft_model") == "claude-haiku-4-5"
+        and e.get("validator_model") == "claude-sonnet-4-6"
+        and e.get("validation_mode") == "strong"
+        and e.get("escalated") is True
+        for e in events
+        if e["type"] == "validation_start"
+    )
     assert any(e.get("verdict") == "pass" for e in events)
 
 
 def test_run_sales_turn_large_pipe_question_never_uses_generic_fallback(monkeypatch):
     from llm.base import LLMResponse
-    import sales_agent
+    from sales_chat import agent as sales_agent
 
     class DraftProvider:
         def count_tokens(self, *args, **kwargs):
@@ -323,7 +754,7 @@ def test_run_sales_turn_large_pipe_question_never_uses_generic_fallback(monkeypa
 
 
 def test_sales_kb_retrieves_pipe_impact_guidance():
-    import sales_tools
+    from sales_chat import tools as sales_tools
 
     result = sales_tools.search_sales_kb("will it damage my pipe or cause pressure drop")
     assert result["success"] is True
@@ -335,10 +766,12 @@ def test_sales_kb_retrieves_pipe_impact_guidance():
 def test_capture_lead_summary_persists_structured_fields(tmp_path, monkeypatch):
     monkeypatch.setenv("BLUEBOT_CONV_DB", str(tmp_path / "lead_summary.db"))
     monkeypatch.setenv("DATABASE_URL", "")
-    for name in ("store", "sales_tools"):
+    for name in ("store", "sales_chat.tools"):
         sys.modules.pop(name, None)
+    if "sales_chat" in sys.modules:
+        sys.modules["sales_chat"].__dict__.pop("tools", None)
     import store
-    import sales_tools
+    sales_tools = importlib.import_module("sales_chat.tools")
 
     importlib.reload(store)
     importlib.reload(sales_tools)
@@ -381,7 +814,7 @@ def test_sqlite_env_can_point_to_volume_directory(tmp_path, monkeypatch):
 
 
 def test_recommend_product_line_uses_pipe_size_and_wifi_requirements():
-    import sales_tools
+    from sales_chat import tools as sales_tools
 
     small_wifi = sales_tools.recommend_product_line(
         pipe_size="1 inch",
@@ -420,6 +853,23 @@ def test_public_sales_api_requires_no_auth_and_persists_lead_summary(tmp_path, m
         }
         store.update_sales_lead_summary(conversation_id, lead)
         if on_event:
+            on_event({"type": "thinking"})
+            on_event(
+                {
+                    "type": "validation_start",
+                    "message": "Quick-checking whether this general reply needs Bluebot evidence.",
+                    "validation_mode": "rough",
+                }
+            )
+            on_event(
+                {
+                    "type": "validation_result",
+                    "verdict": "pass",
+                    "message": "No Bluebot product claims requiring evidence were detected.",
+                    "next_action": "send_answer",
+                    "validation_mode": "rough",
+                }
+            )
             on_event({"type": "lead_summary", "lead_summary": lead})
             on_event({"type": "text_delta", "text": "Yes, clamp-on monitoring can be a fit."})
         messages.append(
@@ -477,6 +927,20 @@ def test_public_sales_api_requires_no_auth_and_persists_lead_summary(tmp_path, m
     assert body["lead_summary"]["pipe_material"] == "copper"
     assert body["messages"][0]["role"] == "user"
     assert body["messages"][-1]["role"] == "assistant"
+    content = body["messages"][-1]["content"]
+    assert isinstance(content, list)
+    activity_blocks = [
+        block
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "turn_activity"
+    ]
+    assert len(activity_blocks) == 1
+    persisted_event_types = [event["type"] for event in activity_blocks[0]["events"]]
+    assert "thinking" in persisted_event_types
+    assert "validation_start" in persisted_event_types
+    assert "validation_result" in persisted_event_types
+    assert "text_stream" in persisted_event_types
+    assert persisted_event_types[-1] == "done"
 
 
 def test_public_sales_conversation_crud_history_without_auth(tmp_path, monkeypatch):
