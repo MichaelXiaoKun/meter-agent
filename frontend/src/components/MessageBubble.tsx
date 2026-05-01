@@ -48,6 +48,7 @@ import PlotImage, { PlotGrouped } from "./PlotImage";
 import ArtifactLinks from "./ArtifactLinks";
 import TurnActivityTimeline from "./TurnActivityTimeline";
 import ConfigConfirmationCard from "./ConfigConfirmationCard";
+import SweepResultCard from "./SweepResultCard";
 
 type ConfigWorkflow = NonNullable<SSEEvent["config_workflow"]>;
 type ToastFn = (a: {
@@ -110,6 +111,19 @@ function turnActivityFromMessage(
 function configWorkflowFromMessage(content: string | ContentBlock[]): ConfigWorkflow | null {
   const workflows = configWorkflowsFromContent(content);
   return workflows[workflows.length - 1] ?? null;
+}
+
+function sweepResultFromMessage(content: string | ContentBlock[]): SSEEvent["sweep_result"] | null {
+  if (typeof content === "string") return null;
+  const block = content.find(
+    (b) => b.type === "turn_activity" && Array.isArray((b as ContentBlock).events)
+  ) as ContentBlock | undefined;
+  const events = block?.events ?? [];
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const result = (events[i] as unknown as SSEEvent | undefined)?.sweep_result;
+    if (result) return result;
+  }
+  return null;
 }
 
 function configWorkflowsFromContent(
@@ -294,10 +308,14 @@ export default function MessageBubble({
         : null,
     [message.role, message.content, transcript, messageIndex, liveConfigEvents]
   );
+  const sweepResult = useMemo(
+    () => (message.role === "assistant" ? sweepResultFromMessage(message.content) : null),
+    [message.role, message.content]
+  );
 
   // User bubbles need text. Assistant bubbles need text, artifacts, and/or persisted turn activity.
   if (isUser && !trimmed) return null;
-  if (!isUser && !trimmed && !hasPlots && !hasArtifacts && !hasHistoryActivity) return null;
+  if (!isUser && !trimmed && !hasPlots && !hasArtifacts && !hasHistoryActivity && !sweepResult) return null;
 
   // When tool_result provides plot_paths, render images only from those URLs — not from
   // markdown (the model often echoes a different timestamp than int(timestamps[0]) in filenames).
@@ -460,6 +478,7 @@ export default function MessageBubble({
             onTypeOther={onTypeOtherConfig}
           />
         ) : null}
+        {sweepResult ? <SweepResultCard result={sweepResult} /> : null}
       </div>
     );
   }

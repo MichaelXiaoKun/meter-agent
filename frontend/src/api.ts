@@ -1,4 +1,13 @@
-import type { Conversation, Message, SSEEvent } from "./types";
+import type {
+  Conversation,
+  Message,
+  SSEEvent,
+  Ticket,
+  TicketEvent,
+  TicketOwnerType,
+  TicketPriority,
+  TicketStatus,
+} from "./types";
 
 const BASE = "/api";
 
@@ -202,6 +211,8 @@ export interface SalesSSEEvent {
   | "text_delta"
   | "tool_call"
   | "tool_result"
+  | "validation_start"
+  | "validation_result"
   | "lead_summary"
   | "thinking"
   | "token_usage"
@@ -216,6 +227,8 @@ export interface SalesSSEEvent {
   lead_summary?: SalesLeadSummary;
   completion_score?: number;
   missing_fields?: string[];
+  verdict?: string;
+  next_action?: string;
   message?: string;
   error?: string;
   turn_id?: string;
@@ -243,6 +256,133 @@ export async function checkProcessing(
   signal?: AbortSignal
 ): Promise<boolean> {
   return (await getProcessingStatus(convId, signal)).processing;
+}
+
+// ---------------------------------------------------------------------------
+// Native admin tickets
+// ---------------------------------------------------------------------------
+
+export interface TicketCreateInput {
+  user_id: string;
+  conversation_id?: string | null;
+  serial_number?: string | null;
+  title: string;
+  description?: string;
+  success_criteria: string;
+  status?: TicketStatus;
+  priority?: TicketPriority;
+  owner_type?: TicketOwnerType;
+  owner_id?: string | null;
+  created_by_turn_id?: string | null;
+  due_at?: number | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface TicketUpdateInput {
+  user_id: string;
+  title?: string | null;
+  description?: string | null;
+  success_criteria?: string | null;
+  status?: TicketStatus | null;
+  priority?: TicketPriority | null;
+  owner_type?: TicketOwnerType | null;
+  owner_id?: string | null;
+  due_at?: number | null;
+  serial_number?: string | null;
+  metadata?: Record<string, unknown> | null;
+  note?: string;
+  evidence?: Record<string, unknown> | null;
+}
+
+export interface TicketEventInput {
+  user_id: string;
+  event_type: string;
+  actor_type?: string;
+  actor_id?: string | null;
+  note?: string;
+  turn_id?: string | null;
+  evidence?: Record<string, unknown> | null;
+}
+
+export async function listTickets(
+  userId: string,
+  opts: {
+    conversationId?: string | null;
+    serialNumber?: string | null;
+    status?: TicketStatus | TicketStatus[];
+    signal?: AbortSignal;
+  } = {},
+): Promise<Ticket[]> {
+  const params = new URLSearchParams({ user_id: userId });
+  if (opts.conversationId) params.set("conversation_id", opts.conversationId);
+  if (opts.serialNumber) params.set("serial_number", opts.serialNumber);
+  if (opts.status) {
+    params.set(
+      "status",
+      Array.isArray(opts.status) ? opts.status.join(",") : opts.status,
+    );
+  }
+  const res = await fetch(`${BASE}/tickets?${params.toString()}`, {
+    signal: opts.signal,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json() as Promise<Ticket[]>;
+}
+
+export async function createTicket(
+  body: TicketCreateInput,
+  accessToken: string,
+  signal?: AbortSignal,
+): Promise<Ticket> {
+  const res = await fetch(`${BASE}/tickets`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json() as Promise<Ticket>;
+}
+
+export async function updateTicket(
+  ticketId: string,
+  body: TicketUpdateInput,
+  accessToken: string,
+  signal?: AbortSignal,
+): Promise<Ticket> {
+  const res = await fetch(`${BASE}/tickets/${encodeURIComponent(ticketId)}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json() as Promise<Ticket>;
+}
+
+export async function appendTicketEvent(
+  ticketId: string,
+  body: TicketEventInput,
+  accessToken: string,
+  signal?: AbortSignal,
+): Promise<TicketEvent> {
+  const res = await fetch(`${BASE}/tickets/${encodeURIComponent(ticketId)}/events`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json() as Promise<TicketEvent>;
 }
 
 // ---------------------------------------------------------------------------

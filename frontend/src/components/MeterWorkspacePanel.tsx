@@ -1,6 +1,8 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
+import type { Ticket, TicketStatus } from "../types";
 import type { MeterWorkspaceState } from "../meterWorkspace";
+import { proposedConfigLine } from "../configCompat";
 import {
   attributionLabel,
   confidenceLabel,
@@ -13,8 +15,12 @@ import PlotImage from "./PlotImage";
 interface MeterWorkspacePanelProps {
   workspace: MeterWorkspaceState;
   processing: boolean;
+  tickets?: Ticket[];
   onCompose: (message: string) => void;
   onConfirmConfig: (actionId: string) => void;
+  onTrackNextAction?: (label: string) => void;
+  onTicketClaim?: (ticket: Ticket) => void;
+  onTicketStatus?: (ticket: Ticket, status: TicketStatus) => void;
 }
 
 function Field({ label, value }: { label: string; value?: string | number | null }) {
@@ -80,19 +86,6 @@ function formatPipe(pipe: Record<string, unknown> | null | undefined): string {
   return [material, standard, size, inner].filter(Boolean).join(" / ") || "Unknown";
 }
 
-function proposedLine(values: Record<string, unknown> | undefined): string {
-  if (!values) return "No proposed values";
-  const parts = [
-    values.pipe_material,
-    values.pipe_standard,
-    values.pipe_size,
-    values.transducer_angle ? `angle ${values.transducer_angle}` : "",
-  ]
-    .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
-    .map((v) => v.trim());
-  return parts.join(" / ") || JSON.stringify(values);
-}
-
 function textValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -102,6 +95,25 @@ function listValues(value: unknown): string[] {
   return value
     .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
     .map((item) => item.trim());
+}
+
+function prettyStatus(status: string): string {
+  return status.replaceAll("_", " ").replace(/^\w/, (m) => m.toUpperCase());
+}
+
+function prettyOwner(ticket: Ticket): string {
+  if (ticket.owner_type === "agent") return ticket.owner_id || "Agent";
+  if (ticket.owner_type === "human") return ticket.owner_id || "Human";
+  return "Unassigned";
+}
+
+function relativeUpdated(ts: number): string {
+  if (!Number.isFinite(ts) || ts <= 0) return "";
+  const delta = Date.now() / 1000 - ts;
+  if (delta < 60) return "just now";
+  if (delta < 3600) return `${Math.round(delta / 60)}m ago`;
+  if (delta < 86400) return `${Math.round(delta / 3600)}h ago`;
+  return `${Math.round(delta / 86400)}d ago`;
 }
 
 function evidenceMessages(
@@ -267,8 +279,12 @@ function TabSummary({
 export default function MeterWorkspacePanel({
   workspace,
   processing,
+  tickets = [],
   onCompose,
   onConfirmConfig,
+  onTrackNextAction,
+  onTicketClaim,
+  onTicketStatus,
 }: MeterWorkspacePanelProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [analysisTab, setAnalysisTab] = useState<AnalysisTab>("overview");
@@ -403,7 +419,7 @@ export default function MeterWorkspacePanel({
                   Confirmation required
                 </div>
                 <p className="mt-1 text-sm leading-relaxed">
-                  {proposedLine(pending.proposed_values)}
+                  {proposedConfigLine(pending.proposed_values)}
                 </p>
               </div>
               {pending.risk && (
@@ -428,29 +444,117 @@ export default function MeterWorkspacePanel({
         </div>
       </Section>
 
+      <Section title="Tickets">
+        {tickets.length > 0 ? (
+          <div className="space-y-2">
+            {tickets.map((ticket) => (
+              <div
+                key={ticket.id}
+                className="space-y-2 rounded-md border border-brand-border/80 bg-white/75 px-3 py-3 text-xs dark:bg-white/[0.04]"
+              >
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-brand-900">
+                    {ticket.title}
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] font-medium text-brand-muted">
+                    <span className="rounded border border-brand-border px-1.5 py-0.5">
+                      {prettyStatus(ticket.status)}
+                    </span>
+                    <span className="rounded border border-brand-border px-1.5 py-0.5">
+                      {ticket.priority}
+                    </span>
+                    <span className="rounded border border-brand-border px-1.5 py-0.5">
+                      {prettyOwner(ticket)}
+                    </span>
+                    {relativeUpdated(ticket.updated_at) && (
+                      <span className="rounded border border-brand-border px-1.5 py-0.5">
+                        {relativeUpdated(ticket.updated_at)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <p className="line-clamp-2 leading-relaxed text-brand-muted">
+                  {ticket.success_criteria}
+                </p>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    disabled={processing}
+                    onClick={() => onTicketClaim?.(ticket)}
+                    className="min-h-8 rounded-md border border-brand-border bg-white px-2 text-xs font-semibold text-brand-800 transition hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.04]"
+                  >
+                    Claim
+                  </button>
+                  <button
+                    type="button"
+                    disabled={processing}
+                    onClick={() => onTicketStatus?.(ticket, "in_progress")}
+                    className="min-h-8 rounded-md border border-brand-border bg-white px-2 text-xs font-semibold text-brand-800 transition hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.04]"
+                  >
+                    Start
+                  </button>
+                  <button
+                    type="button"
+                    disabled={processing}
+                    onClick={() => onTicketStatus?.(ticket, "resolved")}
+                    className="min-h-8 rounded-md border border-emerald-300 bg-emerald-50 px-2 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-900/60 dark:bg-emerald-950/25 dark:text-emerald-200"
+                  >
+                    Resolve
+                  </button>
+                  <button
+                    type="button"
+                    disabled={processing}
+                    onClick={() => onTicketStatus?.(ticket, "cancelled")}
+                    className="min-h-8 rounded-md border border-brand-border bg-white px-2 text-xs font-semibold text-brand-muted transition hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.04]"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm leading-relaxed text-brand-muted">
+            No open tickets for this meter and conversation.
+          </p>
+        )}
+      </Section>
+
       <Section title="Next Actions">
         <div className="flex flex-col gap-2">
           {(workspace.nextActions.length
             ? workspace.nextActions
             : ["Run health check", "Analyze recent flow", "Configure safely"]
           ).map((label) => (
-            <button
+            <div
               key={label}
-              type="button"
-              className="min-h-9 rounded-md border border-brand-border/80 bg-white px-3 py-2 text-left text-sm font-medium text-brand-800 transition hover:border-brand-400 hover:bg-brand-50 dark:bg-white/[0.04] dark:text-brand-900 dark:hover:bg-white/[0.08]"
-              onClick={() => {
-                const s = serial || "<METER SERIAL>";
-                if (/flow|window|compare/i.test(label)) {
-                  onCompose(`Analyze the last 24 hours of flow data for meter ${s}`);
-                } else if (/pipe|configure/i.test(label)) {
-                  onCompose(`Configure meter ${s} safely. I need to set pipe material, standard, size, and transducer angle.`);
-                } else {
-                  onCompose(`Run a health check on meter ${s}`);
-                }
-              }}
+              className="grid grid-cols-[1fr_auto] overflow-hidden rounded-md border border-brand-border/80 bg-white dark:bg-white/[0.04]"
             >
-              {label}
-            </button>
+              <button
+                type="button"
+                className="min-h-9 px-3 py-2 text-left text-sm font-medium text-brand-800 transition hover:bg-brand-50 dark:text-brand-900 dark:hover:bg-white/[0.08]"
+                onClick={() => {
+                  const s = serial || "<METER SERIAL>";
+                  if (/flow|window|compare/i.test(label)) {
+                    onCompose(`Analyze the last 24 hours of flow data for meter ${s}`);
+                  } else if (/pipe|configure/i.test(label)) {
+                    onCompose(`Configure meter ${s} safely. I need to set pipe material, standard, size, and transducer angle.`);
+                  } else {
+                    onCompose(`Run a health check on meter ${s}`);
+                  }
+                }}
+              >
+                {label}
+              </button>
+              <button
+                type="button"
+                disabled={processing}
+                className="min-h-9 border-l border-brand-border/70 px-2.5 text-xs font-semibold text-brand-muted transition hover:bg-brand-50 hover:text-brand-800 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/[0.08] dark:hover:text-brand-900"
+                onClick={() => onTrackNextAction?.(label)}
+              >
+                Track
+              </button>
+            </div>
           ))}
         </div>
       </Section>

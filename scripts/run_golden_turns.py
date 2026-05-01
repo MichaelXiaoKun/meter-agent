@@ -128,6 +128,7 @@ _TOOL_ATTRS: dict[str, str] = {
     "configure_meter_pipe": "configure_meter_pipe",
     "set_transducer_angle_only": "set_transducer_angle_only",
     "sweep_transducer_angles": "sweep_transducer_angles",
+    "set_zero_point": "set_zero_point",
 }
 
 
@@ -207,6 +208,7 @@ def _reconstruct_inputs(tool: str, args: tuple, kwargs: dict) -> dict[str, Any]:
         ],
         "set_transducer_angle_only": ["serial_number", "transducer_angle"],
         "sweep_transducer_angles": ["serial_number", "transducer_angles"],
+        "set_zero_point": ["serial_number"],
     }
     names = positional_schema.get(tool, [])
     inputs: dict[str, Any] = {}
@@ -364,6 +366,11 @@ def _run_one(agent: ModuleType, fixture: dict[str, Any], prompt_version: str) ->
 
         def _record_event(event: dict) -> None:
             if event.get("type") == "tool_call":
+                tool = event.get("tool")
+                inp = event.get("input")
+                if isinstance(tool, str) and isinstance(inp, dict):
+                    event_calls.append(ToolCallRecord(tool=tool, inputs=dict(inp)))
+            elif event.get("type") == "config_confirmation_required":
                 tool = event.get("tool")
                 inp = event.get("input")
                 if isinstance(tool, str) and isinstance(inp, dict):

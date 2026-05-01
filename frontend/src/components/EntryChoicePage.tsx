@@ -43,7 +43,7 @@ export default function EntryChoicePage({
             <button
               type="button"
               onClick={onChooseSales}
-              className="group flex min-h-[5rem] w-full items-center justify-between gap-4 rounded-xl border border-brand-border bg-brand-50 px-4 py-4 text-left transition hover:border-brand-500 hover:bg-white hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 dark:bg-brand-50"
+              className="group flex min-h-[5rem] w-full items-center justify-between gap-4 rounded-xl border border-brand-border bg-white px-4 py-4 text-left transition hover:border-brand-500 hover:bg-brand-50 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 dark:bg-brand-100"
             >
               <span className="min-w-0">
                 <span className="block text-base font-bold text-brand-900">

@@ -10,7 +10,15 @@ from typing import Any
 from llm import get_provider
 from llm.registry import MODEL_CATALOG
 
-from sales_tools import SALES_TOOL_NAMES, TOOL_DEFINITIONS, dispatch_sales_tool
+from base_agent import Agent
+from sales_tools import SALES_TOOL_NAMES, TOOL_DEFINITIONS, dispatch_sales_tool, _SALES_REGISTRY
+from sales_verifier import (
+    active_sales_verifier_model,
+    same_provider_api_key_override,
+    sales_response_verification_attempts,
+    sales_response_verification_enabled,
+    verify_sales_response,
+)
 
 _PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "sales_system_v1.md"
 _SYSTEM_PROMPT = _PROMPT_PATH.read_text(encoding="utf-8")
@@ -83,18 +91,40 @@ def run_sales_turn(
             pass
 
         _event(on_event, {"type": "thinking"})
-        response = provider.stream(
+        response = provider.complete(
             active_model,
             messages,
             system=_SYSTEM_PROMPT,
             tools=TOOL_DEFINITIONS,
             max_tokens=2048,
-            on_text_delta=lambda delta: _event(on_event, {"type": "text_delta", "text": delta}),
         )
 
         if response.stop_reason == "end_turn":
-            messages.append({"role": "assistant", "content": response.assistant_content})
-            return response.text or "(No response)"
+            final_text = response.text or "(No response)"
+            if sales_response_verification_enabled():
+                verifier_model = active_sales_verifier_model(active_model)
+                verifier_provider = get_provider(
+                    verifier_model,
+                    api_key_override=same_provider_api_key_override(
+                        verifier_model=verifier_model,
+                        draft_model=active_model,
+                        api_key_override=llm_api_key,
+                    ),
+                )
+                verified = verify_sales_response(
+                    final_text,
+                    messages,
+                    verifier_provider=verifier_provider,
+                    verifier_model=verifier_model,
+                    max_attempts=sales_response_verification_attempts(),
+                    on_event=on_event,
+                )
+                final_text = verified.answer
+            _event(on_event, {"type": "text_delta", "text": final_text})
+            messages.append(
+                {"role": "assistant", "content": [{"type": "text", "text": final_text}]}
+            )
+            return final_text
 
         if response.stop_reason != "tool_use":
             break
@@ -150,6 +180,16 @@ def run_sales_turn(
     messages.append({"role": "assistant", "content": [{"type": "text", "text": msg}]})
     _event(on_event, {"type": "tool_round_limit", "limit": max_rounds})
     return msg
+
+
+# ---- Agent instance ----
+
+_sales_agent = Agent(
+    _SALES_REGISTRY,
+    system_prompt=_SYSTEM_PROMPT,
+    model=_DEFAULT_SALES_MODEL,
+    max_rounds=_max_sales_rounds(),
+)
 
 
 __all__ = [

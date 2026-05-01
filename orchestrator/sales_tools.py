@@ -173,20 +173,56 @@ _QUALIFICATION_FIELDS = [
 ]
 
 
-def _load_articles() -> list[dict[str, str]]:
+def _load_json_records(path: Path) -> list[dict[str, Any]]:
     try:
-        raw = json.loads(_KB_PATH.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
-    return [a for a in raw if isinstance(a, dict)]
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def _load_synced_records(record_type: str) -> list[dict[str, Any]]:
+    try:
+        return store.load_sales_content_records(record_type)
+    except Exception:
+        return []
+
+
+def _merge_records(
+    snapshot_records: list[dict[str, Any]],
+    synced_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not synced_records:
+        return snapshot_records
+
+    records_by_id: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for record in snapshot_records:
+        record_id = str(record.get("id") or "").strip()
+        if not record_id:
+            continue
+        records_by_id[record_id] = dict(record)
+        order.append(record_id)
+
+    for record in synced_records:
+        record_id = str(record.get("id") or "").strip()
+        if not record_id:
+            continue
+        if record_id not in records_by_id:
+            order.append(record_id)
+        records_by_id[record_id] = {**records_by_id.get(record_id, {}), **record}
+
+    return [records_by_id[record_id] for record_id in order if record_id in records_by_id]
+
+
+def _load_articles() -> list[dict[str, Any]]:
+    snapshots = _load_json_records(_KB_PATH)
+    return _merge_records(snapshots, _load_synced_records("article"))
 
 
 def _load_catalog() -> list[dict[str, Any]]:
-    try:
-        raw = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    return [p for p in raw if isinstance(p, dict)]
+    snapshots = _load_json_records(_CATALOG_PATH)
+    return _merge_records(snapshots, _load_synced_records("product"))
 
 
 def _link(label: str, url: str | None) -> dict[str, str] | None:
@@ -314,6 +350,74 @@ def search_sales_kb(query: str, max_results: int = 3) -> dict[str, Any]:
             ]
         )[:5],
     }
+
+
+def sales_reference_context(
+    query: str,
+    *,
+    max_articles: int = 5,
+    max_chars: int = 14_000,
+) -> str:
+    """Return compact scraped/reviewed Bluebot evidence for answer verification."""
+    kb = search_sales_kb(query, max_results=max_articles)
+    parts: list[str] = ["Reviewed/synced Bluebot sales KB evidence:"]
+    for ix, article in enumerate(kb.get("results") or [], start=1):
+        if not isinstance(article, dict):
+            continue
+        body = str(article.get("body") or "").strip()
+        if len(body) > 1_200:
+            body = f"{body[:1_200].rsplit(' ', 1)[0]}."
+        links = []
+        source_url = str(article.get("source_url") or "").strip()
+        if source_url:
+            links.append(source_url)
+        for link in article.get("supporting_links") or []:
+            if isinstance(link, dict) and str(link.get("url") or "").strip():
+                links.append(str(link["url"]))
+        parts.append(
+            "\n".join(
+                [
+                    f"[KB {ix}] {article.get('title') or article.get('id')}",
+                    f"Topic: {article.get('topic') or 'n/a'}",
+                    f"Source: {source_url or 'n/a'}",
+                    f"Source accessed: {article.get('source_accessed') or 'n/a'}",
+                    f"Text: {body}",
+                    f"Related URLs: {', '.join(dict.fromkeys(links[:5])) or 'n/a'}",
+                ]
+            )
+        )
+
+    parts.append("Structured website-listed product catalog:")
+    for product in _load_catalog():
+        links = [str(product.get("source_url") or "").strip()]
+        fit_notes = "; ".join(str(item) for item in (product.get("fit_notes") or []) if item)
+        cautions = "; ".join(str(item) for item in (product.get("cautions") or []) if item)
+        parts.append(
+            "\n".join(
+                [
+                    f"[Product] {product.get('name') or product.get('id')}",
+                    f"Source: {links[0] or 'n/a'}",
+                    (
+                        "Pipe size range inches: "
+                        f"{product.get('pipe_size_min_in')} to {product.get('pipe_size_max_in')}"
+                    ),
+                    f"Connectivity: {', '.join(product.get('connectivity') or []) or 'n/a'}",
+                    f"Positioning: {product.get('positioning') or 'n/a'}",
+                    f"Fit notes: {fit_notes or 'n/a'}",
+                    f"Cautions: {cautions or 'n/a'}",
+                ]
+            )
+        )
+
+    context = "\n\n".join(parts)
+    if len(context) <= max_chars:
+        return context
+    return context[:max_chars].rsplit("\n", 1)[0].strip()
+
+
+def sales_catalog_records() -> list[dict[str, Any]]:
+    """Return website-listed product catalog records for deterministic validation."""
+    return [dict(product) for product in _load_catalog()]
 
 
 def qualify_meter_use_case(**fields: Any) -> dict[str, Any]:
@@ -573,22 +677,50 @@ def dispatch_sales_tool(
     conversation_id: str,
 ) -> dict[str, Any]:
     """Execute a sales-only tool by name."""
-    if name == "search_sales_kb":
-        return search_sales_kb(**tool_input)
-    if name == "qualify_meter_use_case":
-        return qualify_meter_use_case(**tool_input)
-    if name == "assess_pipe_fit":
-        return assess_pipe_fit(**tool_input)
-    if name == "explain_installation_impact":
-        return explain_installation_impact(**tool_input)
-    if name == "capture_lead_summary":
-        summary = tool_input.get("summary")
-        if not isinstance(summary, dict):
-            return {"success": False, "error": "summary must be an object"}
-        return capture_lead_summary(conversation_id, summary)
-    if name == "recommend_product_line":
-        return recommend_product_line(**tool_input)
-    return {
-        "success": False,
-        "error": f"Tool {name!r} is not available in public sales chat.",
-    }
+    return _SALES_REGISTRY.dispatch(name, tool_input, conversation_id=conversation_id)
+
+
+# ---- Tool Registry ----
+
+try:
+    from tool_registry import Tool, ToolRegistry
+except ImportError:  # pragma: no cover - supports package-style imports.
+    from .tool_registry import Tool, ToolRegistry
+
+_SALES_REGISTRY = ToolRegistry()
+
+_SALES_REGISTRY.register(Tool(
+    definition=TOOL_DEFINITIONS[0],  # search_sales_kb
+    handler=search_sales_kb,
+    context_params=frozenset(),
+))
+
+_SALES_REGISTRY.register(Tool(
+    definition=TOOL_DEFINITIONS[1],  # qualify_meter_use_case
+    handler=qualify_meter_use_case,
+    context_params=frozenset(),
+))
+
+_SALES_REGISTRY.register(Tool(
+    definition=TOOL_DEFINITIONS[2],  # assess_pipe_fit
+    handler=assess_pipe_fit,
+    context_params=frozenset(),
+))
+
+_SALES_REGISTRY.register(Tool(
+    definition=TOOL_DEFINITIONS[3],  # explain_installation_impact
+    handler=explain_installation_impact,
+    context_params=frozenset(),
+))
+
+_SALES_REGISTRY.register(Tool(
+    definition=TOOL_DEFINITIONS[4],  # capture_lead_summary
+    handler=lambda summary, *, conversation_id: capture_lead_summary(conversation_id, summary),
+    context_params=frozenset({"conversation_id"}),
+))
+
+_SALES_REGISTRY.register(Tool(
+    definition=TOOL_DEFINITIONS[5],  # recommend_product_line
+    handler=recommend_product_line,
+    context_params=frozenset(),
+))

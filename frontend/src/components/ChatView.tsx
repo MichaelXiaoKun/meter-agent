@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useCallback,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -9,7 +10,7 @@ import {
 import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { DownloadArtifact, Message, PlotAttachment, SSEEvent } from "../types";
+import type { DownloadArtifact, Message, PlotAttachment, SSEEvent, Ticket, TicketStatus } from "../types";
 import type { AgentStatus } from "../hooks/useChat";
 import AnimatedMessageBubble from "./AnimatedMessageBubble";
 import { extractPlotAttachments } from "./plotAttachments";
@@ -27,8 +28,10 @@ import MicButton from "./MicButton";
 import ThemeToggle from "./ThemeToggle";
 import SharePopover from "./SharePopover";
 import ConfigConfirmationCard from "./ConfigConfirmationCard";
+import SweepResultCard from "./SweepResultCard";
 import { IconSidebarDock } from "./SidebarIconRail";
 import type { OrchestratorModelOption, PublicShareToken } from "../api";
+import { createTicket, listTickets, updateTicket } from "../api";
 import {
   splitActivityAtFirstTool,
   splitTurnActivityAroundStreamBody,
@@ -36,6 +39,14 @@ import {
 } from "../turnActivity";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
+import { buildMeterWorkspace } from "../meterWorkspace";
+import MeterWorkspacePanel from "./MeterWorkspacePanel";
+import {
+  configAngle,
+  configSerial,
+  configSweepAngles,
+  configSweepRangeLabel,
+} from "../configCompat";
 
 type ConfigWorkflow = NonNullable<SSEEvent["config_workflow"]>;
 type ToastFn = (a: {
@@ -152,6 +163,7 @@ interface ChatViewProps {
   /** Called with the new model ID when the user picks one. */
   onSelectModel?: (modelId: string) => void;
   accessToken?: string | null;
+  userId?: string | null;
   anthropicApiKey?: string | null;
   onToast?: ToastFn;
   /**
@@ -168,6 +180,7 @@ interface ChatViewProps {
   };
   copy?: {
     title?: string;
+    titleClassName?: string;
     subtitle?: string;
     welcomeTitle?: string;
     welcomePlaceholder?: string;
@@ -176,6 +189,8 @@ interface ChatViewProps {
     welcomeHint?: string;
     requireWelcomeSerial?: boolean;
   };
+  /** Hide the right-side meter workspace for surfaces that do not use live meters. */
+  showWorkspacePanel?: boolean;
 }
 
 export default function ChatView({
@@ -207,10 +222,12 @@ export default function ChatView({
   selectedModel,
   onSelectModel,
   accessToken,
+  userId,
   anthropicApiKey,
   onToast,
   share,
   copy,
+  showWorkspacePanel = true,
 }: ChatViewProps) {
   const [input, setInput] = useState("");
   const [composerFocused, setComposerFocused] = useState(false);
@@ -776,6 +793,7 @@ export default function ChatView({
     isProcessing || serverProcessing || historyLoading ? "loading" : "idle";
   const headerLogoExpression = status.kind === "error" ? "annoyed" : "neutral";
   const headerTitle = copy?.title ?? "FlowIQ";
+  const headerTitleClassName = copy?.titleClassName ?? "text-brand-700 dark:text-brand-700";
   const headerSubtitle =
     copy?.subtitle ??
     "by bluebot · Data-backed flow insights and expert recommendations.";
@@ -818,6 +836,139 @@ export default function ChatView({
     modelContextMax: modelContextWindowTokens,
     inputBudgetTarget: maxInputTokensTarget,
   } as const;
+  const workspaceEnabled = showWorkspacePanel;
+
+  const workspace = useMemo(
+    () => (workspaceEnabled ? buildMeterWorkspace(messages, workspaceEvents) : buildMeterWorkspace([], [])),
+    [messages, workspaceEnabled, workspaceEvents],
+  );
+  const [tickets, setTickets] = useState<Ticket[]>([]);
+  const ticketToolEventCount = useMemo(
+    () =>
+      workspaceEvents.filter(
+        (event) =>
+          event.type === "tool_result" &&
+          (event.tool === "create_ticket" ||
+            event.tool === "update_ticket" ||
+            event.tool === "list_tickets"),
+      ).length,
+    [workspaceEvents],
+  );
+  const refreshTickets = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!workspaceEnabled || !userId || !conversationId) {
+        setTickets([]);
+        return;
+      }
+      const rows = await listTickets(userId, {
+        conversationId,
+        serialNumber: workspace.serialNumber ?? null,
+        status: ["open", "in_progress", "waiting_on_human"],
+        signal,
+      });
+      setTickets(rows);
+    },
+    [conversationId, userId, workspace.serialNumber, workspaceEnabled],
+  );
+
+  useEffect(() => {
+    const ac = new AbortController();
+    refreshTickets(ac.signal).catch((err) => {
+      if ((err as Error).name !== "AbortError") {
+        console.error("Failed to load tickets:", err);
+      }
+    });
+    return () => ac.abort();
+  }, [refreshTickets, messages.length, status.kind, ticketToolEventCount]);
+
+  async function handleTicketStatus(ticket: Ticket, nextStatus: TicketStatus) {
+    if (!userId || !accessToken) return;
+    try {
+      const note =
+        nextStatus === "resolved"
+          ? "Resolved from the admin workspace."
+          : nextStatus === "cancelled"
+            ? "Cancelled from the admin workspace."
+            : `Moved to ${nextStatus.replaceAll("_", " ")} from the admin workspace.`;
+      await updateTicket(
+        ticket.id,
+        {
+          user_id: userId,
+          status: nextStatus,
+          note,
+          evidence:
+            nextStatus === "resolved"
+              ? { source: "admin_workspace", ticket_id: ticket.id }
+              : undefined,
+        },
+        accessToken,
+      );
+      await refreshTickets();
+    } catch (err) {
+      onToast?.({
+        kind: "error",
+        title: "Ticket update failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  async function handleTicketClaim(ticket: Ticket) {
+    if (!userId || !accessToken) return;
+    try {
+      await updateTicket(
+        ticket.id,
+        {
+          user_id: userId,
+          owner_type: "human",
+          owner_id: userId,
+          note: "Claimed from the admin workspace.",
+        },
+        accessToken,
+      );
+      await refreshTickets();
+    } catch (err) {
+      onToast?.({
+        kind: "error",
+        title: "Ticket update failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  async function handleTrackNextAction(label: string) {
+    if (!userId || !accessToken || !conversationId) return;
+    const serial = workspace.serialNumber ?? null;
+    try {
+      await createTicket(
+        {
+          user_id: userId,
+          conversation_id: conversationId,
+          serial_number: serial,
+          title: label,
+          description: serial
+            ? `Follow up on ${label} for meter ${serial}.`
+            : `Follow up on ${label}.`,
+          success_criteria: serial
+            ? `Complete "${label}" for meter ${serial} and record the outcome.`
+            : `Complete "${label}" and record the outcome.`,
+          priority: "normal",
+          owner_type: "human",
+          owner_id: userId,
+          metadata: { source: "meter_workspace_next_action" },
+        },
+        accessToken,
+      );
+      await refreshTickets();
+      onToast?.({ kind: "success", title: "Ticket created", message: label });
+    } catch (err) {
+      onToast?.({
+        kind: "error",
+        title: "Ticket creation failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   const liveConfigWorkflow = useMemo(() => {
     for (let i = workspaceEvents.length - 1; i >= 0; i -= 1) {
@@ -826,14 +977,23 @@ export default function ChatView({
     }
     return null;
   }, [workspaceEvents]);
+  const liveSweepResult = useMemo(() => {
+    for (let i = workspaceEvents.length - 1; i >= 0; i -= 1) {
+      const result = workspaceEvents[i]?.sweep_result;
+      if (result) return result;
+    }
+    return null;
+  }, [workspaceEvents]);
 
   function composeAlternativeConfig(workflow: NonNullable<SSEEvent["config_workflow"]>) {
-    const serial = workflow.serial_number || workflow.proposed_values?.serial_number;
-    const angle = workflow.proposed_values?.transducer_angle;
+    const serial = configSerial(workflow);
+    const angle = configAngle(workflow.proposed_values);
     setReplacingConfigActionId(workflow.action_id ?? null);
-    const text = Array.isArray(workflow.proposed_values?.transducer_angles)
+    const text =
+      configSweepAngles(workflow.proposed_values).length > 0 ||
+      configSweepRangeLabel(workflow.proposed_values)
       ? `Instead, sweep meter ${serial || "<METER SERIAL>"} transducer angles `
-      : typeof angle === "string" || typeof angle === "number"
+      : angle
         ? `Instead, set meter ${serial || "<METER SERIAL>"} transducer angle to `
         : `Instead, configure meter ${serial || "<METER SERIAL>"} with `;
     setInput(text);
@@ -1110,7 +1270,7 @@ export default function ChatView({
                 </AnimatePresence>
               </div>
               <div className="min-w-0 flex-1">
-                <h1 className="text-xl font-bold leading-none tracking-tight text-brand-900">
+                <h1 className={`text-xl font-bold leading-none tracking-tight ${headerTitleClassName}`}>
                   {headerTitle}
                 </h1>
               </div>
@@ -1155,7 +1315,7 @@ export default function ChatView({
                   )}
                 </AnimatePresence>
                 <div className="min-w-0 flex-1">
-                  <h1 className="text-lg font-bold tracking-tight text-brand-900 sm:text-[1.0625rem]">
+                  <h1 className={`text-lg font-bold tracking-tight sm:text-[1.0625rem] ${headerTitleClassName}`}>
                     {headerTitle}
                   </h1>
                   <p className="hidden max-w-[40rem] text-sm leading-relaxed text-brand-muted lg:mt-0.5 lg:block lg:text-xs lg:leading-snug">
@@ -1363,6 +1523,10 @@ export default function ChatView({
                 />
               )}
 
+              {liveSweepResult && (
+                <SweepResultCard result={liveSweepResult} />
+              )}
+
               {serverProcessing && status.kind === "idle" && (
                 <div className="flex items-center gap-2 rounded-lg bg-brand-100 px-3 py-2 text-sm text-brand-muted dark:bg-brand-100/70">
                   <svg
@@ -1528,7 +1692,27 @@ export default function ChatView({
         )}
       </div>
       </div>
-    </div>
+      {hasMessages && workspaceEnabled && (
+        <MeterWorkspacePanel
+          workspace={workspace}
+          processing={isProcessing || serverProcessing}
+          tickets={tickets}
+          onCompose={(text) => {
+            setInput(text);
+            requestAnimationFrame(() => inputRef.current?.focus());
+          }}
+          onConfirmConfig={(actionId) => {
+            const workflow = workspace.pendingConfig;
+            if (workflow?.action_id === actionId) {
+              confirmConfig(workflow);
+            }
+          }}
+          onTrackNextAction={handleTrackNextAction}
+          onTicketClaim={handleTicketClaim}
+          onTicketStatus={handleTicketStatus}
+        />
+      )}
+      </div>
     </LayoutGroup>
   );
 }

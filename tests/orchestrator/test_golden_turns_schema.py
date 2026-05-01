@@ -90,7 +90,8 @@ def _tool_catalog() -> dict[str, dict[str, Any]]:
     """Return ``{name: input_schema_properties}`` for every orchestrator tool."""
     agent = _load_orchestrator_agent()
     out: dict[str, dict[str, Any]] = {}
-    for defn in agent.TOOLS:
+    tool_defs = agent.TOOLS() if callable(agent.TOOLS) else agent.TOOLS
+    for defn in tool_defs:
         schema = defn.get("input_schema") or {}
         props = schema.get("properties") or {}
         out[defn["name"]] = props

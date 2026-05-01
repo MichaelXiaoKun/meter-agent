@@ -1,32 +1,24 @@
 import type { SSEEvent } from "./types";
+import {
+  angleLabel,
+  configAngle,
+  configSerial,
+  configSweepAngles,
+} from "./configCompat";
 
 export type ConfigWorkflow = NonNullable<SSEEvent["config_workflow"]>;
 
-function cleanString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function angleLabel(value: unknown): string {
-  const raw =
-    typeof value === "number"
-      ? String(value)
-      : typeof value === "string"
-        ? value.trim()
-        : "";
-  if (!raw) return "";
-  return raw.endsWith("°") ? raw : `${raw}°`;
-}
-
 export function confirmationUserMessage(workflow: ConfigWorkflow): string {
-  const serial =
-    cleanString(workflow.serial_number) ||
-    cleanString(workflow.proposed_values?.serial_number);
+  const serial = configSerial(workflow);
   const meterLabel = serial ? `meter ${serial}` : "this meter";
   if (workflow.tool === "sweep_transducer_angles") {
-    const angles = workflow.proposed_values?.transducer_angles;
-    const count = Array.isArray(angles) ? angles.length : 0;
+    const count = configSweepAngles(workflow.proposed_values).length;
+    if (workflow.workflow_type === "diagnostic_experiment") {
+      return `Yes, run the ${count ? `${count}-angle ` : ""}diagnostic angle sweep for ${meterLabel} and set the best reliable angle if available.`;
+    }
     const suffix =
-      workflow.proposed_values?.apply_best_after_sweep === true
+      workflow.proposed_values?.apply_best_after_sweep === true ||
+      workflow.proposed_values?.apply_best === true
         ? " and set the best measured angle if available"
         : "";
     return `Yes, run the ${count ? `${count}-angle ` : ""}transducer angle sweep for ${meterLabel}${suffix}.`;
@@ -34,7 +26,10 @@ export function confirmationUserMessage(workflow: ConfigWorkflow): string {
   if (workflow.tool === "configure_meter_pipe") {
     return `Yes, apply the pipe configuration for ${meterLabel}.`;
   }
-  const angle = angleLabel(workflow.proposed_values?.transducer_angle);
+  if (workflow.tool === "set_zero_point") {
+    return `Yes, confirm there is no intended water flow and put ${meterLabel} into set-zero-point state.`;
+  }
+  const angle = angleLabel(configAngle(workflow.proposed_values));
   if (angle) return `Yes, set ${meterLabel} to ${angle}.`;
   return `Yes, apply the pipe configuration for ${meterLabel}.`;
 }

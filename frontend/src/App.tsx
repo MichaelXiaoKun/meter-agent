@@ -592,6 +592,7 @@ export default function App() {
           selectedModel={selectedModel ?? defaultModel}
           onSelectModel={handleSelectModel}
           accessToken={token}
+          userId={user}
           anthropicApiKey={anthropicApiKey}
           onToast={(a) => {
             if (a.kind === "success") {

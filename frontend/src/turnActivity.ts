@@ -1,5 +1,11 @@
 import type { MutableRefObject } from "react";
 import type { SSEEvent } from "./types";
+import {
+  angleLabel,
+  configAngle,
+  configSweepAngles,
+  configSweepRangeLabel,
+} from "./configCompat";
 
 /**
  * One line per tool: present-continuous (running) and past (done), kept parallel for alignment.
@@ -18,6 +24,10 @@ export const TOOL_LIFECYCLE: Record<string, { now: string; done: string }> = {
   configure_meter_pipe: { now: "Preparing configuration review…", done: "Prepared configuration review" },
   set_transducer_angle_only: { now: "Preparing configuration review…", done: "Prepared configuration review" },
   sweep_transducer_angles: { now: "Preparing angle sweep review…", done: "Prepared angle sweep review" },
+  set_zero_point: { now: "Checking zero-point safety…", done: "Prepared zero-point review" },
+  list_tickets: { now: "Checking tickets…", done: "Checked tickets" },
+  create_ticket: { now: "Creating ticket…", done: "Created ticket" },
+  update_ticket: { now: "Updating ticket…", done: "Updated ticket" },
   search_sales_kb: { now: "Searching sales knowledge…", done: "Searched sales knowledge" },
   qualify_meter_use_case: { now: "Qualifying the use case…", done: "Qualified the use case" },
   assess_pipe_fit: { now: "Assessing pipe fit…", done: "Assessed pipe fit" },
@@ -161,28 +171,55 @@ function toolInputDetails(
     );
   }
   if (name === "configure_meter_pipe") {
+    const action = narrowStr(input.action);
+    const value = narrowStr(input.value);
     return mergeDetails(
       detail("Meter", sn),
       detail("Material", narrowStr(input.pipe_material)),
       detail("Standard", narrowStr(input.pipe_standard)),
       detail("Size", narrowStr(input.pipe_size)),
-      detail("Angle", narrowStr(input.transducer_angle))
+      detail("Angle", angleLabel(configAngle(input))),
+      detail("Action", action),
+      detail("Value", value)
     );
   }
   if (name === "set_transducer_angle_only") {
     return mergeDetails(
       detail("Meter", sn),
-      detail("Angle", narrowStr(input.transducer_angle))
+      detail("Angle", angleLabel(configAngle(input)))
     );
   }
   if (name === "sweep_transducer_angles") {
+    const angles = configSweepAngles(input).join(", ");
+    const range = configSweepRangeLabel(input);
     return mergeDetails(
       detail("Meter", sn),
-      detail("Angles", cleanList(input.transducer_angles, 8)),
+      detail("Angles", angles || range),
       detail(
         "Final",
-        input.apply_best_after_sweep === true ? "set best measured" : "last tested"
+        input.apply_best_after_sweep === true || input.apply_best === true
+          ? "set best measured"
+          : "last tested"
       )
+    );
+  }
+  if (name === "list_tickets") {
+    return mergeDetails(
+      detail("Meter", sn),
+      detail("Status", narrowStr(input.status))
+    );
+  }
+  if (name === "create_ticket") {
+    return mergeDetails(
+      detail("Title", narrowStr(input.title)),
+      detail("Meter", sn),
+      detail("Priority", narrowStr(input.priority))
+    );
+  }
+  if (name === "update_ticket") {
+    return mergeDetails(
+      detail("Ticket", narrowStr(input.ticket_id)),
+      detail("Status", narrowStr(input.status))
     );
   }
   return mergeDetails(detail("Meter", sn), detail("Account", email));
@@ -406,6 +443,7 @@ export interface TurnActivityStep {
   | "intent_route"
   | "thinking"
   | "context"
+  | "validation"
   | "compressing"
   | "rate_limit_wait"
   | "tool"
@@ -527,6 +565,30 @@ export function reduceTurnActivity(
           detail("Route", event.intent ? intentScopingTitle(event.intent).replace(/^Scoping:\s*/u, "") : undefined),
           detail("Source", narrowStr(event.source)),
           detail("Tools", toolCount > 0 ? String(toolCount) : undefined)
+        ),
+      });
+    }
+    case "validation_start":
+      return push({
+        kind: "validation",
+        title: "Validating the answer",
+        detail: event.message ?? "Checking whether the evidence supports the next step",
+      });
+    case "validation_result": {
+      const verdict = narrowStr(event.verdict);
+      const title =
+        verdict === "needs_experiment"
+          ? "Needs more evidence"
+          : verdict === "blocked"
+            ? "Validation blocked the answer"
+            : "Validation complete";
+      return push({
+        kind: "validation",
+        title,
+        detail: event.message,
+        details: mergeDetails(
+          detail("Verdict", verdict),
+          detail("Next", narrowStr(event.next_action))
         ),
       });
     }

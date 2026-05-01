@@ -120,4 +120,42 @@ reducer.applyStreamEventToChatState(
 assert.equal(fleetState.turnActivity.at(-1).title, "Triaging account fleet…");
 assert.equal(fleetState.turnActivity.at(-1).details[0].label, "Account");
 
+const validationState = reducer.createChatStreamState();
+reducer.resetChatStreamStateForTurn(validationState, {
+  streamId: "stream-4",
+  turnId: "turn-4",
+});
+const validationRefs = {
+  expectedTurnId: { current: "turn-4" },
+  lastSeq: { current: 0 },
+};
+reducer.applyStreamEventToChatState(
+  validationState,
+  {
+    type: "validation_start",
+    message: "Checking evidence",
+    turn_id: "turn-4",
+    seq: 1,
+  },
+  validationRefs,
+);
+assert.deepEqual(validationState.streamStatus, {
+  kind: "validation",
+  message: "Checking evidence",
+});
+reducer.applyStreamEventToChatState(
+  validationState,
+  {
+    type: "validation_result",
+    verdict: "needs_experiment",
+    next_action: "sweep_transducer_angles",
+    message: "Angle diagnosis needs a controlled sweep.",
+    turn_id: "turn-4",
+    seq: 2,
+  },
+  validationRefs,
+);
+assert.equal(validationState.turnActivity.at(-1).kind, "validation");
+assert.equal(validationState.turnActivity.at(-1).title, "Needs more evidence");
+
 console.log("chatStreamReducer tests passed");

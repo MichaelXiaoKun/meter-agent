@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 import threading
 import time
@@ -44,9 +45,281 @@ def test_sales_tool_set_excludes_live_device_and_write_tools():
         "configure_meter_pipe",
         "set_transducer_angle_only",
         "sweep_transducer_angles",
+        "set_zero_point",
     }
     assert forbidden.isdisjoint(sales_agent.SALES_TOOL_NAMES)
     assert {t["name"] for t in sales_agent.TOOL_DEFINITIONS} == sales_agent.SALES_TOOL_NAMES
+
+
+def test_sales_prompt_includes_human_support_handoff_contact():
+    import sales_agent
+
+    prompt = sales_agent._SYSTEM_PROMPT
+    assert "human support" in prompt
+    assert "Denis Zaff" in prompt
+    assert "4085858829" in prompt
+    assert "denis@bluebot.com" in prompt
+
+
+def test_sales_prompt_rejects_off_topic_requests_kindly():
+    import sales_agent
+
+    prompt = sales_agent._SYSTEM_PROMPT
+    assert "Off-topic guardrail" in prompt
+    assert "kindly" in prompt
+    assert "Do not answer the unrelated substance" in prompt
+    assert "do not call tools solely for an off-topic request" in prompt
+    assert "redirect to what you can help with" in prompt
+    assert "bluebot product fit" in prompt
+
+
+def test_sales_verifier_partially_validates_pipe_size_claims():
+    from sales_verifier import validate_sales_answer_points
+
+    points = validate_sales_answer_points(
+        "bluebot can support 1, 2, 3 inches, and up to 24 inches."
+    )
+
+    supported = [p for p in points if p["status"] == "supported"]
+    unsupported = [p for p in points if p["status"] == "unsupported"]
+
+    assert any("1 inch" in p["claim"] for p in supported)
+    assert any("2 inch" in p["claim"] for p in supported)
+    assert any("3 inch" in p["claim"] for p in supported)
+    assert any("24" in p["claim"] for p in unsupported)
+    assert any("4.0 inch" in p["correction"] for p in unsupported)
+
+
+def test_sales_verifier_rewrites_until_supported_by_scraped_context():
+    from llm.base import LLMResponse
+    from sales_verifier import verify_sales_response
+
+    class FakeVerifierProvider:
+        def __init__(self):
+            self.calls = []
+            self.responses = [
+                {
+                    "passed": False,
+                    "verdict": "needs_revision",
+                    "message": "Found an unsupported pipe-size claim.",
+                    "issues": ["unsupported_pipe_size"],
+                    "corrected_answer": (
+                        "Bluebot public materials list clamp-on meters for 3/4 inch "
+                        "through 4.0 inch pipes."
+                    ),
+                },
+                {
+                    "passed": True,
+                    "verdict": "pass",
+                    "message": "Supported by Bluebot public materials.",
+                    "issues": [],
+                    "corrected_answer": "",
+                },
+            ]
+
+        def complete(self, model, messages, *, system, tools, max_tokens):
+            self.calls.append({"model": model, "messages": messages, "system": system})
+            payload = self.responses.pop(0)
+            return LLMResponse(
+                text=json.dumps(payload),
+                stop_reason="end_turn",
+                assistant_content=[{"type": "text", "text": json.dumps(payload)}],
+            )
+
+        def stream(self, *args, **kwargs):  # pragma: no cover - not used here
+            raise AssertionError("verifier should not stream")
+
+        def count_tokens(self, *args, **kwargs):  # pragma: no cover - not used here
+            return 1
+
+    provider = FakeVerifierProvider()
+    events = []
+    outcome = verify_sales_response(
+        "Bluebot supports pipes under 1 inch through 24+ inches.",
+        [{"role": "user", "content": "What pipe sizes does Bluebot support?"}],
+        verifier_provider=provider,
+        verifier_model="claude-sonnet-4-6",
+        max_attempts=3,
+        on_event=events.append,
+    )
+
+    assert outcome.passed is True
+    assert outcome.attempts == 2
+    assert "24" not in outcome.answer
+    assert "4.0 inch" in outcome.answer
+    assert "pipe_size_max_in" in provider.calls[0]["messages"][0]["content"]
+    assert [e["type"] for e in events].count("validation_start") == 2
+    assert any(e.get("next_action") == "revise_answer" for e in events)
+    assert events[-1]["verdict"] == "pass"
+
+
+def test_sales_verifier_uses_evidence_answer_when_model_returns_no_correction():
+    from llm.base import LLMResponse
+    from sales_verifier import verify_sales_response
+
+    class MalformedVerifierProvider:
+        def complete(self, model, messages, *, system, tools, max_tokens):
+            return LLMResponse(
+                text="not json",
+                stop_reason="end_turn",
+                assistant_content=[{"type": "text", "text": "not json"}],
+            )
+
+        def stream(self, *args, **kwargs):  # pragma: no cover - not used here
+            raise AssertionError("verifier should not stream")
+
+        def count_tokens(self, *args, **kwargs):  # pragma: no cover - not used here
+            return 1
+
+    events = []
+    outcome = verify_sales_response(
+        "Bluebot can support 1, 2, 3 inches, and up to 24 inches.",
+        [{"role": "user", "content": "What pipe sizes does Bluebot support?"}],
+        verifier_provider=MalformedVerifierProvider(),
+        verifier_model="claude-sonnet-4-6",
+        max_attempts=1,
+        on_event=events.append,
+    )
+
+    assert outcome.passed is False
+    assert "I want to avoid giving you an unverified answer" not in outcome.answer
+    assert "2.5, 3.0, and 4.0 inch" in outcome.answer
+    assert "24 inch pipe support" in outcome.answer
+    assert any(e.get("next_action") == "send_evidence_backed_answer" for e in events)
+
+
+def test_run_sales_turn_sends_only_verified_sales_text(monkeypatch):
+    from llm.base import LLMResponse
+    import sales_agent
+
+    class DraftProvider:
+        def count_tokens(self, *args, **kwargs):
+            return 1
+
+        def complete(self, model, messages, *, system, tools, max_tokens):
+            text = "Bluebot supports pipes under 1 inch through 24+ inches."
+            return LLMResponse(
+                text=text,
+                stop_reason="end_turn",
+                assistant_content=[{"type": "text", "text": text}],
+            )
+
+        def stream(self, *args, **kwargs):  # pragma: no cover - not used here
+            raise AssertionError("sales final answer should not stream before verification")
+
+    class VerifierProvider:
+        def __init__(self):
+            self.responses = [
+                {
+                    "passed": False,
+                    "verdict": "needs_revision",
+                    "message": "Found an unsupported pipe-size claim.",
+                    "issues": ["unsupported_pipe_size"],
+                    "corrected_answer": (
+                        "Bluebot public materials list clamp-on meters for 3/4 inch "
+                        "through 4.0 inch pipes."
+                    ),
+                },
+                {
+                    "passed": True,
+                    "verdict": "pass",
+                    "message": "Supported by Bluebot public materials.",
+                    "issues": [],
+                    "corrected_answer": "",
+                },
+            ]
+
+        def complete(self, model, messages, *, system, tools, max_tokens):
+            payload = self.responses.pop(0)
+            return LLMResponse(
+                text=json.dumps(payload),
+                stop_reason="end_turn",
+                assistant_content=[{"type": "text", "text": json.dumps(payload)}],
+            )
+
+        def stream(self, *args, **kwargs):  # pragma: no cover - not used here
+            raise AssertionError("verifier should not stream")
+
+        def count_tokens(self, *args, **kwargs):  # pragma: no cover - not used here
+            return 1
+
+    draft_provider = DraftProvider()
+    verifier_provider = VerifierProvider()
+
+    def fake_get_provider(model, **_kwargs):
+        if model == "claude-sonnet-4-6":
+            return verifier_provider
+        return draft_provider
+
+    monkeypatch.setenv("SALES_AGENT_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("SALES_RESPONSE_VERIFICATION", "on")
+    monkeypatch.setattr(sales_agent, "get_provider", fake_get_provider)
+
+    events = []
+    messages = [{"role": "user", "content": "What pipe sizes does Bluebot support?"}]
+    reply = sales_agent.run_sales_turn(messages, conversation_id="sales-test", on_event=events.append)
+
+    assert "24" not in reply
+    assert "4.0 inch" in reply
+    text_events = [e["text"] for e in events if e["type"] == "text_delta"]
+    assert text_events == [reply]
+    assert messages[-1]["content"][0]["text"] == reply
+    assert any(e["type"] == "validation_start" for e in events)
+    assert any(e.get("verdict") == "pass" for e in events)
+
+
+def test_run_sales_turn_large_pipe_question_never_uses_generic_fallback(monkeypatch):
+    from llm.base import LLMResponse
+    import sales_agent
+
+    class DraftProvider:
+        def count_tokens(self, *args, **kwargs):
+            return 1
+
+        def complete(self, model, messages, *, system, tools, max_tokens):
+            text = "Bluebot offers devices for large pipes up to 24 inches."
+            return LLMResponse(
+                text=text,
+                stop_reason="end_turn",
+                assistant_content=[{"type": "text", "text": text}],
+            )
+
+        def stream(self, *args, **kwargs):  # pragma: no cover - not used here
+            raise AssertionError("sales final answer should not stream before verification")
+
+    class MalformedVerifierProvider:
+        def complete(self, model, messages, *, system, tools, max_tokens):
+            return LLMResponse(
+                text="not json",
+                stop_reason="end_turn",
+                assistant_content=[{"type": "text", "text": "not json"}],
+            )
+
+        def stream(self, *args, **kwargs):  # pragma: no cover - not used here
+            raise AssertionError("verifier should not stream")
+
+        def count_tokens(self, *args, **kwargs):  # pragma: no cover - not used here
+            return 1
+
+    def fake_get_provider(model, **_kwargs):
+        if model == "claude-sonnet-4-6":
+            return MalformedVerifierProvider()
+        return DraftProvider()
+
+    monkeypatch.setenv("SALES_AGENT_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("SALES_RESPONSE_VERIFICATION", "on")
+    monkeypatch.setenv("SALES_RESPONSE_VERIFICATION_ATTEMPTS", "2")
+    monkeypatch.setattr(sales_agent, "get_provider", fake_get_provider)
+
+    events = []
+    messages = [{"role": "user", "content": "what kind of devices do you offer for large pipe?"}]
+    reply = sales_agent.run_sales_turn(messages, conversation_id="sales-test", on_event=events.append)
+
+    assert "I want to avoid giving you an unverified answer" not in reply
+    assert "2.5, 3.0, and 4.0 inch" in reply
+    assert "Bluebot Prime" in reply
+    assert "Bluebot ProLink Prime" in reply
+    assert any(e.get("next_action") == "send_evidence_backed_answer" for e in events)
 
 
 def test_sales_kb_retrieves_pipe_impact_guidance():

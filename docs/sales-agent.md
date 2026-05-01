@@ -71,6 +71,8 @@ The assistant should ask for discovery before recommending:
 
 It should answer educational questions first, then steer back to qualification. When confidence is low, it should name what is missing rather than guessing.
 
+When a customer asks for human support, a person, a callback, sales review, quote help, or help beyond public sales chat, the prompt instructs the assistant to hand off to Denis Zaff at 4085858829 or denis@bluebot.com while still answering general public-sales questions it can safely handle.
+
 <a id="tools-and-guardrails"></a>
 
 ## Tools and guardrails
@@ -88,16 +90,38 @@ Sales-only tools live in [`../orchestrator/sales_tools.py`](../orchestrator/sale
 
 Sales mode must not expose live Bluebot device/account tools, flow-analysis subprocesses, pipe configuration writes, or MQTT actions. The allowlist is enforced in [`../orchestrator/sales_agent.py`](../orchestrator/sales_agent.py) and covered by tests.
 
+Final sales answers are verified before they are shown to the customer. The
+assistant first generates a draft privately, then [`../orchestrator/sales_verifier.py`](../orchestrator/sales_verifier.py)
+uses a stronger verifier model and the scraped/reviewed Bluebot KB context from
+[`../orchestrator/sales_tools.py`](../orchestrator/sales_tools.py) to check factual
+claims. Unsupported claims are rewritten and re-checked up to
+`SALES_RESPONSE_VERIFICATION_ATTEMPTS` times. The verifier model can be set with
+`SALES_RESPONSE_VERIFIER_MODEL`, and verification can be disabled only for
+controlled development with `SALES_RESPONSE_VERIFICATION=off`. Customers may see
+safe validation status events such as "checking against Bluebot public website
+knowledge", but they should not see unverified drafts or internal reasoning.
+
 <a id="knowledge-base-and-product-links"></a>
 
 ## Knowledge base and product links
 
-Sales content is curated locally:
+Sales content is loaded from the runtime database when synced records exist, with
+the checked-in JSON files as bootstrap/fallback:
 
 - [`../orchestrator/sales_kb/articles.json`](../orchestrator/sales_kb/articles.json) contains reviewed educational and product-fit content.
 - [`../orchestrator/sales_kb/product_catalog.json`](../orchestrator/sales_kb/product_catalog.json) contains product-line information and reviewed links.
 
-V1 intentionally avoids live web browsing. If bluebot.com content changes, update the curated JSON files after review. This keeps public answers deterministic and prevents unreviewed website text from flowing straight into sales recommendations.
+The sales chat itself intentionally avoids live web browsing. To keep the runtime
+KB fresh, run the controlled website sync:
+
+```bash
+python -m orchestrator.sales_content_sync --run-once
+```
+
+Without `--run-once`, the same entrypoint runs a daily loop by default. It fetches
+only `www.bluebot.com`, `support.bluebot.com`, and `help.bluebot.com`, rejects
+off-domain redirects, redacts pricing/package text from answerable content, and
+keeps the previous known-good DB record when a page fails validation.
 
 Useful content categories:
 

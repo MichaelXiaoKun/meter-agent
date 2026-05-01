@@ -83,7 +83,7 @@ def _stub_common(monkeypatch: pytest.MonkeyPatch, orch):
             "success": True,
             "network_type": "wifi",
             "profile": {"label": "Kitchen meter", "deviceTimeZone": "America/New_York"},
-            "transducer_angle_options": ["30", "45"],
+            "transducer_angle_options": ["35º", "45º"],
         },
     )
     orch.clear_pending_actions_for_tests()
@@ -244,6 +244,241 @@ def test_confirmed_action_executes_and_verifies(monkeypatch: pytest.MonkeyPatch)
     ]
     assert "executed" in workflow_statuses
     assert "verified" in workflow_statuses
+
+
+def test_zero_point_small_flow_preflight_emits_pending_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    orch = _load_agent()
+    _stub_common(monkeypatch, orch)
+    events: list[dict] = []
+    dispatch_calls: list[str] = []
+
+    def fake_prepare(inp, token, **kwargs):
+        return {
+            "success": True,
+            "inputs": {
+                "serial_number": inp["serial_number"],
+                "action": "set_zero_point",
+                "mqtt_payload": {"szv": "null"},
+            },
+            "current_values": {
+                "serial_number": inp["serial_number"],
+                "change_type": "set_zero_point",
+                "zero_point_preflight": {
+                    "flow_state": "small_flow_possible_drift",
+                    "summary": "Recent flow is small but non-zero.",
+                    "flow_stats": {
+                        "latest_flow_gpm": 0.04,
+                        "recent_p90_abs_gpm": 0.08,
+                        "recent_row_count": 12,
+                    },
+                    "drift_evidence": {"detected": True, "direction": "upward"},
+                    "signal_quality_recovery_before_drift": {"detected": True},
+                },
+            },
+            "workflow_updates": {
+                "workflow_type": "zero_point_command",
+                "preflight_summary": "Recent flow is small but non-zero.",
+                "flow_state": "small_flow_possible_drift",
+                "risk": "Only run this if the pipe is actually at zero flow.",
+            },
+            "preflight": {
+                "allow_confirmation": True,
+                "summary": "Recent flow is small but non-zero.",
+            },
+            "evidence_results": [
+                {
+                    "tool_name": "check_meter_status",
+                    "input": {"serial_number": inp["serial_number"]},
+                    "result": {"success": True, "status_data": {"online": True}},
+                },
+                {
+                    "tool_name": "analyze_flow_data",
+                    "input": {"serial_number": inp["serial_number"], "start": 1, "end": 2},
+                    "result": {"success": True, "analysis_details": {}},
+                },
+            ],
+        }
+
+    monkeypatch.setattr(orch, "prepare_zero_point_confirmation_inputs", fake_prepare)
+    monkeypatch.setattr(
+        orch,
+        "_dispatch",
+        lambda name, inp, token, *, client_timezone, anthropic_api_key: dispatch_calls.append(name)
+        or json.dumps({"success": True}),
+    )
+    provider = _ScriptedProvider(
+        [
+            _tool_use_response(
+                orch,
+                [("z1", "set_zero_point", {"serial_number": "BB1"})],
+            ),
+            _end_turn_response(),
+        ]
+    )
+    monkeypatch.setattr(orch, "get_provider", lambda *a, **k: provider)
+
+    orch.run_turn(
+        [{"role": "user", "content": "put BB1 into set zero point"}],
+        token="tok",
+        model=orch._MODEL,
+        conversation_id="conv",
+        on_event=events.append,
+    )
+
+    assert dispatch_calls == []
+    assert provider._i == 1
+    workflow = [
+        e["config_workflow"]
+        for e in events
+        if e.get("type") == "config_confirmation_required"
+    ][0]
+    assert workflow["tool"] == "set_zero_point"
+    assert workflow["workflow_type"] == "zero_point_command"
+    assert workflow["proposed_values"]["mqtt_payload"] == {"szv": "null"}
+    assert workflow["flow_state"] == "small_flow_possible_drift"
+    validation = [e for e in events if e.get("type") == "validation_result"]
+    assert validation[-1]["verdict"] == "needs_confirmation"
+    assert [e.get("tool") for e in events if e.get("preflight")] == [
+        "check_meter_status",
+        "analyze_flow_data",
+    ]
+
+
+def test_zero_point_large_flow_blocks_before_pending_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    orch = _load_agent()
+    _stub_common(monkeypatch, orch)
+    events: list[dict] = []
+
+    monkeypatch.setattr(
+        orch,
+        "prepare_zero_point_confirmation_inputs",
+        lambda inp, token, **kwargs: {
+            "success": False,
+            "error": "Recent flow is too high for a zero-point operation.",
+            "preflight": {
+                "allow_confirmation": False,
+                "summary": "Recent flow is too high for a zero-point operation.",
+                "flow_state": "large_flow_blocked",
+            },
+        },
+    )
+    provider = _ScriptedProvider(
+        [
+            _tool_use_response(
+                orch,
+                [("z1", "set_zero_point", {"serial_number": "BB1"})],
+            ),
+            _end_turn_response(),
+        ]
+    )
+    monkeypatch.setattr(orch, "get_provider", lambda *a, **k: provider)
+
+    orch.run_turn(
+        [{"role": "user", "content": "set zero point for BB1"}],
+        token="tok",
+        model=orch._MODEL,
+        conversation_id="conv",
+        on_event=events.append,
+    )
+
+    assert not [e for e in events if e.get("type") == "config_confirmation_required"]
+    failed = [
+        e
+        for e in events
+        if e.get("type") == "tool_result" and e.get("tool") == "set_zero_point"
+    ]
+    assert failed and failed[0]["success"] is False
+    assert "too high" in failed[0]["message"]
+    validation = [e for e in events if e.get("type") == "validation_result"]
+    assert validation[-1]["verdict"] == "blocked"
+
+
+def test_confirmed_zero_point_executes_and_verifies(monkeypatch: pytest.MonkeyPatch):
+    orch = _load_agent()
+    _stub_common(monkeypatch, orch)
+    events: list[dict] = []
+    calls: list[str] = []
+    action = orch.create_pending_action(
+        conversation_id="conv",
+        user_scope=orch.user_scope_from_token("tok"),
+        tool_name="set_zero_point",
+        inputs={
+            "serial_number": "BB1",
+            "action": "set_zero_point",
+            "mqtt_payload": {"szv": "null"},
+        },
+    )
+
+    def fake_dispatch(name, inp, token, *, client_timezone, anthropic_api_key):
+        calls.append(name)
+        if name == "check_meter_status":
+            return json.dumps(
+                {
+                    "success": True,
+                    "status_data": {
+                        "serial_number": "BB1",
+                        "online": True,
+                        "signal": {"level": "good", "score": 82, "reliable": True},
+                    },
+                }
+            )
+        return json.dumps({"success": True, "command": "set_zero_point"})
+
+    monkeypatch.setattr(orch, "_dispatch", fake_dispatch)
+
+    reply, _ = orch.run_turn(
+        [{"role": "user", "content": "confirm"}],
+        token="tok",
+        model=orch._MODEL,
+        conversation_id="conv",
+        confirmed_action_id=action.action_id,
+        on_event=events.append,
+    )
+
+    assert calls == ["set_zero_point", "check_meter_status"]
+    assert "set-zero-point state" in reply
+    workflow_statuses = [
+        e.get("config_workflow", {}).get("status")
+        for e in events
+        if isinstance(e.get("config_workflow"), dict)
+    ]
+    assert "executed" in workflow_statuses
+    assert "verified" in workflow_statuses
+
+
+def test_zero_point_preflight_detects_small_drift_signal_recovery():
+    _load_agent()
+    from tools.set_zero_point import evaluate_zero_point_preflight
+
+    rows = []
+    for i in range(30):
+        rows.append({"timestamp": i * 60, "flow_rate": 0.0, "quality": 88})
+    for i in range(30, 36):
+        rows.append({"timestamp": i * 60, "flow_rate": 0.0, "quality": 35})
+    for i in range(36, 45):
+        rows.append({"timestamp": i * 60, "flow_rate": 0.0, "quality": 90})
+    for i in range(45, 75):
+        rows.append({"timestamp": i * 60, "flow_rate": 0.07, "quality": 91})
+
+    verdict = evaluate_zero_point_preflight(
+        status_result={"success": True, "status_data": {"online": True}},
+        flow_result={
+            "success": True,
+            "zero_point_preflight_rows": rows,
+            "analysis_details": {
+                "cusum_drift": {"drift_detected": "upward", "adequacy_ok": True}
+            },
+        },
+    )
+
+    assert verdict["allow_confirmation"] is True
+    assert verdict["flow_state"] == "small_flow_possible_drift"
+    assert verdict["drift_evidence"]["detected"] is True
+    assert verdict["signal_quality_recovery_before_drift"]["detected"] is True
 
 
 def test_sweep_emits_one_pending_confirmation_with_resolved_wifi_angles(
@@ -472,6 +707,131 @@ def test_sweep_invalid_angle_fails_before_pending_confirmation(
     assert "Valid" in failed[0]["message"]
 
 
+def test_angle_diagnostic_validation_prepares_experiment_without_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    orch = _load_agent()
+    _stub_common(monkeypatch, orch)
+    events: list[dict] = []
+    dispatch_calls: list[str] = []
+
+    def fake_dispatch(name, inp, token, **kwargs):
+        dispatch_calls.append(name)
+        assert name == "check_meter_status"
+        return json.dumps(
+            {
+                "success": True,
+                "status_data": {
+                    "serial_number": "BB1",
+                    "online": True,
+                    "signal": {"level": "poor", "score": 0, "reliable": True},
+                    "pipe_config": {"nominal_size": "2 inch", "pipe_standard": "PVC"},
+                },
+            }
+        )
+
+    monkeypatch.setattr(orch, "_dispatch", fake_dispatch)
+    provider = _ScriptedProvider([])
+    monkeypatch.setattr(orch, "get_provider", lambda *a, **k: provider)
+
+    reply, _ = orch.run_turn(
+        [{"role": "user", "content": "BB1 管道参数是对的，是不是安装角度导致信号问题？"}],
+        token="tok",
+        model=orch._MODEL,
+        conversation_id="conv",
+        on_event=events.append,
+    )
+
+    assert dispatch_calls == ["check_meter_status"]
+    assert provider._i == 0
+    assert "diagnostic angle sweep" in reply
+    validation = [e for e in events if e.get("type") == "validation_result"]
+    assert validation and validation[0]["verdict"] == "needs_experiment"
+    workflow = [
+        e
+        for e in events
+        if e.get("type") == "config_confirmation_required"
+    ][0]["config_workflow"]
+    assert workflow["workflow_type"] == "diagnostic_experiment"
+    assert workflow["tool"] == "sweep_transducer_angles"
+    assert workflow["proposed_values"]["apply_best_after_sweep"] is True
+    assert "best measured angle" in workflow["final_policy"]
+
+
+def test_angle_diagnostic_requires_low_signal_before_experiment(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    orch = _load_agent()
+    _stub_common(monkeypatch, orch)
+    events: list[dict] = []
+
+    monkeypatch.setattr(
+        orch,
+        "_dispatch",
+        lambda name, inp, token, **kwargs: json.dumps(
+            {
+                "success": True,
+                "status_data": {
+                    "serial_number": "BB1",
+                    "signal": {"level": "good", "score": 74, "reliable": True},
+                    "pipe_config": {"nominal_size": "2 inch"},
+                },
+            }
+        ),
+    )
+    monkeypatch.setattr(orch, "get_provider", lambda *a, **k: _ScriptedProvider([]))
+
+    reply, _ = orch.run_turn(
+        [{"role": "user", "content": "BB1 管道参数是对的，是不是安装角度导致信号问题？"}],
+        token="tok",
+        model=orch._MODEL,
+        conversation_id="conv",
+        on_event=events.append,
+    )
+
+    assert "would not start an angle sweep" in reply
+    assert not [e for e in events if e.get("type") == "config_confirmation_required"]
+    validation = [e for e in events if e.get("type") == "validation_result"]
+    assert validation[-1]["verdict"] == "blocked"
+
+
+def test_angle_diagnostic_requires_pipe_confirmation_before_experiment(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    orch = _load_agent()
+    _stub_common(monkeypatch, orch)
+    events: list[dict] = []
+
+    monkeypatch.setattr(
+        orch,
+        "_dispatch",
+        lambda name, inp, token, **kwargs: json.dumps(
+            {
+                "success": True,
+                "status_data": {
+                    "serial_number": "BB1",
+                    "signal": {"level": "poor", "score": 0, "reliable": True},
+                    "pipe_config": {"nominal_size": "2 inch"},
+                },
+            }
+        ),
+    )
+    monkeypatch.setattr(orch, "get_provider", lambda *a, **k: _ScriptedProvider([]))
+
+    reply, _ = orch.run_turn(
+        [{"role": "user", "content": "BB1 是不是安装角度导致信号问题？"}],
+        token="tok",
+        model=orch._MODEL,
+        conversation_id="conv",
+        on_event=events.append,
+    )
+
+    assert "Please confirm the pipe material" in reply
+    assert not [e for e in events if e.get("type") == "config_confirmation_required"]
+    validation = [e for e in events if e.get("type") == "validation_result"]
+    assert validation[-1]["verdict"] == "needs_clarification"
+
+
 def test_confirmed_sweep_runs_every_angle_and_status_check(monkeypatch: pytest.MonkeyPatch):
     orch = _load_agent()
     _stub_common(monkeypatch, orch)
@@ -529,7 +889,13 @@ def test_confirmed_sweep_runs_every_angle_and_status_check(monkeypatch: pytest.M
         if e.get("type") == "tool_result" and e.get("tool") == "sweep_transducer_angles"
     ][0]
     assert result_event["success"] is True
+    assert result_event["sweep_result"]["best_angle"] == "25º"
     assert result_event["tool_activity"].endswith("best 25º, final 45º")
+    import store
+
+    evidence = store.list_tool_evidence("conv")
+    angle_rows = [r for r in evidence if r["tool_name"] == "sweep_transducer_angles.angle_result"]
+    assert [r["raw_result"]["angle"] for r in angle_rows] == ["15º", "25º", "35º", "45º"]
 
 
 def test_confirmed_optimize_sweep_sets_best_again(monkeypatch: pytest.MonkeyPatch):
@@ -581,6 +947,54 @@ def test_confirmed_optimize_sweep_sets_best_again(monkeypatch: pytest.MonkeyPatc
     assert set_calls == ["15º", "25º", "35º", "25º"]
     assert status_calls == ["15º", "25º", "35º", "25º"]
     assert "I set the best measured angle, 25º" in reply
+
+
+def test_confirmed_optimize_sweep_without_reliable_score_does_not_overclaim(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    orch = _load_agent()
+    _stub_common(monkeypatch, orch)
+    set_calls: list[str] = []
+    action = orch.create_pending_action(
+        conversation_id="conv",
+        user_scope=orch.user_scope_from_token("tok"),
+        tool_name="sweep_transducer_angles",
+        inputs={
+            "serial_number": "BB1",
+            "transducer_angles": ["15º", "25º"],
+            "apply_best_after_sweep": True,
+            "network_type": "wifi",
+        },
+    )
+
+    def fake_set(serial, angle, token, *, anthropic_api_key=None):
+        set_calls.append(angle)
+        return {"success": True, "error": None}
+
+    def fake_status(serial, token, *, anthropic_api_key=None):
+        return {
+            "success": True,
+            "status_data": {
+                "serial_number": serial,
+                "online": True,
+                "signal": {"level": "unknown", "reliable": False},
+            },
+        }
+
+    monkeypatch.setattr(orch, "set_transducer_angle_only", fake_set)
+    monkeypatch.setattr(orch, "check_meter_status", fake_status)
+
+    reply, _ = orch.run_turn(
+        [{"role": "user", "content": "confirm"}],
+        token="tok",
+        model=orch._MODEL,
+        conversation_id="conv",
+        confirmed_action_id=action.action_id,
+    )
+
+    assert set_calls == ["15º", "25º"]
+    assert "No reliable numeric signal score" in reply
+    assert "I set the best measured angle" not in reply
 
 
 def test_cancelled_action_consumes_pending_without_dispatch(monkeypatch: pytest.MonkeyPatch):

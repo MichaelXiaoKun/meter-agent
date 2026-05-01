@@ -14,6 +14,7 @@ Database path for SQLite (in priority order):
 """
 
 import contextlib
+import hashlib
 import json
 import os
 import threading
@@ -23,6 +24,12 @@ from pathlib import Path
 from typing import Any
 
 from plots_paths import resolved_plots_dir
+
+
+TICKET_STATUSES = {"open", "in_progress", "waiting_on_human", "resolved", "cancelled"}
+TICKET_PRIORITIES = {"low", "normal", "high", "urgent"}
+TICKET_OWNER_TYPES = {"agent", "human", "unassigned"}
+TICKET_OPEN_STATUSES = {"open", "in_progress", "waiting_on_human"}
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +197,107 @@ def _ensure_ready() -> None:
                     created_at      BIGINT NOT NULL
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS sales_content_records (
+                    record_type            TEXT   NOT NULL,
+                    record_id              TEXT   NOT NULL,
+                    payload_json           TEXT   NOT NULL,
+                    source_url             TEXT   NOT NULL DEFAULT '',
+                    domain                 TEXT   NOT NULL DEFAULT '',
+                    title                  TEXT   NOT NULL DEFAULT '',
+                    content_hash           TEXT   NOT NULL DEFAULT '',
+                    last_fetched_at        BIGINT NOT NULL,
+                    last_changed_at        BIGINT NOT NULL,
+                    extraction_status      TEXT   NOT NULL DEFAULT 'ok',
+                    validation_errors_json TEXT   NOT NULL DEFAULT '[]',
+                    updated_at             BIGINT NOT NULL,
+                    PRIMARY KEY (record_type, record_id)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS sales_content_sync_events (
+                    id            SERIAL PRIMARY KEY,
+                    source_url    TEXT   NOT NULL,
+                    domain        TEXT   NOT NULL DEFAULT '',
+                    status        TEXT   NOT NULL,
+                    message       TEXT   NOT NULL DEFAULT '',
+                    metadata_json TEXT   NOT NULL DEFAULT '{}',
+                    created_at    BIGINT NOT NULL
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id                 TEXT   PRIMARY KEY,
+                    user_id            TEXT   NOT NULL,
+                    conversation_id    TEXT,
+                    serial_number      TEXT,
+                    title              TEXT   NOT NULL,
+                    description        TEXT   NOT NULL DEFAULT '',
+                    success_criteria   TEXT   NOT NULL,
+                    status             TEXT   NOT NULL DEFAULT 'open',
+                    priority           TEXT   NOT NULL DEFAULT 'normal',
+                    owner_type         TEXT   NOT NULL DEFAULT 'unassigned',
+                    owner_id           TEXT   NOT NULL DEFAULT '',
+                    created_by_turn_id TEXT,
+                    due_at             BIGINT,
+                    closed_at          BIGINT,
+                    metadata_json      TEXT   NOT NULL DEFAULT '{}',
+                    created_at         BIGINT NOT NULL,
+                    updated_at         BIGINT NOT NULL
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS ticket_events (
+                    id            SERIAL PRIMARY KEY,
+                    ticket_id     TEXT   NOT NULL REFERENCES tickets(id),
+                    event_type    TEXT   NOT NULL,
+                    actor_type    TEXT   NOT NULL DEFAULT 'agent',
+                    actor_id      TEXT   NOT NULL DEFAULT '',
+                    note          TEXT   NOT NULL DEFAULT '',
+                    turn_id       TEXT,
+                    evidence_json TEXT   NOT NULL DEFAULT '{}',
+                    created_at    BIGINT NOT NULL
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS tool_evidence (
+                    id                  TEXT   PRIMARY KEY,
+                    conversation_id     TEXT   NOT NULL,
+                    turn_id             TEXT   NOT NULL DEFAULT '',
+                    tool_use_id         TEXT   NOT NULL DEFAULT '',
+                    tool_name           TEXT   NOT NULL,
+                    input_json          TEXT   NOT NULL DEFAULT '{}',
+                    raw_result_json     TEXT   NOT NULL DEFAULT '{}',
+                    compact_result_json TEXT   NOT NULL DEFAULT '{}',
+                    result_sha256       TEXT   NOT NULL DEFAULT '',
+                    success             INTEGER NOT NULL DEFAULT 0,
+                    created_at          BIGINT NOT NULL
+                )
+            """)
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tickets_user_status_updated "
+                "ON tickets(user_id, status, updated_at)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tickets_conv_serial "
+                "ON tickets(conversation_id, serial_number)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tool_evidence_conv_turn "
+                "ON tool_evidence(conversation_id, turn_id, created_at)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tool_evidence_tool_use "
+                "ON tool_evidence(tool_use_id)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sales_content_records_type "
+                "ON sales_content_records(record_type, updated_at)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sales_content_sync_events_created "
+                "ON sales_content_sync_events(created_at)"
+            )
     else:
         with _conn() as (conn, cur):
             cur.executescript("""
@@ -230,6 +338,85 @@ def _ensure_ready() -> None:
                     content         TEXT    NOT NULL,
                     created_at      INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS sales_content_records (
+                    record_type            TEXT    NOT NULL,
+                    record_id              TEXT    NOT NULL,
+                    payload_json           TEXT    NOT NULL,
+                    source_url             TEXT    NOT NULL DEFAULT '',
+                    domain                 TEXT    NOT NULL DEFAULT '',
+                    title                  TEXT    NOT NULL DEFAULT '',
+                    content_hash           TEXT    NOT NULL DEFAULT '',
+                    last_fetched_at        INTEGER NOT NULL,
+                    last_changed_at        INTEGER NOT NULL,
+                    extraction_status      TEXT    NOT NULL DEFAULT 'ok',
+                    validation_errors_json TEXT    NOT NULL DEFAULT '[]',
+                    updated_at             INTEGER NOT NULL,
+                    PRIMARY KEY (record_type, record_id)
+                );
+                CREATE TABLE IF NOT EXISTS sales_content_sync_events (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_url    TEXT    NOT NULL,
+                    domain        TEXT    NOT NULL DEFAULT '',
+                    status        TEXT    NOT NULL,
+                    message       TEXT    NOT NULL DEFAULT '',
+                    metadata_json TEXT    NOT NULL DEFAULT '{}',
+                    created_at    INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id                 TEXT    PRIMARY KEY,
+                    user_id            TEXT    NOT NULL,
+                    conversation_id    TEXT,
+                    serial_number      TEXT,
+                    title              TEXT    NOT NULL,
+                    description        TEXT    NOT NULL DEFAULT '',
+                    success_criteria   TEXT    NOT NULL,
+                    status             TEXT    NOT NULL DEFAULT 'open',
+                    priority           TEXT    NOT NULL DEFAULT 'normal',
+                    owner_type         TEXT    NOT NULL DEFAULT 'unassigned',
+                    owner_id           TEXT    NOT NULL DEFAULT '',
+                    created_by_turn_id TEXT,
+                    due_at             INTEGER,
+                    closed_at          INTEGER,
+                    metadata_json      TEXT    NOT NULL DEFAULT '{}',
+                    created_at         INTEGER NOT NULL,
+                    updated_at         INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS ticket_events (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticket_id     TEXT    NOT NULL REFERENCES tickets(id),
+                    event_type    TEXT    NOT NULL,
+                    actor_type    TEXT    NOT NULL DEFAULT 'agent',
+                    actor_id      TEXT    NOT NULL DEFAULT '',
+                    note          TEXT    NOT NULL DEFAULT '',
+                    turn_id       TEXT,
+                    evidence_json TEXT    NOT NULL DEFAULT '{}',
+                    created_at    INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS tool_evidence (
+                    id                  TEXT    PRIMARY KEY,
+                    conversation_id     TEXT    NOT NULL,
+                    turn_id             TEXT    NOT NULL DEFAULT '',
+                    tool_use_id         TEXT    NOT NULL DEFAULT '',
+                    tool_name           TEXT    NOT NULL,
+                    input_json          TEXT    NOT NULL DEFAULT '{}',
+                    raw_result_json     TEXT    NOT NULL DEFAULT '{}',
+                    compact_result_json TEXT    NOT NULL DEFAULT '{}',
+                    result_sha256       TEXT    NOT NULL DEFAULT '',
+                    success             INTEGER NOT NULL DEFAULT 0,
+                    created_at          INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_tickets_user_status_updated
+                    ON tickets(user_id, status, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_tickets_conv_serial
+                    ON tickets(conversation_id, serial_number);
+                CREATE INDEX IF NOT EXISTS idx_tool_evidence_conv_turn
+                    ON tool_evidence(conversation_id, turn_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_tool_evidence_tool_use
+                    ON tool_evidence(tool_use_id);
+                CREATE INDEX IF NOT EXISTS idx_sales_content_records_type
+                    ON sales_content_records(record_type, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_sales_content_sync_events_created
+                    ON sales_content_sync_events(created_at);
             """)
             # Migration: add columns if an older schema exists (SQLite ALTER TABLE
             # doesn't support IF NOT EXISTS, so we catch the error)
@@ -445,6 +632,525 @@ def set_api_context_info(conversation_id: str, summary: str, covers: int) -> Non
             _q("UPDATE conversations SET context_summary = ?, context_summary_covers = ? WHERE id = ?"),
             (summary, covers, conversation_id),
         )
+
+
+# ---------------------------------------------------------------------------
+# Tool evidence ledger
+# ---------------------------------------------------------------------------
+
+def _json_text(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _new_evidence_id() -> str:
+    return "ev_" + uuid.uuid4().hex[:12]
+
+
+def _tool_evidence_from_row(row: Any) -> dict:
+    d = dict(row)
+    for key in ("input_json", "raw_result_json", "compact_result_json"):
+        target = key.removesuffix("_json")
+        try:
+            d[target] = json.loads(d.pop(key) or "{}")
+        except Exception:
+            d[target] = {}
+    d["success"] = bool(d.get("success"))
+    return d
+
+
+def record_tool_evidence(
+    *,
+    conversation_id: str,
+    tool_name: str,
+    input_payload: dict | None,
+    raw_result: dict | None,
+    compact_result: dict | None = None,
+    turn_id: str | None = None,
+    tool_use_id: str | None = None,
+    success: bool = False,
+) -> dict:
+    """Append one immutable tool-call evidence row for validation/audit."""
+    _ensure_ready()
+    conversation_id = _clean_required_text(
+        conversation_id or "default", "conversation_id", max_len=120
+    )
+    tool_name = _clean_required_text(tool_name, "tool_name", max_len=160)
+    turn_id = _clean_optional_text(turn_id, max_len=120) or ""
+    tool_use_id = _clean_optional_text(tool_use_id, max_len=160) or ""
+    input_json = _json_text(input_payload or {})
+    raw_json = _json_text(raw_result or {})
+    compact_json = _json_text(compact_result if compact_result is not None else raw_result or {})
+    result_sha256 = hashlib.sha256(raw_json.encode("utf-8")).hexdigest()
+    now = int(time.time())
+    for _ in range(10):
+        evidence_id = _new_evidence_id()
+        try:
+            with _conn() as (conn, cur):
+                cur.execute(
+                    _q(
+                        "INSERT INTO tool_evidence (id, conversation_id, turn_id, "
+                        "tool_use_id, tool_name, input_json, raw_result_json, "
+                        "compact_result_json, result_sha256, success, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    ),
+                    (
+                        evidence_id,
+                        conversation_id,
+                        turn_id,
+                        tool_use_id,
+                        tool_name,
+                        input_json,
+                        raw_json,
+                        compact_json,
+                        result_sha256,
+                        1 if success else 0,
+                        now,
+                    ),
+                )
+                cur.execute(
+                    _q("SELECT * FROM tool_evidence WHERE id = ?"),
+                    (evidence_id,),
+                )
+                row = cur.fetchone()
+            return _tool_evidence_from_row(row) if row is not None else {}
+        except Exception as exc:
+            if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+                continue
+            raise
+    raise RuntimeError("Failed to generate a unique evidence ID")
+
+
+def list_tool_evidence(
+    conversation_id: str,
+    *,
+    turn_id: str | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """Return tool evidence rows newest-last for a conversation or one turn."""
+    _ensure_ready()
+    conversation_id = _clean_required_text(conversation_id, "conversation_id", max_len=120)
+    clauses = ["conversation_id = ?"]
+    params: list[Any] = [conversation_id]
+    clean_turn_id = _clean_optional_text(turn_id, max_len=120)
+    if clean_turn_id:
+        clauses.append("turn_id = ?")
+        params.append(clean_turn_id)
+    params.append(max(1, min(int(limit or 100), 500)))
+    sql = (
+        "SELECT * FROM tool_evidence WHERE "
+        + " AND ".join(clauses)
+        + " ORDER BY created_at ASC LIMIT ?"
+    )
+    with _conn() as (conn, cur):
+        cur.execute(_q(sql), tuple(params))
+        rows = cur.fetchall()
+    return [_tool_evidence_from_row(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Ticket/work-item persistence
+# ---------------------------------------------------------------------------
+
+def _clean_optional_text(value: Any, *, max_len: int | None = None) -> str | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    return s[:max_len] if max_len is not None else s
+
+
+def _clean_required_text(value: Any, field: str, *, max_len: int | None = None) -> str:
+    s = _clean_optional_text(value, max_len=max_len)
+    if not s:
+        raise ValueError(f"{field} is required")
+    return s
+
+
+def _validate_choice(value: str, allowed: set[str], field: str) -> str:
+    v = (value or "").strip()
+    if v not in allowed:
+        allowed_s = ", ".join(sorted(allowed))
+        raise ValueError(f"{field} must be one of: {allowed_s}")
+    return v
+
+
+def _json_dict(value: Any, field: str) -> dict:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    raise ValueError(f"{field} must be an object")
+
+
+def _loads_dict(raw: Any) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _ticket_from_row(row: Any) -> dict:
+    d = dict(row)
+    d["metadata"] = _loads_dict(d.pop("metadata_json", "{}"))
+    return d
+
+
+def _ticket_event_from_row(row: Any) -> dict:
+    d = dict(row)
+    d["evidence"] = _loads_dict(d.pop("evidence_json", "{}"))
+    return d
+
+
+def _ticket_closed_at(status: str, closed_at: int | None = None) -> int | None:
+    if status in {"resolved", "cancelled"}:
+        return int(closed_at or time.time())
+    return None
+
+
+def _new_ticket_id() -> str:
+    return "tkt_" + uuid.uuid4().hex[:10]
+
+
+def get_conversation_user_id(conversation_id: str) -> str | None:
+    """Return the owner user_id for an admin conversation, if it exists."""
+    _ensure_ready()
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q("SELECT user_id FROM conversations WHERE id = ?"),
+            (conversation_id,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    user_id = row["user_id"]
+    return str(user_id) if user_id is not None else None
+
+
+def create_ticket(
+    *,
+    user_id: str,
+    title: str,
+    success_criteria: str,
+    conversation_id: str | None = None,
+    serial_number: str | None = None,
+    description: str = "",
+    status: str = "open",
+    priority: str = "normal",
+    owner_type: str = "unassigned",
+    owner_id: str | None = None,
+    created_by_turn_id: str | None = None,
+    due_at: int | None = None,
+    metadata: dict | None = None,
+    actor_type: str = "agent",
+    actor_id: str = "bluebot-admin-agent",
+    event_note: str = "",
+    evidence: dict | None = None,
+) -> dict:
+    """Create a ticket and its initial append-only timeline event."""
+    _ensure_ready()
+    user_id = _clean_required_text(user_id, "user_id", max_len=240)
+    title = _clean_required_text(title, "title", max_len=160)
+    success_criteria = _clean_required_text(
+        success_criteria, "success_criteria", max_len=500
+    )
+    description = _clean_optional_text(description, max_len=2_000) or ""
+    status = _validate_choice(status or "open", TICKET_STATUSES, "status")
+    priority = _validate_choice(priority or "normal", TICKET_PRIORITIES, "priority")
+    owner_type = _validate_choice(
+        owner_type or "unassigned", TICKET_OWNER_TYPES, "owner_type"
+    )
+    owner_id = _clean_optional_text(owner_id, max_len=240) or ""
+    conversation_id = _clean_optional_text(conversation_id, max_len=120)
+    serial_number = _clean_optional_text(serial_number, max_len=80)
+    created_by_turn_id = _clean_optional_text(created_by_turn_id, max_len=120)
+    metadata = _json_dict(metadata, "metadata")
+    evidence = _json_dict(evidence, "evidence")
+    now = int(time.time())
+    closed_at = _ticket_closed_at(status)
+    for _ in range(10):
+        ticket_id = _new_ticket_id()
+        try:
+            with _conn() as (conn, cur):
+                cur.execute(
+                    _q(
+                        "INSERT INTO tickets (id, user_id, conversation_id, serial_number, "
+                        "title, description, success_criteria, status, priority, owner_type, "
+                        "owner_id, created_by_turn_id, due_at, closed_at, metadata_json, "
+                        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    ),
+                    (
+                        ticket_id,
+                        user_id,
+                        conversation_id,
+                        serial_number,
+                        title,
+                        description,
+                        success_criteria,
+                        status,
+                        priority,
+                        owner_type,
+                        owner_id,
+                        created_by_turn_id,
+                        int(due_at) if due_at is not None else None,
+                        closed_at,
+                        json.dumps(metadata, sort_keys=True, default=str),
+                        now,
+                        now,
+                    ),
+                )
+                cur.execute(
+                    _q(
+                        "INSERT INTO ticket_events (ticket_id, event_type, actor_type, "
+                        "actor_id, note, turn_id, evidence_json, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                    ),
+                    (
+                        ticket_id,
+                        "created",
+                        actor_type or "agent",
+                        actor_id or "",
+                        event_note or "Ticket created.",
+                        created_by_turn_id,
+                        json.dumps(evidence, sort_keys=True, default=str),
+                        now,
+                    ),
+                )
+            return get_ticket(ticket_id, user_id) or {}
+        except Exception as exc:
+            if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+                continue
+            raise
+    raise RuntimeError("Failed to generate a unique ticket ID")
+
+
+def get_ticket(ticket_id: str, user_id: str) -> dict | None:
+    _ensure_ready()
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q("SELECT * FROM tickets WHERE id = ? AND user_id = ?"),
+            (ticket_id, user_id),
+        )
+        row = cur.fetchone()
+    return _ticket_from_row(row) if row is not None else None
+
+
+def list_tickets(
+    user_id: str,
+    *,
+    conversation_id: str | None = None,
+    serial_number: str | None = None,
+    status: str | list[str] | tuple[str, ...] | set[str] | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """List tickets scoped to one admin user, newest first."""
+    _ensure_ready()
+    user_id = _clean_required_text(user_id, "user_id", max_len=240)
+    clauses = ["user_id = ?"]
+    params: list[Any] = [user_id]
+    conversation_id = _clean_optional_text(conversation_id, max_len=120)
+    serial_number = _clean_optional_text(serial_number, max_len=80)
+    if conversation_id:
+        clauses.append("conversation_id = ?")
+        params.append(conversation_id)
+    if serial_number:
+        clauses.append("serial_number = ?")
+        params.append(serial_number)
+    if status:
+        raw_statuses = (
+            [status]
+            if isinstance(status, str)
+            else list(status)
+        )
+        statuses = [
+            _validate_choice(str(s), TICKET_STATUSES, "status")
+            for s in raw_statuses
+            if str(s).strip()
+        ]
+        if statuses:
+            clauses.append("status IN (" + ", ".join("?" for _ in statuses) + ")")
+            params.extend(statuses)
+    max_rows = max(1, min(int(limit or 100), 500))
+    params.append(max_rows)
+    sql = (
+        "SELECT * FROM tickets WHERE "
+        + " AND ".join(clauses)
+        + " ORDER BY updated_at DESC, created_at DESC LIMIT ?"
+    )
+    with _conn() as (conn, cur):
+        cur.execute(_q(sql), tuple(params))
+        rows = cur.fetchall()
+    return [_ticket_from_row(r) for r in rows]
+
+
+def list_ticket_events(ticket_id: str, user_id: str) -> list[dict]:
+    _ensure_ready()
+    if get_ticket(ticket_id, user_id) is None:
+        return []
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q(
+                "SELECT * FROM ticket_events WHERE ticket_id = ? "
+                "ORDER BY id ASC"
+            ),
+            (ticket_id,),
+        )
+        rows = cur.fetchall()
+    return [_ticket_event_from_row(r) for r in rows]
+
+
+def append_ticket_event(
+    *,
+    ticket_id: str,
+    user_id: str,
+    event_type: str,
+    actor_type: str = "agent",
+    actor_id: str = "",
+    note: str = "",
+    turn_id: str | None = None,
+    evidence: dict | None = None,
+) -> dict:
+    """Append one timeline event to a ticket and bump the ticket updated time."""
+    _ensure_ready()
+    if get_ticket(ticket_id, user_id) is None:
+        raise LookupError("Ticket not found")
+    event_type = _clean_required_text(event_type, "event_type", max_len=80)
+    actor_type = _clean_optional_text(actor_type, max_len=40) or "agent"
+    actor_id = _clean_optional_text(actor_id, max_len=240) or ""
+    note = _clean_optional_text(note, max_len=2_000) or ""
+    turn_id = _clean_optional_text(turn_id, max_len=120)
+    evidence = _json_dict(evidence, "evidence")
+    now = int(time.time())
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q(
+                "INSERT INTO ticket_events (ticket_id, event_type, actor_type, "
+                "actor_id, note, turn_id, evidence_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            ),
+            (
+                ticket_id,
+                event_type,
+                actor_type,
+                actor_id,
+                note,
+                turn_id,
+                json.dumps(evidence, sort_keys=True, default=str),
+                now,
+            ),
+        )
+        cur.execute(
+            _q("UPDATE tickets SET updated_at = ? WHERE id = ? AND user_id = ?"),
+            (now, ticket_id, user_id),
+        )
+        cur.execute(
+            _q(
+                "SELECT * FROM ticket_events WHERE ticket_id = ? "
+                "ORDER BY id DESC LIMIT 1"
+            ),
+            (ticket_id,),
+        )
+        row = cur.fetchone()
+    return _ticket_event_from_row(row) if row is not None else {}
+
+
+def update_ticket(
+    *,
+    ticket_id: str,
+    user_id: str,
+    updates: dict[str, Any],
+    actor_type: str = "agent",
+    actor_id: str = "bluebot-admin-agent",
+    note: str = "",
+    turn_id: str | None = None,
+    evidence: dict | None = None,
+) -> dict:
+    """Update mutable ticket fields and append a compact timeline event."""
+    _ensure_ready()
+    current = get_ticket(ticket_id, user_id)
+    if current is None:
+        raise LookupError("Ticket not found")
+    allowed = {
+        "title",
+        "description",
+        "success_criteria",
+        "status",
+        "priority",
+        "owner_type",
+        "owner_id",
+        "due_at",
+        "metadata",
+        "serial_number",
+    }
+    clean: dict[str, Any] = {}
+    for key, value in (updates or {}).items():
+        if key not in allowed or value is None:
+            continue
+        if key == "title":
+            clean[key] = _clean_required_text(value, "title", max_len=160)
+        elif key == "description":
+            clean[key] = _clean_optional_text(value, max_len=2_000) or ""
+        elif key == "success_criteria":
+            clean[key] = _clean_required_text(
+                value, "success_criteria", max_len=500
+            )
+        elif key == "status":
+            clean[key] = _validate_choice(str(value), TICKET_STATUSES, "status")
+        elif key == "priority":
+            clean[key] = _validate_choice(str(value), TICKET_PRIORITIES, "priority")
+        elif key == "owner_type":
+            clean[key] = _validate_choice(str(value), TICKET_OWNER_TYPES, "owner_type")
+        elif key == "metadata":
+            clean[key] = _json_dict(value, "metadata")
+        elif key == "due_at":
+            clean[key] = int(value) if value not in ("", None) else None
+        else:
+            clean[key] = _clean_optional_text(value, max_len=240) or ""
+    if not clean:
+        return current
+
+    if clean.get("status") == "resolved" and not note and not evidence:
+        raise ValueError("Resolving a ticket requires a note or evidence")
+
+    now = int(time.time())
+    db_fields: dict[str, Any] = {}
+    for key, value in clean.items():
+        if key == "metadata":
+            db_fields["metadata_json"] = json.dumps(value, sort_keys=True, default=str)
+        else:
+            db_fields[key] = value
+    if "status" in clean:
+        db_fields["closed_at"] = _ticket_closed_at(clean["status"])
+    db_fields["updated_at"] = now
+
+    assignments = ", ".join(f"{k} = ?" for k in db_fields)
+    params = list(db_fields.values()) + [ticket_id, user_id]
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q(f"UPDATE tickets SET {assignments} WHERE id = ? AND user_id = ?"),
+            tuple(params),
+        )
+    event_type = "updated"
+    if "status" in clean:
+        event_type = f"status:{clean['status']}"
+    elif "owner_type" in clean or "owner_id" in clean:
+        event_type = "owner_updated"
+    append_ticket_event(
+        ticket_id=ticket_id,
+        user_id=user_id,
+        event_type=event_type,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        note=note,
+        turn_id=turn_id,
+        evidence=evidence,
+    )
+    return get_ticket(ticket_id, user_id) or {}
 
 
 def _plot_png_basenames_from_content(content: Any) -> set[str]:
@@ -863,3 +1569,195 @@ def update_sales_lead_summary(conversation_id: str, summary: dict[str, Any]) -> 
             (json.dumps(merged, default=str), now, conversation_id),
         )
     return merged
+
+
+def _payload_hash(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def load_sales_content_records(record_type: str) -> list[dict[str, Any]]:
+    """Load synced sales KB/catalog payloads for a record type."""
+    _ensure_ready()
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q(
+                "SELECT payload_json FROM sales_content_records "
+                "WHERE record_type = ? AND extraction_status IN ('ok', 'snapshot') "
+                "ORDER BY record_id"
+            ),
+            (record_type,),
+        )
+        rows = cur.fetchall()
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            records.append(payload)
+    return records
+
+
+def load_sales_content_record_metadata(
+    record_type: str,
+    record_id: str,
+) -> dict[str, Any] | None:
+    """Return sync metadata for a single sales content record."""
+    _ensure_ready()
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q(
+                "SELECT record_type, record_id, source_url, domain, title, content_hash, "
+                "last_fetched_at, last_changed_at, extraction_status, "
+                "validation_errors_json, updated_at "
+                "FROM sales_content_records WHERE record_type = ? AND record_id = ?"
+            ),
+            (record_type, record_id),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    meta = dict(row)
+    try:
+        errors = json.loads(meta.get("validation_errors_json") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        errors = []
+    meta["validation_errors"] = errors if isinstance(errors, list) else []
+    meta.pop("validation_errors_json", None)
+    return meta
+
+
+def upsert_sales_content_record(
+    record_type: str,
+    record_id: str,
+    payload: dict[str, Any],
+    *,
+    source_url: str = "",
+    domain: str = "",
+    title: str = "",
+    content_hash: str = "",
+    last_fetched_at: int | None = None,
+    extraction_status: str = "ok",
+    validation_errors: list[str] | None = None,
+) -> dict[str, Any]:
+    """Insert/update a synced sales content payload while preserving change time."""
+    _ensure_ready()
+    now = int(time.time())
+    fetched_at = int(last_fetched_at or now)
+    clean_payload = payload if isinstance(payload, dict) else {}
+    clean_hash = content_hash or _payload_hash(clean_payload)
+    errors = validation_errors or []
+
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q(
+                "SELECT content_hash, last_changed_at FROM sales_content_records "
+                "WHERE record_type = ? AND record_id = ?"
+            ),
+            (record_type, record_id),
+        )
+        existing = cur.fetchone()
+        if existing is not None and existing["content_hash"] == clean_hash:
+            changed_at = int(existing["last_changed_at"])
+        else:
+            changed_at = now
+
+        cur.execute(
+            _q(
+                "INSERT INTO sales_content_records "
+                "(record_type, record_id, payload_json, source_url, domain, title, "
+                "content_hash, last_fetched_at, last_changed_at, extraction_status, "
+                "validation_errors_json, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (record_type, record_id) DO UPDATE SET "
+                "payload_json = excluded.payload_json, "
+                "source_url = excluded.source_url, "
+                "domain = excluded.domain, "
+                "title = excluded.title, "
+                "content_hash = excluded.content_hash, "
+                "last_fetched_at = excluded.last_fetched_at, "
+                "last_changed_at = excluded.last_changed_at, "
+                "extraction_status = excluded.extraction_status, "
+                "validation_errors_json = excluded.validation_errors_json, "
+                "updated_at = excluded.updated_at"
+            ),
+            (
+                record_type,
+                record_id,
+                json.dumps(clean_payload, default=str),
+                source_url,
+                domain,
+                title,
+                clean_hash,
+                fetched_at,
+                changed_at,
+                extraction_status,
+                json.dumps(errors, default=str),
+                now,
+            ),
+        )
+    return {
+        "record_type": record_type,
+        "record_id": record_id,
+        "content_hash": clean_hash,
+        "last_fetched_at": fetched_at,
+        "last_changed_at": changed_at,
+        "extraction_status": extraction_status,
+        "validation_errors": errors,
+    }
+
+
+def record_sales_content_sync_event(
+    source_url: str,
+    *,
+    domain: str = "",
+    status: str,
+    message: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Record a sales content sync success or failure for observability."""
+    _ensure_ready()
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q(
+                "INSERT INTO sales_content_sync_events "
+                "(source_url, domain, status, message, metadata_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)"
+            ),
+            (
+                source_url,
+                domain,
+                status,
+                message,
+                json.dumps(metadata or {}, default=str),
+                int(time.time()),
+            ),
+        )
+
+
+def list_sales_content_sync_events(limit: int = 20) -> list[dict[str, Any]]:
+    """Return recent sales content sync events."""
+    _ensure_ready()
+    safe_limit = max(1, min(int(limit or 20), 200))
+    with _conn() as (conn, cur):
+        cur.execute(
+            _q(
+                "SELECT source_url, domain, status, message, metadata_json, created_at "
+                "FROM sales_content_sync_events ORDER BY created_at DESC, id DESC LIMIT ?"
+            ),
+            (safe_limit,),
+        )
+        rows = cur.fetchall()
+    events: list[dict[str, Any]] = []
+    for row in rows:
+        event = dict(row)
+        try:
+            metadata = json.loads(event.get("metadata_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            metadata = {}
+        event["metadata"] = metadata if isinstance(metadata, dict) else {}
+        event.pop("metadata_json", None)
+        events.append(event)
+    return events

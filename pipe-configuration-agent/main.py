@@ -12,6 +12,9 @@ Full pipe + angle (inner LLM + tools):
 Transducer angle only (deterministic SSA publish, no catalog):
     python main.py --serial BB8100015261 --angle-only --angle "35º"
 
+Set zero point (deterministic SZV publish, no catalog):
+    python main.py --serial BB8100015261 --zero-point
+
 Bearer token:
     Set BLUEBOT_TOKEN, or pass --token explicitly.
 """
@@ -24,7 +27,8 @@ import sys
 
 from agent import analyze
 from angle_only import run_transducer_angle_only
-from report import format_angle_only_report, format_report
+from report import format_angle_only_report, format_report, format_zero_point_report
+from zero_point import run_zero_point
 
 
 def main() -> None:
@@ -34,6 +38,11 @@ def main() -> None:
         "--angle-only",
         action="store_true",
         help="Only resolve device + transducer angle and publish MQTT ssa (no pipe catalog)",
+    )
+    parser.add_argument(
+        "--zero-point",
+        action="store_true",
+        help="Only resolve device and publish MQTT szv to enter set-zero-point state.",
     )
     parser.add_argument(
         "--material",
@@ -52,7 +61,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--angle",
-        required=True,
+        default=None,
         help="Transducer angle label (e.g. 45º / 35° / 25). Mapping depends on Wi-Fi vs LoRaWAN.",
     )
     parser.add_argument(
@@ -71,7 +80,22 @@ def main() -> None:
         print("Error: Bearer token required. Use --token or set BLUEBOT_TOKEN.", file=sys.stderr)
         sys.exit(1)
 
-    if args.angle_only:
+    if args.angle_only and args.zero_point:
+        print("Error: choose either --angle-only or --zero-point, not both.", file=sys.stderr)
+        sys.exit(2)
+
+    if args.zero_point:
+        print(f"Running set-zero-point update for serial {args.serial}...", file=sys.stderr)
+        body = run_zero_point(
+            serial_number=args.serial,
+            token=token,
+        )
+        report = format_zero_point_report(body, args.serial)
+        out_prefix = f"zero_point_{args.serial}"
+    elif args.angle_only:
+        if not args.angle:
+            print("Error: --angle-only requires --angle.", file=sys.stderr)
+            sys.exit(2)
         print(f"Running SSA-only transducer update for serial {args.serial}...", file=sys.stderr)
         body = run_transducer_angle_only(
             serial_number=args.serial,
@@ -81,10 +105,10 @@ def main() -> None:
         report = format_angle_only_report(body, args.serial)
         out_prefix = f"angle_only_{args.serial}"
     else:
-        if not args.material or not args.standard or not args.size:
+        if not args.material or not args.standard or not args.size or not args.angle:
             print(
-                "Error: full pipe mode requires --material, --standard, and --size "
-                "(or use --angle-only for transducer angle only).",
+                "Error: full pipe mode requires --material, --standard, --size, and --angle "
+                "(or use --angle-only / --zero-point for narrow commands).",
                 file=sys.stderr,
             )
             sys.exit(2)

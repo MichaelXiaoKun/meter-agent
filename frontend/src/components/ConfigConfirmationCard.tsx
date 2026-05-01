@@ -1,4 +1,8 @@
 import type { SSEEvent } from "../types";
+import {
+  configFinalPolicyLabel,
+  proposedConfigLine,
+} from "../configCompat";
 
 type Workflow = NonNullable<SSEEvent["config_workflow"]>;
 
@@ -12,34 +16,6 @@ interface ConfigConfirmationCardProps {
 
 function str(v: unknown): string {
   return typeof v === "string" && v.trim() ? v.trim() : "";
-}
-
-function valuesLine(values: Record<string, unknown> | undefined): string {
-  if (!values) return "No proposed values";
-  const sweepAngles = values.transducer_angles;
-  if (Array.isArray(sweepAngles)) {
-    const angles = sweepAngles
-      .map((v) => (typeof v === "string" || typeof v === "number" ? String(v).trim() : ""))
-      .filter(Boolean);
-    if (angles.length > 0) return `Transducer angle sweep -> ${angles.join(", ")}`;
-  }
-  const pipeParts = [
-    str(values.pipe_material),
-    str(values.pipe_standard),
-    str(values.pipe_size),
-  ].filter(Boolean);
-  if (pipeParts.length > 0) {
-    const angle = str(values.transducer_angle);
-    return [
-      pipeParts.join(" / "),
-      angle ? `angle ${angle}` : "",
-    ].filter(Boolean).join(" / ");
-  }
-  if (str(values.transducer_angle)) return `Transducer angle -> ${str(values.transducer_angle)}`;
-  const parts = [
-    str(values.transducer_angle) ? `angle ${str(values.transducer_angle)}` : "",
-  ].filter(Boolean);
-  return parts.join(" / ") || JSON.stringify(values);
 }
 
 function allowedAngles(current: Workflow["current_values"]): string {
@@ -66,13 +42,25 @@ function durationLabel(values: Record<string, unknown> | undefined): string {
 }
 
 function finalPolicyLabel(values: Record<string, unknown> | undefined): string {
-  if (values?.apply_best_after_sweep === true) {
-    return "Set best measured angle at the end when a reliable score exists";
-  }
-  if (Array.isArray(values?.transducer_angles)) {
-    return "Leave meter at the last successfully tested angle";
-  }
-  return "";
+  return configFinalPolicyLabel(values);
+}
+
+function field(workflow: Workflow, key: keyof Workflow): string {
+  const value = workflow[key];
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function preflight(workflow: Workflow): Record<string, unknown> | null {
+  const current = workflow.current_values;
+  const value = current?.zero_point_preflight;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function flowStat(value: unknown): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  return `${Number(value.toFixed(3))} gpm`;
 }
 
 export default function ConfigConfirmationCard({
@@ -87,6 +75,8 @@ export default function ConfigConfirmationCard({
   const pending = status === "pending_confirmation";
   const superseded = status === "superseded";
   if (!pending && !superseded) return null;
+  const isExperiment = workflow.workflow_type === "diagnostic_experiment";
+  const isZeroPoint = workflow.tool === "set_zero_point";
   const serial = str(workflow.serial_number);
   const current = workflow.current_values;
   const label = str(current?.label);
@@ -95,13 +85,33 @@ export default function ConfigConfirmationCard({
   const risk = str(workflow.risk);
   const duration = durationLabel(workflow.proposed_values);
   const finalPolicy = finalPolicyLabel(workflow.proposed_values);
+  const zeroPreflight = preflight(workflow);
+  const flowStats =
+    zeroPreflight?.flow_stats && typeof zeroPreflight.flow_stats === "object"
+      ? (zeroPreflight.flow_stats as Record<string, unknown>)
+      : null;
+  const drift =
+    zeroPreflight?.drift_evidence && typeof zeroPreflight.drift_evidence === "object"
+      ? (zeroPreflight.drift_evidence as Record<string, unknown>)
+      : null;
+  const signalPattern =
+    zeroPreflight?.signal_quality_recovery_before_drift &&
+    typeof zeroPreflight.signal_quality_recovery_before_drift === "object"
+      ? (zeroPreflight.signal_quality_recovery_before_drift as Record<string, unknown>)
+      : null;
 
   return (
     <div className="my-3 max-w-2xl rounded-lg border border-amber-300/80 bg-amber-50/90 px-4 py-3 text-amber-950 shadow-sm dark:border-amber-900/70 dark:bg-amber-950/25 dark:text-amber-100">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <div className="text-xs font-semibold uppercase tracking-normal text-amber-700 dark:text-amber-300">
-            {superseded ? "Replaced" : "Confirmation required"}
+            {superseded
+              ? "Replaced"
+              : isExperiment
+                ? "Diagnostic experiment"
+                : isZeroPoint
+                  ? "Set zero point"
+                  : "Confirmation required"}
           </div>
           <div className="mt-1 text-sm font-semibold">
             {serial ? `Meter ${serial}` : "Meter configuration"}
@@ -123,10 +133,71 @@ export default function ConfigConfirmationCard({
 
       {pending ? (
       <div className="mt-3 space-y-1.5 text-sm">
+        {isExperiment && field(workflow, "experiment_goal") ? (
+          <p>
+            <span className="font-semibold">Goal:</span>{" "}
+            {field(workflow, "experiment_goal")}
+          </p>
+        ) : null}
+        {isExperiment && field(workflow, "hypothesis") ? (
+          <p>
+            <span className="font-semibold">Hypothesis:</span>{" "}
+            {field(workflow, "hypothesis")}
+          </p>
+        ) : null}
         <p>
-          <span className="font-semibold">Change:</span>{" "}
-          {valuesLine(workflow.proposed_values)}
+          <span className="font-semibold">{isExperiment ? "Experiment:" : isZeroPoint ? "Command:" : "Change:"}</span>{" "}
+          {proposedConfigLine(workflow.proposed_values)}
         </p>
+        {isZeroPoint && field(workflow, "preflight_summary") ? (
+          <p>
+            <span className="font-semibold">Preflight:</span>{" "}
+            {field(workflow, "preflight_summary")}
+          </p>
+        ) : null}
+        {isZeroPoint && field(workflow, "flow_state") ? (
+          <p>
+            <span className="font-semibold">Flow gate:</span>{" "}
+            {field(workflow, "flow_state").replace(/_/g, " ")}
+          </p>
+        ) : null}
+        {isZeroPoint && flowStats ? (
+          <p>
+            <span className="font-semibold">Recent flow:</span>{" "}
+            {[
+              flowStat(flowStats.latest_flow_gpm) && `latest ${flowStat(flowStats.latest_flow_gpm)}`,
+              flowStat(flowStats.recent_p90_abs_gpm) && `p90 |flow| ${flowStat(flowStats.recent_p90_abs_gpm)}`,
+              typeof flowStats.recent_row_count === "number" ? `${flowStats.recent_row_count} samples` : "",
+            ].filter(Boolean).join(", ")}
+          </p>
+        ) : null}
+        {isZeroPoint && drift ? (
+          <p>
+            <span className="font-semibold">Drift check:</span>{" "}
+            {drift.detected ? "Drift evidence present" : "Drift evidence inconclusive"}
+            {str(drift.direction) ? ` (${str(drift.direction)})` : ""}
+          </p>
+        ) : null}
+        {isZeroPoint && signalPattern ? (
+          <p>
+            <span className="font-semibold">Signal pattern:</span>{" "}
+            {signalPattern.detected
+              ? "High-low-high recovery before estimated drift"
+              : "No confirmed high-low-high recovery pattern"}
+          </p>
+        ) : null}
+        {isExperiment && field(workflow, "measurement_plan") ? (
+          <p>
+            <span className="font-semibold">Measurement:</span>{" "}
+            {field(workflow, "measurement_plan")}
+          </p>
+        ) : null}
+        {isExperiment && field(workflow, "success_criteria") ? (
+          <p>
+            <span className="font-semibold">Success criteria:</span>{" "}
+            {field(workflow, "success_criteria")}
+          </p>
+        ) : null}
         {network ? (
           <p>
             <span className="font-semibold">Network:</span> {network}
@@ -147,6 +218,12 @@ export default function ConfigConfirmationCard({
             <span className="font-semibold">Final angle:</span> {finalPolicy}
           </p>
         ) : null}
+        {isExperiment && field(workflow, "final_policy") ? (
+          <p>
+            <span className="font-semibold">Final policy:</span>{" "}
+            {field(workflow, "final_policy")}
+          </p>
+        ) : null}
         {risk ? (
           <p className="text-xs leading-relaxed text-amber-800 dark:text-amber-200">
             {risk}
@@ -163,7 +240,7 @@ export default function ConfigConfirmationCard({
             onClick={() => onConfirm?.(workflow)}
             className="min-h-9 rounded-md bg-amber-700 px-3 py-2 text-sm font-semibold text-white transition hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Yes, apply
+            {isExperiment ? "Run experiment" : isZeroPoint ? "Set zero point" : "Yes, apply"}
           </button>
           <button
             type="button"

@@ -91,29 +91,32 @@ from tools.sweep_transducer_angles import (
     prepare_sweep_confirmation_inputs,
     sweep_transducer_angles,
 )
+from tools.set_zero_point import (
+    TOOL_DEFINITION as _SET_ZERO_POINT_DEF,
+    prepare_zero_point_confirmation_inputs,
+    set_zero_point,
+)
 from tools.batch_flow_analysis import (
     TOOL_DEFINITION as _BATCH_FLOW_ANALYSIS_DEF,
     batch_analyze_flow,
 )
+from tools.tickets import (
+    CREATE_TICKET_TOOL_DEFINITION as _CREATE_TICKET_DEF,
+    LIST_TICKETS_TOOL_DEFINITION as _LIST_TICKETS_DEF,
+    UPDATE_TICKET_TOOL_DEFINITION as _UPDATE_TICKET_DEF,
+    create_ticket,
+    list_tickets,
+    update_ticket,
+)
 from message_sanitize import messages_for_anthropic_api  # still used for _rough_input_token_fallback
-from observability import emit_event, turn_context, timed
+from observability import current_turn_id, emit_event, turn_context, timed
 from prompts import load_system_prompt
+from store import record_tool_evidence
 
-TOOLS = [
-    _TIME_RANGE_DEF,
-    _METER_STATUS_DEF,
-    _METER_PROFILE_DEF,
-    _METERS_BY_EMAIL_DEF,
-    _METER_COMPARE_DEF,
-    _FLEET_HEALTH_DEF,
-    _FLEET_TRIAGE_DEF,
-    _PERIOD_COMPARE_DEF,
-    _FLOW_ANALYSIS_DEF,
-    _BATCH_FLOW_ANALYSIS_DEF,
-    _PIPE_CONFIGURATION_DEF,
-    _SET_TRANSDUCER_ANGLE_DEF,
-    _SWEEP_TRANSDUCER_ANGLES_DEF,
-]
+def TOOLS() -> list:
+    """Return the full list of tool definitions from the meter registry."""
+    from meter_tools import METER_REGISTRY
+    return METER_REGISTRY.definitions()
 
 # ---------------------------------------------------------------------------
 # Intent routing: optional cheap pass (rules or Haiku) to expose only a tool
@@ -135,6 +138,9 @@ _BASE_READ_TOOLS: frozenset[str] = frozenset(
         "compare_meters",
         "rank_fleet_by_health",
         "triage_fleet_for_account",
+        "list_tickets",
+        "create_ticket",
+        "update_ticket",
     }
 )
 
@@ -152,6 +158,7 @@ _TOOL_NAMES_BY_INTENT: dict[str, frozenset[str]] = {
             "configure_meter_pipe",
             "set_transducer_angle_only",
             "sweep_transducer_angles",
+            "set_zero_point",
         }
     ),
 }
@@ -211,6 +218,127 @@ def _recent_user_text_for_routing(messages: list) -> str:
     return "\n".join(blobs).strip()[:12_000]
 
 
+_SERIAL_RE = re.compile(r"\bBB[A-Z0-9-]{1,}\b", re.IGNORECASE)
+
+
+def _last_user_text(messages: list) -> str:
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if isinstance(m, dict) and m.get("role") == "user":
+            return _plain_text_from_user_message(m)
+    return ""
+
+
+def _extract_first_serial(text: str) -> str | None:
+    match = _SERIAL_RE.search(text or "")
+    return match.group(0).upper() if match else None
+
+
+def _looks_like_angle_diagnostic_request(text: str) -> bool:
+    """Heuristic validator preflight for questions that need an angle experiment."""
+    t = (text or "").lower()
+    if not t:
+        return False
+    has_angle_subject = bool(
+        re.search(
+            r"\b(angle|transducer|install|installation|mount|mounted|alignment|signal|quality)\b",
+            t,
+        )
+        or any(word in text for word in ("角度", "安装", "信号", "探头", "换能器"))
+    )
+    has_diagnostic_intent = bool(
+        re.search(
+            r"\b(is it|could it|whether|why|diagnos|judge|tell|prove|verify|"
+            r"best|better|optimi[sz]e|issue|problem|cause)\b",
+            t,
+        )
+        or any(word in text for word in ("是不是", "是否", "判断", "验证", "原因", "问题", "更好", "最佳"))
+    )
+    asks_direct_write = bool(
+        re.search(r"\b(set|change|apply|configure|update|make it|switch)\b", t)
+        or any(word in text for word in ("设置", "改成", "应用", "配置"))
+    )
+    return has_angle_subject and has_diagnostic_intent and not asks_direct_write
+
+
+def _pipe_correctness_asserted(text: str) -> bool:
+    t = (text or "").lower()
+    return bool(
+        re.search(
+            r"\b(pipe|pipe config|pipe configuration|pipe parameter|pipe parameters|"
+            r"material|diameter|size|standard)\b.{0,40}\b(correct|right|verified|confirmed|ok|okay|good)\b",
+            t,
+        )
+        or re.search(
+            r"\b(correct|right|verified|confirmed|ok|okay|good)\b.{0,40}\b(pipe|pipe config|pipe parameters)\b",
+            t,
+        )
+        or any(
+            phrase in (text or "")
+            for phrase in (
+                "管道参数是对的",
+                "管道参数对",
+                "管道参数正确",
+                "管道参数没问题",
+                "管道配置是对的",
+                "管道配置正确",
+                "管道配置没问题",
+                "管径是对的",
+                "管径正确",
+                "管材是对的",
+                "材质是对的",
+            )
+        )
+    )
+
+
+def _angle_experiment_signal_threshold() -> float:
+    raw = os.environ.get("BLUEBOT_ANGLE_EXPERIMENT_SIGNAL_SCORE_MAX", "20")
+    try:
+        return float(raw)
+    except ValueError:
+        return 20.0
+
+
+def _signal_score_from_status_result(status_result: dict) -> float | None:
+    status = status_result.get("status_data") if isinstance(status_result, dict) else None
+    signal = status.get("signal") if isinstance(status, dict) else None
+    if not isinstance(signal, dict):
+        return None
+    score = signal.get("score")
+    if isinstance(score, (int, float)):
+        return float(score)
+    if isinstance(score, str):
+        try:
+            return float(score)
+        except ValueError:
+            return None
+    return None
+
+
+def _signal_is_low_enough_for_angle_experiment(status_result: dict) -> tuple[bool, str]:
+    status = status_result.get("status_data") if isinstance(status_result, dict) else None
+    signal = status.get("signal") if isinstance(status, dict) else None
+    if not isinstance(signal, dict):
+        return False, "No current signal-quality reading was available."
+    score = _signal_score_from_status_result(status_result)
+    threshold = _angle_experiment_signal_threshold()
+    if score is not None:
+        if score <= threshold:
+            return True, f"Current signal score is {score:g}, at or below the {threshold:g} experiment threshold."
+        return False, f"Current signal score is {score:g}, which is not low enough for an angle sweep."
+    level = str(signal.get("level") or signal.get("label") or "").strip().lower()
+    if level in {"0", "zero", "none", "no signal", "poor", "bad", "low", "very low", "critical"}:
+        return True, f"Current signal level is {level}."
+    return False, "Current signal quality is not clearly low enough for an angle sweep."
+
+
+def _pipe_config_present(status_result: dict) -> bool:
+    status = status_result.get("status_data") if isinstance(status_result, dict) else None
+    pipe = status.get("pipe_config") if isinstance(status, dict) else None
+    return isinstance(pipe, dict) and bool(pipe)
+
+
 def _route_intent_rules(user_text: str) -> str:
     if not (user_text or "").strip():
         return "general"
@@ -227,9 +355,10 @@ def _route_intent_rules(user_text: str) -> str:
         return "flow"
     if re.search(
         r"\b(config|pipe|material|diameter|transducer|angle|install|"
+        r"zero point|zero-point|set zero|reset zero|"
         r"pvc|hdpe|copper|npt|bspt|bs en|astm|sch \d+|schedule)\b",
         t,
-    ):
+    ) or any(word in user_text for word in ("零点", "归零", "校零")):
         return "config"
     if re.search(
         r"\b(online|offline|status|signal|quality|battery|wifi|lora|lorawan|"
@@ -290,10 +419,11 @@ def _route_intent_haiku(
 
 
 def _tools_for_intent_label(label: str) -> list:
-    """Return a non-empty subset of TOOLS; fallback to full list if something is off."""
+    """Return a non-empty subset of tools for the given intent; fallback to full list if something is off."""
+    from meter_tools import METER_REGISTRY
     names = _TOOL_NAMES_BY_INTENT.get(label) or _TOOL_NAMES_BY_INTENT["general"]
-    out = [t for t in TOOLS if t.get("name") in names]
-    return out if out else list(TOOLS)
+    out = METER_REGISTRY.definitions(names=list(names))
+    return out if out else METER_REGISTRY.definitions()
 
 
 def _resolve_routed_tools(
@@ -309,7 +439,8 @@ def _resolve_routed_tools(
     """
     mode = _intent_router_mode()
     if mode == "off":
-        return (list(TOOLS), "full", "off")
+        from meter_tools import METER_REGISTRY
+        return (METER_REGISTRY.definitions(), "full", "off")
     user_text = _recent_user_text_for_routing(messages)
     if mode == "haiku":
         label = _route_intent_haiku(provider, cheap_model, user_text)
@@ -429,35 +560,35 @@ def _max_tool_rounds_per_turn() -> int:
 # Safe to cache and replay on duplicate calls in the same turn; a post-mutation
 # reread is still sound because :func:`_invalidate_dedupe_for_write` drops any
 # cached read tied to a serial the write tool just touched (see rule 11).
-_DEDUPABLE_READ_TOOLS: frozenset[str] = frozenset(
-    {
-        "resolve_time_range",
-        "check_meter_status",
-        "get_meter_profile",
-        "list_meters_for_account",
-        "compare_meters",
-        "rank_fleet_by_health",
-        "triage_fleet_for_account",
-        "compare_periods",
-        "analyze_flow_data",
-    }
-)
-
-# Write tools are *never* cached: each call is an MQTT / management push and
-# must reach the device even when the arguments look identical.
-_WRITE_TOOLS: frozenset[str] = frozenset(
-    {"configure_meter_pipe", "set_transducer_angle_only", "sweep_transducer_angles"}
-)
-
-# These tools always run serially even when multiple tool_use blocks arrive in
-# one response: writes for rule-11 verify-after-write correctness; flow analysis
-# because its SSE heartbeats are per-meter and interleaving them would confuse
-# the UI timeline. Fan-out flow comparisons go through batch_analyze_flow instead.
-_SERIAL_ONLY_TOOLS: frozenset[str] = _WRITE_TOOLS | frozenset({"analyze_flow_data"})
 _MAX_PARALLEL_TOOL_WORKERS = 6
-_HEARTBEAT_PROGRESS_TOOLS: frozenset[str] = frozenset(
-    {"rank_fleet_by_health", "triage_fleet_for_account"}
-)
+
+
+def _is_dedupable_read(tool_name: str) -> bool:
+    """Return True if the tool result can be cached/deduplicated within a turn."""
+    from meter_tools import METER_REGISTRY
+    tool = METER_REGISTRY.get(tool_name)
+    return tool is not None and tool.is_dedupable_read
+
+
+def _is_write(tool_name: str) -> bool:
+    """Return True if the tool performs a mutation (write)."""
+    from meter_tools import METER_REGISTRY
+    tool = METER_REGISTRY.get(tool_name)
+    return tool is not None and tool.is_write
+
+
+def _is_serial_only(tool_name: str) -> bool:
+    """Return True if the tool must run serially, not in parallel."""
+    from meter_tools import METER_REGISTRY
+    tool = METER_REGISTRY.get(tool_name)
+    return tool is not None and tool.is_serial_only
+
+
+def _is_heartbeat_progress(tool_name: str) -> bool:
+    """Return True if the tool emits progress events (SSE heartbeats)."""
+    from meter_tools import METER_REGISTRY
+    tool = METER_REGISTRY.get(tool_name)
+    return tool is not None and tool.is_heartbeat_progress
 
 
 def _per_turn_tool_dedupe_key(tool_name: str, inp_d: dict) -> str | None:
@@ -467,7 +598,7 @@ def _per_turn_tool_dedupe_key(tool_name: str, inp_d: dict) -> str | None:
     "b": 2}`` and ``{"b": 2, "a": 1}`` hit the same entry. Write tools and
     unknown tools always return ``None`` so they bypass the cache.
     """
-    if tool_name not in _DEDUPABLE_READ_TOOLS:
+    if not _is_dedupable_read(tool_name):
         return None
     return json.dumps(
         {"tool": tool_name, "args": inp_d},
@@ -488,7 +619,7 @@ def _invalidate_dedupe_for_write(
     / ``get_meter_profile`` calls re-hit the device, so we must not hand
     back a stale cached read after a write succeeds.
     """
-    if tool_name not in _WRITE_TOOLS:
+    if not _is_write(tool_name):
         return []
     serial = str(inp_d.get("serial_number") or "").strip() or None
     if serial is None:
@@ -661,9 +792,9 @@ def _count_tokens(
     Per-turn *model* overrides the server default so the estimate matches
     the model that will actually handle this turn.
     *tools* should match the list passed to the stream call (intent routing
-    may pass a subset of ``TOOLS``).
+    may pass a subset of available tools).
     """
-    tool_list = tools if tools is not None else TOOLS
+    tool_list = tools if tools is not None else TOOLS()
     try:
         return provider.count_tokens(
             model or _MODEL,
@@ -967,6 +1098,7 @@ def _run_dispatch_with_heartbeat_progress(
     token: str,
     *,
     client_timezone: str | None,
+    conversation_id: str | None,
     emit,
     anthropic_api_key: str | None = None,
     heartbeat_seconds: float = 4.0,
@@ -984,6 +1116,7 @@ def _run_dispatch_with_heartbeat_progress(
                     token,
                     client_timezone=client_timezone,
                     anthropic_api_key=anthropic_api_key,
+                    conversation_id=conversation_id,
                 )
             )
         except BaseException as e:
@@ -1228,6 +1361,14 @@ def _compact_tool_result_for_history(tool_name: str, result_dict: dict) -> dict:
             "notice": result_dict.get("notice"),
             "error": result_dict.get("error"),
         }
+    if tool_name == "set_zero_point":
+        return {
+            "success": result_dict.get("success"),
+            "command": result_dict.get("command"),
+            "mqtt_payload": result_dict.get("mqtt_payload"),
+            "error": result_dict.get("error"),
+            "report_excerpt": _compact_report_excerpt(result_dict.get("report")),
+        }
     return result_dict
 
 
@@ -1236,6 +1377,69 @@ def _compact_tool_result_json_for_history(tool_name: str, result_dict: dict) -> 
         _compact_tool_result_for_history(tool_name, result_dict),
         default=str,
     )
+
+
+def _record_tool_evidence_safe(
+    *,
+    conversation_id: str,
+    tool_name: str,
+    inp: dict,
+    result_dict: dict,
+    ok: bool,
+    tool_use_id: str | None = None,
+) -> dict | None:
+    """Best-effort evidence ledger write; validation should never break chat."""
+    try:
+        return record_tool_evidence(
+            conversation_id=conversation_id,
+            turn_id=current_turn_id(),
+            tool_use_id=tool_use_id,
+            tool_name=tool_name,
+            input_payload=inp,
+            raw_result=result_dict,
+            compact_result=_compact_tool_result_for_history(tool_name, result_dict),
+            success=ok,
+        )
+    except Exception as exc:
+        emit_event(
+            "tool_evidence_record_failed",
+            tool=tool_name,
+            conversation_id=conversation_id,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return None
+
+
+def _record_sweep_angle_evidence(
+    *,
+    conversation_id: str,
+    inp: dict,
+    result_dict: dict,
+) -> None:
+    """Record one evidence row per angle in a confirmed sweep result."""
+    if not isinstance(result_dict.get("results"), list):
+        return
+    serial = str(result_dict.get("serial_number") or inp.get("serial_number") or "")
+    for row in result_dict.get("results") or []:
+        if not isinstance(row, dict):
+            continue
+        angle = str(row.get("angle") or "")
+        payload = {
+            "success": bool(row.get("write_success")) and bool(row.get("status_success")),
+            "serial_number": serial,
+            "angle": angle,
+            "network_type": result_dict.get("network_type"),
+            "sweep_final_policy": result_dict.get("final_action"),
+            "measurement": row,
+        }
+        _record_tool_evidence_safe(
+            conversation_id=conversation_id,
+            tool_name="sweep_transducer_angles.angle_result",
+            inp={"serial_number": serial, "transducer_angle": angle},
+            result_dict=payload,
+            ok=bool(payload["success"]),
+            tool_use_id=f"{current_turn_id() or 'turn'}:{angle}",
+        )
 
 
 def _coerce_tool_input(inp: object) -> dict:
@@ -1306,6 +1510,26 @@ def _tool_activity_line(
     if tool_name == "triage_fleet_for_account" and email:
         return _clip_activity(f"Triaged fleet health for account {email}", 260)
 
+    if tool_name == "list_tickets":
+        count = result.get("count")
+        if isinstance(count, int):
+            return _clip_activity(f"Listed {count} ticket(s)", 180)
+        return _clip_activity("Listed tickets", 160)
+
+    if tool_name == "create_ticket":
+        ticket = result.get("ticket")
+        title = ticket.get("title") if isinstance(ticket, dict) else inp.get("title")
+        if isinstance(title, str) and title.strip():
+            return _clip_activity(f"Created ticket: {title.strip()}", 220)
+        return _clip_activity("Created ticket", 160)
+
+    if tool_name == "update_ticket":
+        ticket = result.get("ticket")
+        status = ticket.get("status") if isinstance(ticket, dict) else inp.get("status")
+        if isinstance(status, str) and status.strip():
+            return _clip_activity(f"Updated ticket status to {status.strip()}", 200)
+        return _clip_activity("Updated ticket", 160)
+
     if tool_name == "batch_analyze_flow":
         sns = inp.get("serial_numbers")
         if isinstance(sns, list) and sns:
@@ -1343,6 +1567,9 @@ def _tool_activity_line(
                 260,
             )
         return _clip_activity(f"Swept {count} transducer angles for meter {sn}", 220)
+
+    if tool_name == "set_zero_point" and sn:
+        return _clip_activity(f"Put meter {sn} into set-zero-point state", 220)
 
     return None
 
@@ -1434,6 +1661,7 @@ def _meter_context_from_result(tool_name: str, inp: dict, result: dict) -> dict 
         "configure_meter_pipe",
         "set_transducer_angle_only",
         "sweep_transducer_angles",
+        "set_zero_point",
     }:
         if inp.get("network_type"):
             ctx["network_type"] = inp.get("network_type")
@@ -1548,6 +1776,8 @@ def _current_values_for_config_confirmation(tool_name: str, inp: dict, token: st
             if tool_name == "configure_meter_pipe"
             else "transducer_angle_sweep"
             if tool_name == "sweep_transducer_angles"
+            else "set_zero_point"
+            if tool_name == "set_zero_point"
             else "transducer_angle_only"
         ),
     }
@@ -1596,13 +1826,309 @@ def _confirmation_required_payload(
     return workflow, {k: v for k, v in meter_context.items() if v}
 
 
-def _prepare_write_confirmation_inputs(tool_name: str, inp: dict, token: str) -> dict:
+def _angle_experiment_fields(serial: str, prepared_inputs: dict) -> dict:
+    angles = prepared_inputs.get("transducer_angles")
+    angle_list = ", ".join(str(a) for a in angles) if isinstance(angles, list) else "allowed angles"
+    return {
+        "workflow_type": "diagnostic_experiment",
+        "experiment_goal": "Determine whether transducer angle is affecting signal quality.",
+        "hypothesis": (
+            "Given low current signal quality and pipe parameters treated as correct, if one tested "
+            "angle has a reliably stronger signal score, angle alignment is likely contributing "
+            f"to the meter's signal behavior for {serial}."
+        ),
+        "measurement_plan": (
+            f"Set {serial} through {angle_list}, check meter status after each angle, "
+            "compare signal score, level, and reliability, then set the best reliable angle."
+        ),
+        "success_criteria": (
+            "At least one angle returns a reliable numeric signal score and the best angle can be "
+            "verified after it is applied, with pipe parameters already treated as correct."
+        ),
+        "final_policy": "Set the best measured angle at the end when a reliable score exists.",
+        "risk": (
+            "This diagnostic experiment sends transducer-angle changes to the physical meter. "
+            "It will set the best measured angle if a reliable score is available."
+        ),
+    }
+
+
+def _experiment_confirmation_prompt(workflow: dict) -> str:
+    serial = str(workflow.get("serial_number") or "the meter")
+    proposed = workflow.get("proposed_values") if isinstance(workflow.get("proposed_values"), dict) else {}
+    angles = proposed.get("transducer_angles")
+    angle_list = ", ".join(str(a) for a in angles) if isinstance(angles, list) else "the allowed angles"
+    estimate = proposed.get("estimated_duration_seconds")
+    estimate_s = f" It should take about {int(estimate)} seconds." if isinstance(estimate, (int, float)) else ""
+    return (
+        f"I do not have enough evidence to safely judge whether angle alignment is the cause yet. "
+        f"I can run a diagnostic angle sweep for meter {serial}: test {angle_list}, compare signal "
+        f"quality after each setting, and set the best reliable angle at the end.{estimate_s} "
+        "Please review and confirm before I send any changes to the meter."
+    )
+
+
+def _maybe_prepare_angle_experiment_from_validation(
+    *,
+    messages: list,
+    conversation_id: str,
+    user_scope: str,
+    token: str,
+    emit,
+) -> tuple[str, dict | None]:
+    """Return (assistant_message, workflow) when validation should request an experiment."""
+    user_text = _last_user_text(messages)
+    serial = _extract_first_serial(user_text)
+    if not serial or not _looks_like_angle_diagnostic_request(user_text):
+        return "", None
+
+    emit(
+        {
+            "type": "validation_start",
+            "message": "Checking current signal quality before preparing an angle experiment.",
+        }
+    )
+    status_inp = {"serial_number": serial}
+    emit({"type": "tool_call", "tool": "check_meter_status", "input": status_inp})
+    status_json = _dispatch(
+        "check_meter_status",
+        status_inp,
+        token,
+        client_timezone=None,
+        anthropic_api_key=None,
+        conversation_id=conversation_id,
+    )
+    status_result = json.loads(status_json)
+    status_ok = _sse_tool_succeeded(status_result)
+    _record_tool_evidence_safe(
+        conversation_id=conversation_id,
+        tool_name="check_meter_status",
+        inp=status_inp,
+        result_dict=status_result,
+        ok=status_ok,
+        tool_use_id=f"{current_turn_id() or 'turn'}:angle-precheck",
+    )
+    _emit_tool_result_event(
+        emit=emit,
+        tool_name="check_meter_status",
+        inp=status_inp,
+        result_dict=status_result,
+        ok=status_ok,
+    )
+    if not status_ok:
+        msg = (
+            "I cannot prepare the angle experiment yet because I could not read the meter's "
+            f"current signal quality. {status_result.get('error') or ''}".strip()
+        )
+        emit(
+            {
+                "type": "validation_result",
+                "verdict": "blocked",
+                "message": "Current signal-quality evidence is required before an angle sweep.",
+            }
+        )
+        return msg, None
+
+    signal_ok, signal_reason = _signal_is_low_enough_for_angle_experiment(status_result)
+    if not signal_ok:
+        emit(
+            {
+                "type": "validation_result",
+                "verdict": "blocked",
+                "message": signal_reason,
+            }
+        )
+        return (
+            f"I would not start an angle sweep from the current evidence. {signal_reason} "
+            "Angle sweeps are best reserved for signal quality that is zero or very low, after the pipe parameters are known to be correct.",
+            None,
+        )
+
+    pipe_asserted = _pipe_correctness_asserted(user_text)
+    if not pipe_asserted:
+        pipe_seen = _pipe_config_present(status_result)
+        pipe_hint = (
+            "I can see configured pipe values on the meter, but I still need you to confirm they match the actual installation."
+            if pipe_seen
+            else "I also could not confirm pipe configuration from the current status."
+        )
+        emit(
+            {
+                "type": "validation_result",
+                "verdict": "needs_clarification",
+                "message": "Pipe parameters must be confirmed before using angle changes as a diagnostic.",
+            }
+        )
+        return (
+            f"The current signal is low enough to consider an angle experiment. {pipe_hint} "
+            "Please confirm the pipe material, standard, and size are correct before I prepare the sweep.",
+            None,
+        )
+
+    emit(
+        {
+            "type": "validation_result",
+            "verdict": "needs_experiment",
+            "message": "Signal quality is low and pipe parameters are treated as correct, so a controlled angle sweep is the next diagnostic step.",
+            "next_action": "sweep_transducer_angles",
+        }
+    )
+    emit(
+        {
+            "type": "tool_progress",
+            "tool": "sweep_transducer_angles",
+            "message": "Preparing angle sweep experiment…",
+        }
+    )
+    prepared = prepare_sweep_confirmation_inputs(
+        {
+            "serial_number": serial,
+            "apply_best_after_sweep": True,
+        },
+        token,
+        profile_lookup=get_meter_profile,
+    )
+    if not prepared.get("success"):
+        msg = (
+            "I cannot prepare the angle experiment yet. "
+            f"{prepared.get('error') or 'The meter profile could not be read.'}"
+        )
+        return msg, None
+
+    inp = dict(prepared.get("inputs") or {})
+    inp["apply_best_after_sweep"] = True
+    current_values = (
+        prepared.get("current_values")
+        if isinstance(prepared.get("current_values"), dict)
+        else None
+    )
+    workflow, meter_context = _confirmation_required_payload(
+        conversation_id=conversation_id,
+        user_scope=user_scope,
+        tool_name="sweep_transducer_angles",
+        inp=inp,
+        token=token,
+        current_values=current_values,
+    )
+    workflow.update(_angle_experiment_fields(serial, inp))
+    workflow["message"] = "Review and confirm before the diagnostic experiment changes the meter."
+    result_dict = {
+        "success": True,
+        "requires_confirmation": True,
+        "confirmation_required": True,
+        "action_id": workflow.get("action_id"),
+        "config_workflow": workflow,
+        "message": workflow["message"],
+    }
+    _record_tool_evidence_safe(
+        conversation_id=conversation_id,
+        tool_name="sweep_transducer_angles",
+        inp=inp,
+        result_dict=result_dict,
+        ok=True,
+        tool_use_id=str(workflow.get("action_id") or ""),
+    )
+    emit(
+        {
+            "type": "config_confirmation_required",
+            "tool": "sweep_transducer_angles",
+            "input": inp,
+            "config_workflow": workflow,
+            "meter_context": meter_context,
+        }
+    )
+    return _experiment_confirmation_prompt(workflow), workflow
+
+
+def _emit_preflight_evidence(
+    *,
+    prepared: dict,
+    conversation_id: str | None,
+    tool_use_id: str | None,
+    emit,
+) -> None:
+    if not isinstance(prepared.get("evidence_results"), list):
+        return
+    for ix, item in enumerate(prepared.get("evidence_results") or []):
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(item.get("tool_name") or "").strip()
+        inp = item.get("input") if isinstance(item.get("input"), dict) else {}
+        result = item.get("result") if isinstance(item.get("result"), dict) else {}
+        if not tool_name:
+            continue
+        ok = _sse_tool_succeeded(result)
+        if emit:
+            emit({"type": "tool_call", "tool": tool_name, "input": inp, "preflight": True})
+            _emit_tool_result_event(
+                emit=emit,
+                tool_name=tool_name,
+                inp=inp,
+                result_dict=result,
+                ok=ok,
+            )
+        if conversation_id:
+            _record_tool_evidence_safe(
+                conversation_id=conversation_id,
+                tool_name=tool_name,
+                inp=inp,
+                result_dict=result,
+                ok=ok,
+                tool_use_id=f"{tool_use_id or current_turn_id() or 'turn'}:preflight:{ix}",
+            )
+
+
+def _prepare_write_confirmation_inputs(
+    tool_name: str,
+    inp: dict,
+    token: str,
+    *,
+    client_timezone: str | None = None,
+    anthropic_api_key: str | None = None,
+    conversation_id: str | None = None,
+    emit=None,
+    tool_use_id: str | None = None,
+) -> dict:
     if tool_name == "sweep_transducer_angles":
         return prepare_sweep_confirmation_inputs(
             inp,
             token,
             profile_lookup=get_meter_profile,
         )
+    if tool_name == "set_zero_point":
+        if emit:
+            emit(
+                {
+                    "type": "validation_start",
+                    "message": "Checking current status and recent flow before set-zero-point.",
+                }
+            )
+        prepared = prepare_zero_point_confirmation_inputs(
+            inp,
+            token,
+            profile_lookup=get_meter_profile,
+            status_lookup=check_meter_status,
+            flow_analysis_lookup=analyze_flow_data,
+            display_timezone=client_timezone,
+            anthropic_api_key=anthropic_api_key,
+        )
+        _emit_preflight_evidence(
+            prepared=prepared,
+            conversation_id=conversation_id,
+            tool_use_id=tool_use_id,
+            emit=emit,
+        )
+        verdict = prepared.get("preflight") if isinstance(prepared.get("preflight"), dict) else {}
+        if emit and verdict:
+            emit(
+                {
+                    "type": "validation_result",
+                    "verdict": "needs_confirmation" if prepared.get("success") else "blocked",
+                    "message": verdict.get("summary") or prepared.get("error"),
+                    "next_action": "set_zero_point" if prepared.get("success") else None,
+                }
+            )
+        return prepared
     return {"success": True, "inputs": inp, "current_values": None}
 
 
@@ -1625,6 +2151,11 @@ def _confirmation_prompt(workflow: dict) -> str:
         change = f"transducer angle sweep across {angle_list or 'the allowed angles'}.{estimate_s} {final}"
     elif workflow.get("tool") == "set_transducer_angle_only":
         change = f"transducer angle to {proposed.get('transducer_angle')}"
+    elif workflow.get("tool") == "set_zero_point":
+        preflight = str(workflow.get("preflight_summary") or "").strip()
+        change = "set-zero-point command (`{\"szv\":\"null\"}`)"
+        if preflight:
+            change = f"{change}. Preflight: {preflight}"
     else:
         parts = [
             proposed.get("pipe_material"),
@@ -1746,6 +2277,12 @@ def _emit_tool_result_event(
         event["diagnostic_summary"] = diagnostic
     if config_workflow:
         event["config_workflow"] = config_workflow
+    ticket = result_dict.get("ticket")
+    if isinstance(ticket, dict):
+        event["ticket"] = ticket
+    tickets = result_dict.get("tickets")
+    if isinstance(tickets, list):
+        event["tickets"] = tickets
     if not ok:
         emsg = result_dict.get("error")
         if emsg not in (None, ""):
@@ -1779,6 +2316,15 @@ def _emit_tool_result_event(
         meters = result_dict.get("meters")
         if isinstance(meters, list):
             event["meters"] = meters
+    elif tool_name == "sweep_transducer_angles":
+        event["sweep_result"] = {
+            "results": result_dict.get("results") if isinstance(result_dict.get("results"), list) else [],
+            "ranking": result_dict.get("ranking") if isinstance(result_dict.get("ranking"), list) else [],
+            "best_angle": result_dict.get("best_angle"),
+            "final_angle": result_dict.get("final_angle"),
+            "final_action": result_dict.get("final_action"),
+            "notice": result_dict.get("notice"),
+        }
     emit(event)
     return event
 
@@ -1790,129 +2336,20 @@ def _dispatch(
     *,
     client_timezone: str | None = None,
     anthropic_api_key: str | None = None,
+    conversation_id: str | None = None,
 ) -> str:
     """Route a tool call to the correct function and return the result as JSON."""
-    if name == "resolve_time_range":
-        result = resolve_time_range(
-            inputs["description"],
-            user_timezone=client_timezone,
-            anthropic_api_key=anthropic_api_key,
-        )
-
-    elif name == "check_meter_status":
-        result = check_meter_status(
-            inputs["serial_number"],
-            token,
-            anthropic_api_key=anthropic_api_key,
-        )
-
-    elif name == "get_meter_profile":
-        result = get_meter_profile(
-            inputs["serial_number"],
-            token,
-        )
-
-    elif name == "list_meters_for_account":
-        result = list_meters_for_account(
-            inputs["email"],
-            token,
-            limit=inputs.get("limit"),
-        )
-
-    elif name == "compare_meters":
-        result = compare_meters(
-            inputs["serial_numbers"],
-            token,
-            anthropic_api_key=anthropic_api_key,
-        )
-
-    elif name == "rank_fleet_by_health":
-        result = rank_fleet_by_health(
-            inputs["serial_numbers"],
-            token,
-            anthropic_api_key=anthropic_api_key,
-        )
-
-    elif name == "triage_fleet_for_account":
-        result = triage_fleet_for_account(
-            inputs["email"],
-            token,
-            anthropic_api_key=anthropic_api_key,
-        )
-
-    elif name == "compare_periods":
-        result = compare_periods(
-            inputs["serial_number"],
-            inputs["period_a"],
-            inputs["period_b"],
-            token,
-            display_timezone=client_timezone,
-            anthropic_api_key=anthropic_api_key,
-            network_type=inputs.get("network_type"),
-            meter_timezone=inputs.get("meter_timezone"),
-        )
-
-    elif name == "analyze_flow_data":
-        result = analyze_flow_data(
-            inputs["serial_number"],
-            inputs["start"],
-            inputs["end"],
-            token,
-            display_timezone=client_timezone,
-            anthropic_api_key=anthropic_api_key,
-            network_type=inputs.get("network_type"),
-            meter_timezone=inputs.get("meter_timezone"),
-            analysis_mode=inputs.get("analysis_mode"),
-            baseline_window=inputs.get("baseline_window"),
-            filters=inputs.get("filters"),
-            event_predicates=inputs.get("event_predicates"),
-        )
-
-    elif name == "batch_analyze_flow":
-        result = batch_analyze_flow(
-            inputs["serial_numbers"],
-            inputs["start"],
-            inputs["end"],
-            token,
-            display_timezone=client_timezone,
-            anthropic_api_key=anthropic_api_key,
-            network_type=inputs.get("network_type"),
-        )
-
-    elif name == "configure_meter_pipe":
-        result = configure_meter_pipe(
-            inputs["serial_number"],
-            inputs["pipe_material"],
-            inputs["pipe_standard"],
-            inputs["pipe_size"],
-            inputs["transducer_angle"],
-            token,
-            anthropic_api_key=anthropic_api_key,
-        )
-
-    elif name == "set_transducer_angle_only":
-        result = set_transducer_angle_only(
-            inputs["serial_number"],
-            inputs["transducer_angle"],
-            token,
-            anthropic_api_key=anthropic_api_key,
-        )
-
-    elif name == "sweep_transducer_angles":
-        result = sweep_transducer_angles(
-            inputs["serial_number"],
-            inputs.get("transducer_angles"),
-            token,
-            apply_best_after_sweep=bool(inputs.get("apply_best_after_sweep")),
-            anthropic_api_key=anthropic_api_key,
-            profile_lookup=get_meter_profile,
-            set_angle_func=set_transducer_angle_only,
-            check_status_func=check_meter_status,
-        )
-
-    else:
-        result = {"error": f"Unknown tool: {name}"}
-
+    from meter_tools import METER_REGISTRY
+    result = METER_REGISTRY.dispatch(
+        name,
+        inputs,
+        token=token,
+        client_timezone=client_timezone,
+        anthropic_api_key=anthropic_api_key,
+        conversation_id=conversation_id,
+    )
+    if not isinstance(result, dict):
+        result = {"error": f"Tool {name!r} returned non-dict result"}
     return json.dumps(result, default=str)
 
 
@@ -1937,25 +2374,42 @@ def _dispatch_tool_batch(
     """
     use_parallel = (
         len(tool_calls) > 1
-        and not any(tc.name in _SERIAL_ONLY_TOOLS for tc in tool_calls)
+        and not any(_is_serial_only(tc.name) for tc in tool_calls)
     )
 
     # Write tools are guarded by an action-time confirmation card. If the model
     # proposes any write in this batch, stop at the first write and do not run
     # additional read tools from the same tool_use response.
     for write_index, tc in enumerate(tool_calls):
-        if tc.name not in _WRITE_TOOLS:
+        if not _is_write(tc.name):
             continue
         inp_d = _coerce_tool_input(tc.input)
         emit({"type": "tool_call", "tool": tc.name, "input": inp_d})
         counters["tool_calls"] += 1
-        prepared = _prepare_write_confirmation_inputs(tc.name, inp_d, token)
+        prepared = _prepare_write_confirmation_inputs(
+            tc.name,
+            inp_d,
+            token,
+            client_timezone=client_timezone,
+            anthropic_api_key=anthropic_api_key,
+            conversation_id=conversation_id,
+            emit=emit,
+            tool_use_id=tc.id,
+        )
         if not prepared.get("success"):
             result_dict = {
                 "success": False,
                 "error": prepared.get("error") or "Could not prepare configuration confirmation.",
             }
             counters["tool_failures"] += 1
+            _record_tool_evidence_safe(
+                conversation_id=conversation_id,
+                tool_name=tc.name,
+                inp=inp_d,
+                result_dict=result_dict,
+                ok=False,
+                tool_use_id=tc.id,
+            )
             _emit_tool_result_event(
                 emit=emit,
                 tool_name=tc.name,
@@ -2001,6 +2455,13 @@ def _dispatch_tool_batch(
             token=token,
             current_values=current_values,
         )
+        workflow_updates = (
+            prepared.get("workflow_updates")
+            if isinstance(prepared.get("workflow_updates"), dict)
+            else None
+        )
+        if workflow_updates:
+            workflow.update(workflow_updates)
         emit(
             {
                 "type": "config_confirmation_required",
@@ -2020,6 +2481,15 @@ def _dispatch_tool_batch(
                 "message": "Configuration change is pending confirmation. No device changes were sent.",
             },
             default=str,
+        )
+        pending_result = json.loads(result_json)
+        _record_tool_evidence_safe(
+            conversation_id=conversation_id,
+            tool_name=tc.name,
+            inp=inp_d,
+            result_dict=pending_result,
+            ok=True,
+            tool_use_id=tc.id,
         )
         hidden_results: list[dict] = []
         for j, other in enumerate(tool_calls):
@@ -2096,10 +2566,11 @@ def _dispatch_tool_batch(
                     emit=emit,
                     anthropic_api_key=anthropic_api_key,
                 )
-            elif tc.name in _HEARTBEAT_PROGRESS_TOOLS:
+            elif _is_heartbeat_progress(tc.name):
                 result_json = _run_dispatch_with_heartbeat_progress(
                     tc.name, inp_d, token,
                     client_timezone=client_timezone,
+                    conversation_id=conversation_id,
                     emit=emit,
                     anthropic_api_key=anthropic_api_key,
                 )
@@ -2108,6 +2579,7 @@ def _dispatch_tool_batch(
                     tc.name, inp_d, token,
                     client_timezone=client_timezone,
                     anthropic_api_key=anthropic_api_key,
+                    conversation_id=conversation_id,
                 )
             result_dict = json.loads(result_json)
             _end["bytes_out"] = len(result_json)
@@ -2146,7 +2618,7 @@ def _dispatch_tool_batch(
             serial_tag = str(inp_d.get("serial_number") or "").strip() or None
             dedupe_cache[dedupe_key] = (result_json, serial_tag)
 
-        if tc.name in _WRITE_TOOLS and ok:
+        if _is_write(tc.name) and ok:
             dropped = _invalidate_dedupe_for_write(dedupe_cache, tc.name, inp_d)
             if dropped:
                 emit_event(
@@ -2166,6 +2638,14 @@ def _dispatch_tool_batch(
             ok=ok,
             from_cache=from_cache,
             config_workflow=workflow if isinstance(workflow, dict) else None,
+        )
+        _record_tool_evidence_safe(
+            conversation_id=conversation_id,
+            tool_name=tc.name,
+            inp=inp_d,
+            result_dict=result_dict,
+            ok=ok,
+            tool_use_id=tc.id,
         )
         tool_results.append({
             "type": "tool_result",
@@ -2220,6 +2700,20 @@ def _execute_confirmed_config_action(
     ok = _sse_tool_succeeded(result)
     workflow_status = "executed" if ok else "failed"
     workflow = {**workflow_base, "status": workflow_status}
+    _record_tool_evidence_safe(
+        conversation_id=action.conversation_id,
+        tool_name=tool_name,
+        inp=inp,
+        result_dict=result,
+        ok=ok,
+        tool_use_id=action.action_id,
+    )
+    if tool_name == "sweep_transducer_angles":
+        _record_sweep_angle_evidence(
+            conversation_id=action.conversation_id,
+            inp=inp,
+            result_dict=result,
+        )
     _emit_tool_result_event(
         emit=emit,
         tool_name=tool_name,
@@ -2261,6 +2755,14 @@ def _execute_confirmed_config_action(
             "status": "verified" if status_ok else "verification_failed",
             "verification": status_result.get("status_data"),
         }
+        _record_tool_evidence_safe(
+            conversation_id=action.conversation_id,
+            tool_name="check_meter_status",
+            inp=status_inp,
+            result_dict=status_result,
+            ok=status_ok,
+            tool_use_id=f"{action.action_id}:verification",
+        )
         _emit_tool_result_event(
             emit=emit,
             tool_name="check_meter_status",
@@ -2277,6 +2779,8 @@ def _execute_confirmed_config_action(
             f"angle {inp.get('transducer_angle')}"
         )
         msg = f"Confirmed. I applied the pipe configuration for meter {serial}: {changed}."
+    elif tool_name == "set_zero_point":
+        msg = f"Confirmed. I put meter {serial} into set-zero-point state."
     else:
         msg = (
             f"Confirmed. I set the transducer angle for meter {serial} "
@@ -2386,6 +2890,25 @@ def run_turn(
         return reply, replaced
 
     try:
+      if not (confirmed_action_id or cancelled_action_id or superseded_action_id):
+        experiment_reply, experiment_workflow = _maybe_prepare_angle_experiment_from_validation(
+            messages=messages,
+            conversation_id=conversation_id,
+            user_scope=effective_user_scope,
+            token=token,
+            emit=_emit,
+        )
+        if experiment_reply:
+            messages.append(
+                {"role": "assistant", "content": [{"type": "text", "text": experiment_reply}]}
+            )
+            outcome = (
+                "diagnostic_experiment_confirmation_required"
+                if experiment_workflow
+                else "diagnostic_experiment_blocked"
+            )
+            return _finish(outcome, experiment_reply, history_replaced)
+
       if confirmed_action_id:
         action = consume_pending_action(
             conversation_id,

@@ -759,6 +759,7 @@ export default function SalesChatPage({ onBackToEntry }: SalesChatPageProps) {
           }}
           copy={{
             title: "FlowIQ Sales",
+            titleClassName: "text-brand-700 dark:text-brand-700",
             subtitle: "by bluebot · Product fit, pipe impact, and buyer qualification.",
             welcomeTitle: "What are you trying to monitor?",
             welcomePlaceholder: "Ask about product fit, installation, or pipe impact...",
@@ -767,6 +768,7 @@ export default function SalesChatPage({ onBackToEntry }: SalesChatPageProps) {
             welcomeHint: "Start with a question, or tell me your pipe material, size, liquid, and application.",
             requireWelcomeSerial: false,
           }}
+          showWorkspacePanel={false}
         />
       </main>
       <ToastContainer toasts={toast.toasts} onClose={toast.dismiss} />

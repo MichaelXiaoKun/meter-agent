@@ -1,0 +1,49 @@
+{
+  "id": "diagnostic_angle_experiment",
+  "description": "Angle/installation diagnostic should prepare a confirmed sweep experiment, not overclaim from existing evidence.",
+  "user": "BB8100015261 管道参数是对的，是不是安装角度导致信号问题？",
+  "expected_tool_sequence": [
+    {
+      "tool": "check_meter_status",
+      "args_contains": {
+        "serial_number": "BB8100015261"
+      },
+      "mock_result": {
+        "success": true,
+        "status_data": {
+          "serial_number": "BB8100015261",
+          "online": true,
+          "signal": {"level": "poor", "score": 0, "reliable": true},
+          "pipe_config": {"nominal_size": "2 inch"}
+        }
+      }
+    },
+    {
+      "tool": "sweep_transducer_angles",
+      "args_contains": {
+        "serial_number": "BB8100015261",
+        "apply_best_after_sweep": true
+      },
+      "mock_result": {
+        "success": true,
+        "serial_number": "BB8100015261",
+        "resolved_angles": ["15º", "25º", "35º", "45º"],
+        "ranking": [
+          {"angle": "35º", "signal_score": 88, "signal_level": "good", "reliable": true}
+        ],
+        "best_angle": "35º",
+        "final_angle": "35º",
+        "final_action": "set_best_after_sweep",
+        "error": null
+      }
+    }
+  ],
+  "forbidden_tools": ["configure_meter_pipe", "set_transducer_angle_only"],
+  "response_must_not_contain": [
+    "sweep_transducer_angles",
+    "subprocess",
+    "/Users/"
+  ],
+  "response_must_contain": ["confirm"],
+  "prompt_versions": ["v1"]
+}

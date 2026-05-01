@@ -163,6 +163,134 @@ def _telemetry_suggests_ssa(messages: List[Dict[str, Any]], ssa_code: str) -> Tu
     return False, "Did not observe SSA code echo in subscribed telemetry yet."
 
 
+def _telemetry_suggests_szv(messages: List[Dict[str, Any]]) -> Tuple[bool, str]:
+    hay: List[str] = []
+    for m in messages:
+        payload = m.get("payload")
+        if isinstance(payload, (dict, list)):
+            hay.append(json.dumps(payload, separators=(",", ":"), default=str))
+        else:
+            hay.append(str(m.get("payload_raw", "")))
+    blob = "\n".join(hay)
+    if '"szv":"null"' in blob or "'szv': 'null'" in blob or "szv" in blob.lower():
+        return True, "Observed szv-related telemetry (best-effort match)."
+    return False, "Did not observe szv echo in subscribed telemetry yet."
+
+
+def apply_zero_point_over_mqtt(device_context: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Publish only ``{"szv": "null"}`` to meter/sub/<NUI>.
+
+    This asks the meter to enter set-zero-point state. Safety gates live in the
+    orchestrator before this function is ever called.
+    """
+    if device_context.get("error"):
+        return {"error": "device_context has error; resolve device before MQTT."}
+
+    nui = device_context.get("network_unique_identifier")
+    model = device_context.get("model")
+    if not nui:
+        return {"error": "device_context missing network_unique_identifier."}
+
+    cfg = _mqtt_settings()
+    wait_s = _wait_ssa_only_seconds(str(model) if model is not None else None)
+
+    pub_topic = f"meter/sub/{nui}"
+    sub_topic = f"meter/pub/{nui}"
+
+    received: List[Dict[str, Any]] = []
+    recv_lock = threading.Lock()
+
+    def on_message(_client: mqtt.Client, _userdata: Any, msg: mqtt.MQTTMessage) -> None:
+        try:
+            payload = json.loads(msg.payload.decode("utf-8"))
+            item = {"topic": msg.topic, "payload": payload}
+        except Exception:
+            item = {
+                "topic": msg.topic,
+                "payload_raw": msg.payload.decode("utf-8", errors="replace"),
+            }
+        with recv_lock:
+            received.append(item)
+        if _mqtt_trace_enabled():
+            if isinstance(item.get("payload"), dict):
+                tail = json.dumps(item["payload"], separators=(",", ":"))[:280]
+            else:
+                tail = str(item.get("payload_raw", ""))[:280]
+            _mqtt_trace(f"<- recv topic={msg.topic!r} payload={tail!r}")
+
+    client_id = f"lens_{uuid.uuid4()}"
+    _mqtt_trace(
+        f"zero_point start client_id={client_id!r} host={cfg['host']!r}:{cfg['port']} "
+        f"tls={cfg['use_tls']} pub={pub_topic!r} sub={sub_topic!r} wait_after_szv_s={wait_s}"
+    )
+    client = _make_mqtt_client(client_id)
+    client.on_message = on_message
+
+    if cfg["username"]:
+        client.username_pw_set(cfg["username"], cfg["password"])
+        _mqtt_trace("using MQTT username/password")
+
+    if cfg["use_tls"]:
+        tls_ctx = ssl.create_default_context()
+        if os.environ.get("BLUEBOT_MQTT_TLS_INSECURE", "").strip().lower() in ("1", "true", "yes"):
+            tls_ctx.check_hostname = False
+            tls_ctx.verify_mode = ssl.CERT_NONE
+        client.tls_set_context(tls_ctx)
+        _mqtt_trace("TLS enabled on client")
+
+    client.connect(cfg["host"], int(cfg["port"]), keepalive=int(cfg["keepalive"]))
+    _mqtt_trace("TCP connect returned, starting network loop")
+    client.loop_start()
+    try:
+        client.subscribe(sub_topic, qos=_MQTT_SUBSCRIBE_QOS)
+        _mqtt_trace(f"subscribed topic={sub_topic!r} qos={_MQTT_SUBSCRIBE_QOS}")
+        time.sleep(0.25)
+        _mqtt_trace("post-subscribe sleep 0.25s done")
+
+        szv_body = {"szv": "null"}
+        body_json = json.dumps(szv_body, separators=(",", ":"))
+        _mqtt_trace(f"publish qos={_MQTT_PUBLISH_QOS} topic={pub_topic!r} body={body_json}")
+        client.publish(pub_topic, body_json, qos=_MQTT_PUBLISH_QOS)
+        publishes: List[Dict[str, Any]] = [{"topic": pub_topic, "payload": szv_body}]
+        verify_sleep = max(wait_s, float(cfg["verify_pause_sec"]))
+        _mqtt_trace(f"post-publish sleep {verify_sleep}s (zero_point verify window)")
+        time.sleep(verify_sleep)
+
+        with recv_lock:
+            snapshot = list(received)
+
+        _mqtt_trace(f"done: received_message_count={len(snapshot)}")
+        ok, verify_note = _telemetry_suggests_szv(snapshot)
+        _mqtt_trace(f"verification_ok={ok} note={verify_note!r}")
+
+        return {
+            "error": None,
+            "mode": "zero_point",
+            "mqtt_host": cfg["host"],
+            "mqtt_port": int(cfg["port"]),
+            "mqtt_use_tls": bool(cfg["use_tls"]),
+            "mqtt_client_id": client_id,
+            "publish_topic": pub_topic,
+            "subscribe_topic": sub_topic,
+            "wait_seconds_used": wait_s,
+            "publishes": publishes,
+            "received_message_count": len(snapshot),
+            "received_sample": snapshot[:5],
+            "verification_ok": ok,
+            "verification_note": verify_note,
+        }
+    finally:
+        try:
+            _mqtt_trace("loop_stop + disconnect")
+            client.loop_stop()
+        finally:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+
+
 def apply_ssa_only_over_mqtt(device_context: Dict[str, Any], ssa_code: str) -> Dict[str, Any]:
     """
     Publish only ``{"ssa": "<ssa_code>"}`` to meter/sub/<NUI> (no spm/spd/spt or smp).

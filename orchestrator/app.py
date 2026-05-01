@@ -513,6 +513,7 @@ if active_input:
                 "configure_meter_pipe": "Configuring meter pipe",
                 "set_transducer_angle_only": "Setting transducer angle (SSA only)",
                 "sweep_transducer_angles": "Sweeping transducer angles",
+                "set_zero_point": "Preparing set-zero-point review",
             }
             status_placeholder.info(f"{labels.get(event['tool'], event['tool'])}...")
         elif kind == "tool_progress":

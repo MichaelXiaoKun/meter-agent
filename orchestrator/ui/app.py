@@ -84,6 +84,7 @@ def _tool_status_line(event: dict) -> str:
         "configure_meter_pipe": "Configuring meter pipe",
         "set_transducer_angle_only": "Setting transducer angle (SSA only)",
         "sweep_transducer_angles": "Sweeping transducer angles",
+        "set_zero_point": "Preparing set-zero-point review",
     }
     tool  = event["tool"]
     inp   = event.get("input", {})
@@ -97,7 +98,7 @@ def _tool_status_line(event: dict) -> str:
         detail = inp.get("serial_number", "")
     elif tool == "configure_meter_pipe":
         detail = inp.get("serial_number", "")
-    elif tool in ("set_transducer_angle_only", "sweep_transducer_angles"):
+    elif tool in ("set_transducer_angle_only", "sweep_transducer_angles", "set_zero_point"):
         detail = inp.get("serial_number", "")
     else:
         detail = ""

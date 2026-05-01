@@ -6,6 +6,42 @@ export interface Conversation {
   message_count: number;
 }
 
+export type TicketStatus = "open" | "in_progress" | "waiting_on_human" | "resolved" | "cancelled";
+export type TicketPriority = "low" | "normal" | "high" | "urgent";
+export type TicketOwnerType = "agent" | "human" | "unassigned";
+
+export interface Ticket {
+  id: string;
+  user_id: string;
+  conversation_id?: string | null;
+  serial_number?: string | null;
+  title: string;
+  description: string;
+  success_criteria: string;
+  status: TicketStatus;
+  priority: TicketPriority;
+  owner_type: TicketOwnerType;
+  owner_id: string;
+  created_by_turn_id?: string | null;
+  due_at?: number | null;
+  closed_at?: number | null;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface TicketEvent {
+  id: number;
+  ticket_id: string;
+  event_type: string;
+  actor_type: string;
+  actor_id: string;
+  note: string;
+  turn_id?: string | null;
+  evidence: Record<string, unknown>;
+  created_at: number;
+}
+
 export interface ContentBlock {
   type: string;
   text?: string;
@@ -82,6 +118,8 @@ export interface SSEEvent {
   | "tool_call"
   | "tool_result"
   | "tool_progress"
+  | "validation_start"
+  | "validation_result"
   | "config_confirmation_required"
   | "config_confirmation_cancelled"
   | "config_confirmation_superseded"
@@ -161,17 +199,49 @@ export interface SSEEvent {
   config_workflow?: {
     action_id?: string;
     status?: string;
+    workflow_type?: "diagnostic_experiment" | string;
     tool?: string;
     serial_number?: string;
     proposed_values?: Record<string, unknown>;
     current_values?: Record<string, unknown> | null;
     verification?: Record<string, unknown> | null;
+    experiment_goal?: string;
+    hypothesis?: string;
+    measurement_plan?: string;
+    success_criteria?: string;
+    final_policy?: string;
+    preflight_summary?: string;
+    flow_state?: string;
     created_at?: number;
     expires_at?: number;
     expires_in_seconds?: number;
     message?: string;
     risk?: string;
   };
+  sweep_result?: {
+    results?: Array<{
+      angle?: string;
+      write_success?: boolean;
+      write_error?: string | null;
+      status_success?: boolean | null;
+      status_error?: string | null;
+      online?: boolean | null;
+      last_message_at?: string | null;
+      signal?: Record<string, unknown> | null;
+    }>;
+    ranking?: Array<{
+      angle?: string;
+      signal_score?: number | null;
+      signal_level?: string | null;
+      reliable?: boolean | null;
+    }>;
+    best_angle?: string | null;
+    final_angle?: string | null;
+    final_action?: string | null;
+    notice?: string | null;
+  };
+  ticket?: Ticket;
+  tickets?: Ticket[];
   plot_paths?: string[];
   plot_summaries?: PlotSummary[];
   plot_timezone?: string;
@@ -198,6 +268,8 @@ export interface SSEEvent {
   intent?: string;
   source?: string;
   tools?: string[];
+  verdict?: "pass" | "needs_revision" | "needs_more_evidence" | "needs_experiment" | "blocked" | string;
+  next_action?: string;
   rate_limit_wait_seconds?: number;
   current_tokens?: number;
   estimated_next_tokens?: number;

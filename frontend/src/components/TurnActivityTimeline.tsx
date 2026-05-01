@@ -32,6 +32,7 @@ const COMPACT_MAIN: Record<TurnActivityStep["kind"], string> = {
   queued: "Queued",
   thinking: "Reasoning",
   context: "Usage",
+  validation: "Validate",
   compressing: "Tighten",
   rate_limit_wait: "Waiting",
   tool: "Tool",
@@ -46,6 +47,7 @@ const STEP_ICONS: Record<TurnActivityStep["kind"], string> = {
   queued: "…",
   thinking: "∙",
   context: "%",
+  validation: "✓",
   compressing: "⇄",
   rate_limit_wait: "⏱",
   tool: "⚙",
@@ -60,6 +62,7 @@ const STEP_COLORS: Record<TurnActivityStep["kind"], { bg: string; text: string }
   queued: { bg: "bg-amber-50 dark:bg-amber-950/30", text: "text-amber-700 dark:text-amber-300" },
   thinking: { bg: "bg-indigo-50 dark:bg-indigo-950/30", text: "text-indigo-700 dark:text-indigo-300" },
   context: { bg: "bg-cyan-50 dark:bg-cyan-950/30", text: "text-cyan-700 dark:text-cyan-300" },
+  validation: { bg: "bg-sky-50 dark:bg-sky-950/30", text: "text-sky-700 dark:text-sky-300" },
   compressing: { bg: "bg-violet-50 dark:bg-violet-950/30", text: "text-violet-700 dark:text-violet-300" },
   rate_limit_wait: { bg: "bg-amber-50 dark:bg-amber-950/30", text: "text-amber-700 dark:text-amber-300" },
   tool: { bg: "bg-green-50 dark:bg-green-950/30", text: "text-green-700 dark:text-green-300" },
@@ -102,6 +105,8 @@ function bodyLineText(step: TurnActivityStep, compact: boolean): string | undefi
       return;
     case "context":
       return step.detail?.split("·")[0]?.trim();
+    case "validation":
+      return step.detail;
     case "compressing":
       return "Shorter thread";
     case "rate_limit_wait":

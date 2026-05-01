@@ -21,6 +21,7 @@ export type AgentStatus =
   | { kind: "tool_call"; tool: string }
   | { kind: "tool_progress"; tool: string; message: string }
   | { kind: "tool_result"; tool: string; success: boolean }
+  | { kind: "validation"; message: string }
   | { kind: "compressing" }
   | { kind: "rate_limit_wait"; message: string }
   | { kind: "error"; error: string };
@@ -204,6 +205,8 @@ export function applyStreamEventToChatState(
     event.type === "text_stream" ||
     event.type === "tool_call" ||
     event.type === "tool_progress" ||
+    event.type === "validation_start" ||
+    event.type === "validation_result" ||
     event.type === "rate_limit_wait" ||
     event.type === "tool_result" ||
     event.type === "config_confirmation_required" ||
@@ -272,6 +275,22 @@ export function applyStreamEventToChatState(
         kind: "tool_progress",
         tool: event.tool ?? "",
         message: event.message ?? "Working…",
+      };
+      break;
+    case "validation_start":
+      state.streamStatus = {
+        kind: "validation",
+        message: event.message ?? "Validating the answer…",
+      };
+      break;
+    case "validation_result":
+      state.streamStatus = {
+        kind: "validation",
+        message:
+          event.message ??
+          (event.verdict === "needs_experiment"
+            ? "Needs more evidence."
+            : "Validation complete."),
       };
       break;
     case "tool_result": {
