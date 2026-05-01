@@ -199,9 +199,9 @@ Open the Vite URL, usually [http://localhost:5173](http://localhost:5173). Choos
 | Sales KB / product links | [`orchestrator/sales_content_sync.py`](orchestrator/sales_content_sync.py), [`orchestrator/sales_kb/articles.json`](orchestrator/sales_kb/articles.json), [`orchestrator/sales_kb/product_catalog.json`](orchestrator/sales_kb/product_catalog.json) |
 | Sales UI | [`frontend/src/components/SalesChatPage.tsx`](frontend/src/components/SalesChatPage.tsx), [`frontend/src/hooks/useSalesConversations.ts`](frontend/src/hooks/useSalesConversations.ts) |
 | Shared chat UI | [`frontend/src/components/ChatView.tsx`](frontend/src/components/ChatView.tsx), [`frontend/src/components/Sidebar.tsx`](frontend/src/components/Sidebar.tsx), [`frontend/src/components/SharePopover.tsx`](frontend/src/components/SharePopover.tsx) |
-| API routes | [`orchestrator/api.py`](orchestrator/api.py), [`frontend/src/api.ts`](frontend/src/api.ts) |
-| Conversation persistence | [`orchestrator/store.py`](orchestrator/store.py) |
-| Admin assistant routing | [`orchestrator/prompts/system_v1.md`](orchestrator/prompts/system_v1.md), [`orchestrator/agent.py`](orchestrator/agent.py), [`orchestrator/tools/`](orchestrator/tools/) |
+| API routes | [`orchestrator/server/app.py`](orchestrator/server/app.py), [`orchestrator/server/routers/`](orchestrator/server/routers/), [`orchestrator/api.py`](orchestrator/api.py), [`frontend/src/api.ts`](frontend/src/api.ts) |
+| Conversation persistence | [`orchestrator/persistence/`](orchestrator/persistence/), [`orchestrator/store.py`](orchestrator/store.py) |
+| Admin assistant routing | [`orchestrator/prompts/system_v1.md`](orchestrator/prompts/system_v1.md), [`orchestrator/admin_chat/`](orchestrator/admin_chat/), [`orchestrator/agent.py`](orchestrator/agent.py), [`orchestrator/tools/`](orchestrator/tools/) |
 | Flow analysis internals | [`data-processing-agent/`](data-processing-agent/) |
 | Meter status internals | [`meter-status-agent/`](meter-status-agent/) |
 | Pipe configuration internals | [`pipe-configuration-agent/`](pipe-configuration-agent/) |

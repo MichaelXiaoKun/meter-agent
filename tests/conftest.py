@@ -30,10 +30,46 @@ _AGENT_DIRS = [
     _ROOT / "pipe-configuration-agent",
 ]
 
-for p in _AGENT_DIRS:
+for p in reversed(_AGENT_DIRS):
     sp = str(p)
     if p.exists() and sp not in sys.path:
         sys.path.insert(0, sp)
+
+
+_DATA_AGENT_DIR = str(_ROOT / "data-processing-agent")
+_DATA_AGENT_MODULES = {
+    "adaptive_fetch",
+    "agent",
+    "agent_template",
+    "data_client",
+    "interface",
+    "main",
+    "processors",
+    "report",
+}
+_DATA_AGENT_TOP_LEVEL_TESTS = {
+    "test_adaptive_fetch.py",
+    "test_data_client_parallel_fetch.py",
+    "test_flow_csv_artifact.py",
+}
+
+
+def _prefer_data_agent_imports() -> None:
+    """Reset shared top-level module names before data-agent tests collect."""
+    if _DATA_AGENT_DIR in sys.path:
+        sys.path.remove(_DATA_AGENT_DIR)
+    sys.path.insert(0, _DATA_AGENT_DIR)
+    for name in list(sys.modules):
+        if name in _DATA_AGENT_MODULES or name.startswith("processors."):
+            sys.modules.pop(name, None)
+
+
+def pytest_collect_file(file_path, parent):  # noqa: D401 - pytest hook
+    path = Path(str(file_path))
+    if "processors" in path.parts and "tests" in path.parts:
+        _prefer_data_agent_imports()
+    elif path.name in _DATA_AGENT_TOP_LEVEL_TESTS:
+        _prefer_data_agent_imports()
 
 
 def pytest_collection_modifyitems(config, items):

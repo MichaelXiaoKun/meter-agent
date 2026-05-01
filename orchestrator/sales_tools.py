@@ -401,6 +401,11 @@ def sales_reference_context(
                         "Pipe size range inches: "
                         f"{product.get('pipe_size_min_in')} to {product.get('pipe_size_max_in')}"
                     ),
+                    (
+                        "Structured range fields: "
+                        f"pipe_size_min_in={product.get('pipe_size_min_in')}, "
+                        f"pipe_size_max_in={product.get('pipe_size_max_in')}"
+                    ),
                     f"Connectivity: {', '.join(product.get('connectivity') or []) or 'n/a'}",
                     f"Positioning: {product.get('positioning') or 'n/a'}",
                     f"Fit notes: {fit_notes or 'n/a'}",

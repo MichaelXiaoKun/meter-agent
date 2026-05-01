@@ -50,7 +50,10 @@ flowchart LR
 
 | Path | Role |
 |------|------|
-| [`../orchestrator/`](../orchestrator/) | FastAPI app, orchestrator agent, sales agent, tools, prompts, conversation store |
+| [`../orchestrator/`](../orchestrator/) | Backend orchestration package; flat `api.py`, `agent.py`, and `store.py` remain compatibility facades |
+| [`../orchestrator/server/`](../orchestrator/server/) | FastAPI app implementation, stream state, request models, route-group facades |
+| [`../orchestrator/admin_chat/`](../orchestrator/admin_chat/) | Authenticated admin turn loop plus intent, tool-dispatch, history-budget, and confirmation boundaries |
+| [`../orchestrator/persistence/`](../orchestrator/persistence/) | SQLite/Postgres persistence implementation and domain facades for conversations, tickets, shares, sales content, and evidence |
 | [`../frontend/`](../frontend/) | React + TypeScript SPA; Vite dev server proxies `/api` |
 | [`../data-processing-agent/`](../data-processing-agent/) | Flow history fetch, deterministic processors, plots, verified metrics, reports |
 | [`../meter-status-agent/`](../meter-status-agent/) | Live status/client-health subprocess used by admin mode |
@@ -70,9 +73,9 @@ Root [`../package.json`](../package.json) exists for semantic-release in CI only
 | Sales knowledge base / product links | [`../orchestrator/sales_kb/articles.json`](../orchestrator/sales_kb/articles.json), [`../orchestrator/sales_kb/product_catalog.json`](../orchestrator/sales_kb/product_catalog.json) | V1 uses curated local English content instead of live web browsing. |
 | Public sales UI | [`../frontend/src/components/SalesChatPage.tsx`](../frontend/src/components/SalesChatPage.tsx), [`../frontend/src/hooks/useSalesConversations.ts`](../frontend/src/hooks/useSalesConversations.ts) | Reuses shared admin UI pieces for sidebar, history, status, stop button, and share links. |
 | Shared chat UI components | [`../frontend/src/components/ChatView.tsx`](../frontend/src/components/ChatView.tsx), [`../frontend/src/components/Sidebar.tsx`](../frontend/src/components/Sidebar.tsx), [`../frontend/src/components/SharePopover.tsx`](../frontend/src/components/SharePopover.tsx) | Keep admin and sales behavior visually aligned here. |
-| Public/authenticated API routes | [`../orchestrator/api.py`](../orchestrator/api.py), [`../frontend/src/api.ts`](../frontend/src/api.ts) | Public sales routes live under `/api/public/sales/...`; authenticated admin routes live under `/api/conversations/...`. |
-| Conversation persistence | [`../orchestrator/store.py`](../orchestrator/store.py) | Handles admin conversations, public sales conversations, share snapshots, SQLite/Postgres bootstrap, and Railway volume paths. |
-| Admin assistant prompt / routing | [`../orchestrator/prompts/system_v1.md`](../orchestrator/prompts/system_v1.md), [`../orchestrator/agent.py`](../orchestrator/agent.py), [`../orchestrator/tools/`](../orchestrator/tools/) | Admin mode can call live status, flow, account, and configuration tools. |
+| Public/authenticated API routes | [`../orchestrator/server/app.py`](../orchestrator/server/app.py), [`../orchestrator/server/routers/`](../orchestrator/server/routers/), [`../frontend/src/api.ts`](../frontend/src/api.ts) | `../orchestrator/api.py` is a compatibility facade for `uvicorn api:app`; public sales routes live under `/api/public/sales/...`; authenticated admin routes live under `/api/conversations/...`. |
+| Conversation persistence | [`../orchestrator/persistence/`](../orchestrator/persistence/), [`../orchestrator/store.py`](../orchestrator/store.py) | `store.py` remains the stable flat import; persistence modules separate DB bootstrap, conversations, tickets, shares, sales content, and evidence. |
+| Admin assistant prompt / routing | [`../orchestrator/prompts/system_v1.md`](../orchestrator/prompts/system_v1.md), [`../orchestrator/admin_chat/`](../orchestrator/admin_chat/), [`../orchestrator/agent.py`](../orchestrator/agent.py), [`../orchestrator/tools/`](../orchestrator/tools/) | `agent.py` remains the stable flat import; admin-chat modules separate turn loop, intent routing, tool dispatch, history budgeting, and confirmation helpers. |
 | Flow analysis internals | [`../data-processing-agent/`](../data-processing-agent/) | Deterministic processors, plots, verified metrics, and report generation. |
 | Meter status internals | [`../meter-status-agent/`](../meter-status-agent/) | Live status/client health and health-score logic. |
 | Pipe configuration internals | [`../pipe-configuration-agent/`](../pipe-configuration-agent/) | Pipe setup and MQTT-related workflows. |
@@ -87,4 +90,4 @@ Root [`../package.json`](../package.json) exists for semantic-release in CI only
 - Sales mode uses a curated local KB and sales-only tools.
 - Admin mode owns live diagnostics, account lookups, flow analysis, status checks, pipe configuration, and MQTT-related workflows.
 - Shared UI components should preserve visual parity between admin and sales unless a product requirement explicitly diverges.
-- Conversation storage belongs in [`../orchestrator/store.py`](../orchestrator/store.py), not in frontend-only state, because reloads and Railway deployments need durable state.
+- Conversation storage belongs behind [`../orchestrator/store.py`](../orchestrator/store.py) / [`../orchestrator/persistence/`](../orchestrator/persistence/), not in frontend-only state, because reloads and Railway deployments need durable state.
