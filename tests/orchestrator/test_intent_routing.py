@@ -2,7 +2,7 @@
 Regression tests for per-turn intent routing: tool subsets and rule-based labels.
 
 ``pythonpath`` includes ``data-processing-agent``, whose ``agent.py`` shadows the
-orchestrator's ``agent`` module. Load ``orchestrator/agent.py`` by file path.
+orchestrator's ``agent`` module. Load ``orchestrator/admin_chat/turn_loop.py`` by file path.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-_ORCH_AGENT_PATH = Path(__file__).resolve().parents[2] / "orchestrator" / "agent.py"
-_ORCH_DIR = str(_ORCH_AGENT_PATH.parent)
+_ORCH_AGENT_PATH = Path(__file__).resolve().parents[2] / "orchestrator" / "admin_chat" / "turn_loop.py"
+_ORCH_DIR = str(_ORCH_AGENT_PATH.parent.parent)
 
 
 def _load_orchestrator_agent():

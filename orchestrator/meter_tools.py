@@ -383,20 +383,21 @@ _register_meter_tool(
     is_serial_only=True,
 )
 
-# create_ticket: takes conversation_id, serial-only, write
+# create_ticket: takes conversation_id and mutates the local workflow store.
+# It is serial-only for ordering, but it is not a device/configuration write and
+# should not trigger the meter configuration confirmation gate.
 _register_meter_tool(
     _CREATE_TICKET_DEF,
     _create_ticket_handler,
     context_params=["conversation_id"],
-    is_write=True,
     is_serial_only=True,
 )
 
-# update_ticket: takes conversation_id, serial-only, write
+# update_ticket: takes conversation_id and mutates the local workflow store.
+# It is serial-only for ordering, but it is not a device/configuration write.
 _register_meter_tool(
     _UPDATE_TICKET_DEF,
     _update_ticket_handler,
     context_params=["conversation_id"],
-    is_write=True,
     is_serial_only=True,
 )

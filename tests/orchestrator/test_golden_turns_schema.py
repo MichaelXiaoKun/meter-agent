@@ -37,16 +37,16 @@ from prompts import available_versions, load_system_prompt  # noqa: E402
 
 
 def _load_orchestrator_agent() -> ModuleType:
-    """Import ``orchestrator/agent.py`` by file path.
+    """Import ``orchestrator/admin_chat/turn_loop.py`` by file path.
 
     A plain ``import agent`` resolves to ``data-processing-agent/agent.py`` in
     this repo because ``data-processing-agent`` lands first on the pytest
     ``pythonpath``. Forcing the loader to the right file *and* putting the
     orchestrator dir at position 0 of ``sys.path`` ensures the transitive
-    ``import processors.time_range`` inside ``agent.py`` resolves to the
+    ``import processors.time_range`` inside ``admin_chat/turn_loop.py`` resolves to the
     orchestrator's processors package, not the data-processing agent's.
     """
-    agent_path = _ORCHESTRATOR_DIR / "agent.py"
+    agent_path = _ORCHESTRATOR_DIR / "admin_chat" / "turn_loop.py"
     orch_dir = str(_ORCHESTRATOR_DIR)
     if sys.path[:1] != [orch_dir]:
         try:

@@ -128,12 +128,12 @@ def test_available_versions_lists_v1():
 
 
 def test_agent_module_exposes_resolved_prompt_version():
-    # Load the orchestrator's ``agent.py`` by absolute file path — a bare
+    # Load the orchestrator's ``admin_chat/turn_loop.py`` by absolute file path — a bare
     # ``import agent`` resolves to the data-processing agent's module (it
     # wins on the pytest ``pythonpath``), which does not define the
     # prompt-version attributes. Putting ``orchestrator/`` at position 0
     # of ``sys.path`` also redirects the transitive ``import processors``
-    # inside ``agent.py`` to the orchestrator's own processors package.
+    # inside ``admin_chat/turn_loop.py`` to the orchestrator's own processors package.
     import importlib.util
     import sys as _sys
 
@@ -147,7 +147,7 @@ def test_agent_module_exposes_resolved_prompt_version():
     for cached in ("processors", "processors.time_range", "agent"):
         _sys.modules.pop(cached, None)
 
-    agent_path = _ORCHESTRATOR_DIR / "agent.py"
+    agent_path = _ORCHESTRATOR_DIR / "admin_chat" / "turn_loop.py"
     spec = importlib.util.spec_from_file_location(
         "meter_orchestrator_agent_prompt_loader_tests", agent_path
     )

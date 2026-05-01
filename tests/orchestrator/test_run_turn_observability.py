@@ -14,8 +14,8 @@ import sys
 from pathlib import Path
 import pytest
 
-_ORCH_PATH = Path(__file__).resolve().parents[2] / "orchestrator" / "agent.py"
-_ORCH_DIR = str(_ORCH_PATH.parent)
+_ORCH_PATH = Path(__file__).resolve().parents[2] / "orchestrator" / "admin_chat" / "turn_loop.py"
+_ORCH_DIR = str(_ORCH_PATH.parent.parent)
 
 
 def _load_agent():

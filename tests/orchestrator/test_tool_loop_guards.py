@@ -5,8 +5,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-_ORCH_AGENT_PATH = Path(__file__).resolve().parents[2] / "orchestrator" / "agent.py"
-_ORCH_DIR = str(_ORCH_AGENT_PATH.parent)
+_ORCH_AGENT_PATH = Path(__file__).resolve().parents[2] / "orchestrator" / "admin_chat" / "turn_loop.py"
+_ORCH_DIR = str(_ORCH_AGENT_PATH.parent.parent)
 
 
 def _load_orchestrator_agent():
