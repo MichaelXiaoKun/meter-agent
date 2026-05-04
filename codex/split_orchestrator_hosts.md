@@ -269,6 +269,8 @@ visible-value PR. This phase is pure refactor.
 
 ### Phase 2 — Add `create_app()` factory and `BLUEBOT_HOST_MODE`
 
+**Status:** Done (2026-05-04).
+
 **Goal:** Make router inclusion selective without changing default behavior.
 
 **Files to edit:**

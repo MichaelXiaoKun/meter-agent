@@ -24,7 +24,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Literal
 
 _SERVER_DIR = Path(__file__).resolve().parent
 _ORCHESTRATOR_DIR = _SERVER_DIR.parent
@@ -42,7 +42,7 @@ except ImportError:
     pass
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import APIRouter, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -176,10 +176,14 @@ async def _lifespan(app: FastAPI):
     logger.info("Rate limit budgeting: %s", get_rate_limit_config_for_api())
     yield
 
-app = FastAPI(title="bluebot Orchestrator API", lifespan=_lifespan)
+
+HostMode = Literal["combined", "admin", "sales"]
 
 
-@app.get("/api/config")
+config_router = APIRouter(tags=["config"])
+
+
+@config_router.get("/api/config")
 def orchestrator_config():
     """
     Public tuning values for the UI (e.g. TPM bar) — no secrets.
@@ -190,13 +194,15 @@ _CORS_ORIGINS = os.environ.get(
     "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
 ).split(",")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[o.strip() for o in _CORS_ORIGINS],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+def _install_cors(fastapi_app: FastAPI) -> None:
+    fastapi_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[o.strip() for o in _CORS_ORIGINS],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 def _bearer_token(authorization: str = Header(...)) -> str:
@@ -325,6 +331,16 @@ _LOGO_PATH = Path(os.environ.get(
     "LOGO_PATH",
     str(_REPO_ROOT / "bluebot.jpg"),
 ))
+
+logo_router = APIRouter(tags=["artifacts"])
+
+
+@logo_router.get("/api/logo")
+def get_logo():
+    """Serve the bluebot logo."""
+    if not _LOGO_PATH.exists():
+        raise HTTPException(404, "Logo not found")
+    return FileResponse(_LOGO_PATH, media_type="image/jpeg")
 
 
 # ---------------------------------------------------------------------------
@@ -586,14 +602,6 @@ from .routers.sales_chat import router as sales_chat_router
 from .routers.shares import router as shares_router
 from .routers.tickets import router as tickets_router
 
-app.include_router(auth_router)
-app.include_router(conversations_router)
-app.include_router(tickets_router)
-app.include_router(shares_router)
-app.include_router(artifacts_router)
-app.include_router(sales_chat_router)
-app.include_router(admin_chat_router)
-
 
 # ---------------------------------------------------------------------------
 # Production SPA (built Vite app) — same origin as /api (Railway, Docker)
@@ -613,7 +621,7 @@ _FRONTEND_DIST = Path(
 _SPA_DOCUMENT_HEADERS = {"Permissions-Policy": "microphone=(self)"}
 
 
-def _mount_production_spa() -> None:
+def _mount_production_spa(fastapi_app: FastAPI) -> None:
     """Serve React static files when dist/ exists (omit for API-only / local Vite dev)."""
     index = _FRONTEND_DIST / "index.html"
     if not index.is_file():
@@ -621,13 +629,13 @@ def _mount_production_spa() -> None:
 
     assets_dir = _FRONTEND_DIST / "assets"
     if assets_dir.is_dir():
-        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="ui_assets")
+        fastapi_app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="ui_assets")
 
-    @app.get("/", include_in_schema=False)
+    @fastapi_app.get("/", include_in_schema=False)
     def _spa_index():
         return FileResponse(index, headers=_SPA_DOCUMENT_HEADERS)
 
-    @app.get("/{full_path:path}", include_in_schema=False)
+    @fastapi_app.get("/{full_path:path}", include_in_schema=False)
     def _spa_fallback(full_path: str):
         # Registered after all /api routes — unmatched /api/* returns JSON 404
         if full_path == "api" or full_path.startswith("api/"):
@@ -643,4 +651,56 @@ def _mount_production_spa() -> None:
         return FileResponse(index, headers=_SPA_DOCUMENT_HEADERS)
 
 
-_mount_production_spa()
+def _resolve_host_mode() -> HostMode:
+    raw = os.environ.get("BLUEBOT_HOST_MODE", "combined").strip().lower()
+    if raw not in ("combined", "admin", "sales"):
+        raise RuntimeError(
+            f"BLUEBOT_HOST_MODE must be combined|admin|sales, got {raw!r}"
+        )
+    return raw  # type: ignore[return-value]
+
+
+def _default_serve_spa(mode: HostMode) -> bool:
+    raw = os.environ.get("BLUEBOT_SERVE_SPA")
+    if raw is not None:
+        return raw.strip() == "1"
+    return mode in ("combined", "admin")
+
+
+def create_app(
+    *,
+    mode: HostMode | None = None,
+    serve_spa: bool | None = None,
+) -> FastAPI:
+    resolved_mode = mode or _resolve_host_mode()
+    if resolved_mode not in ("combined", "admin", "sales"):
+        raise RuntimeError(
+            f"BLUEBOT_HOST_MODE must be combined|admin|sales, got {resolved_mode!r}"
+        )
+
+    fastapi_app = FastAPI(title="bluebot Orchestrator API", lifespan=_lifespan)
+    _install_cors(fastapi_app)
+
+    fastapi_app.include_router(config_router)
+    fastapi_app.include_router(shares_router)
+    fastapi_app.include_router(logo_router)
+
+    if resolved_mode in ("combined", "admin"):
+        fastapi_app.include_router(auth_router)
+        fastapi_app.include_router(conversations_router)
+        fastapi_app.include_router(admin_chat_router)
+        fastapi_app.include_router(tickets_router)
+        fastapi_app.include_router(artifacts_router)
+
+    if resolved_mode in ("combined", "sales"):
+        fastapi_app.include_router(sales_chat_router)
+
+    if serve_spa is None:
+        serve_spa = _default_serve_spa(resolved_mode)  # type: ignore[arg-type]
+    if serve_spa:
+        _mount_production_spa(fastapi_app)
+
+    return fastapi_app
+
+
+app = create_app()

@@ -7,6 +7,7 @@ the wrong *agent* unless we put *orchestrator* first for this module.
 
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
 
@@ -30,7 +31,6 @@ def client_and_store(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "")
     store_mod._bootstrapped.clear()
 
-    import importlib
     import sys as _s
 
     for name in ("api", "store", "agent"):
@@ -97,3 +97,36 @@ def test_public_share_revoked_404(client_and_store):
     assert d.status_code == 200
     g = client.get(f"/api/public/shares/{token}")
     assert g.status_code == 404
+
+
+def test_create_app_admin_and_sales_modes(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLUEBOT_CONV_DB", str(tmp_path / "host_modes.db"))
+    monkeypatch.setenv("DATABASE_URL", "")
+    for name in ("api", "store", "agent"):
+        sys.modules.pop(name, None)
+
+    import api as api_mod
+    import store
+
+    importlib.reload(api_mod)
+    importlib.reload(store)
+    store._bootstrapped.clear()
+    store._ensure_ready()
+
+    admin = TestClient(api_mod.create_app(mode="admin", serve_spa=False))
+    sales = TestClient(api_mod.create_app(mode="sales", serve_spa=False))
+
+    assert admin.get("/api/config").status_code == 200
+    assert sales.get("/api/config").status_code == 200
+
+    assert admin.get("/api/conversations", params={"user_id": "u1"}).status_code == 200
+    assert (
+        admin.get("/api/public/sales/conversations", params={"ids": ""}).status_code
+        == 404
+    )
+
+    assert sales.get("/api/conversations").status_code == 404
+    assert (
+        sales.get("/api/public/sales/conversations", params={"ids": ""}).status_code
+        == 200
+    )

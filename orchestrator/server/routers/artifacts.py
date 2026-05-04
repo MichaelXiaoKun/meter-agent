@@ -10,14 +10,6 @@ from .. import app as app_runtime
 router = APIRouter(tags=["artifacts"])
 
 
-@router.get("/api/logo")
-def get_logo():
-    """Serve the bluebot logo."""
-    if not app_runtime._LOGO_PATH.exists():
-        raise HTTPException(404, "Logo not found")
-    return FileResponse(app_runtime._LOGO_PATH, media_type="image/jpeg")
-
-
 @router.get("/api/plots/{filename}")
 def get_plot(filename: str):
     """Serve a generated plot PNG by filename."""

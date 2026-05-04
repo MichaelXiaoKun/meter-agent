@@ -125,6 +125,8 @@ Copy [`../.env.example`](../.env.example) to `.env` and set values. The example 
 | `SALES_RESPONSE_VERIFICATION_ATTEMPTS` | Maximum verifier/rewrite attempts for a sales answer. Defaults to `3`, capped at `5`. |
 | `ORCHESTRATOR_INTENT_ROUTER` | Optional per-turn tool subset for the main model: `off`, `rules`, or `haiku`. |
 | `ORCHESTRATOR_TPM_GUIDE_TOKENS` / `ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET` | Token budget and compression targets. |
+| `BLUEBOT_HOST_MODE` | FastAPI host mode: `combined` (default), `admin`, or `sales`. |
+| `BLUEBOT_SERVE_SPA` | Optional SPA serving override: `1` to serve, `0` to disable. If unset, `combined` and `admin` serve the SPA; `sales` does not. |
 | `CORS_ORIGINS` | Comma-separated origins allowed for the API. Set this for non-default dev ports or deployed UIs. |
 | `FRONTEND_DIST` | Path to built SPA; production Docker serves `frontend/dist`. Omit in dev. |
 | `PLOTS_DIR` | Where flow-analysis PNGs are stored; important for persistence on cloud hosts. |
@@ -160,6 +162,18 @@ docker run --rm -p 8080:8080 --env-file .env meter-agent
 Then open `http://localhost:8080`. The container listens on `PORT`, defaulting to `8080`. The app serves the built React app and `/api` from one origin, so CORS is simpler than Vite dev mode.
 
 Ensure `.env` contains all required secrets and, for Postgres, that the database is reachable from the container.
+
+### Host modes
+
+The same Docker image and Python entrypoint can run all supported host shapes. Select the route set with `BLUEBOT_HOST_MODE`:
+
+| Value | Routes mounted | SPA default |
+|-------|----------------|-------------|
+| `combined` | Admin, sales, and shared routes. This is the default when unset. | Served |
+| `admin` | Admin and shared routes. Sales API routes return 404. | Served |
+| `sales` | Sales and shared routes. Admin API routes return 404. | Not served |
+
+Set `BLUEBOT_SERVE_SPA=1` or `BLUEBOT_SERVE_SPA=0` to override the SPA default for any mode. Split deployments normally run two services from the same image, one with `BLUEBOT_HOST_MODE=admin` and one with `BLUEBOT_HOST_MODE=sales`, against the same database; routing between them stays in your proxy or platform layer.
 
 For Railway:
 
