@@ -52,6 +52,12 @@ flowchart TD
 - **Persistence:** conversations use PostgreSQL when `DATABASE_URL` is set. Otherwise SQLite is used via `BLUEBOT_CONV_DB` or `orchestrator/conversations.db`.
 - **LLM access:** the server can use `ANTHROPIC_API_KEY`; users can also paste a browser-local key that is sent as `X-Anthropic-Key`.
 
+### Host modes
+
+The orchestrator is built by the `create_app()` factory in [`../orchestrator/server/app.py`](../orchestrator/server/app.py). The factory selects which routers to mount from `BLUEBOT_HOST_MODE`: `combined` is the default and preserves the current full surface, `admin` mounts admin plus shared routes, and `sales` mounts sales plus shared routes.
+
+All modes use the same Docker image. Deploy targets can switch with the env var or import the convenience entrypoints [`../orchestrator/server/app_admin.py`](../orchestrator/server/app_admin.py) and [`../orchestrator/server/app_sales.py`](../orchestrator/server/app_sales.py). Split hosts share one database through `DATABASE_URL` or SQLite configuration. Stream sessions stay process-local and are disjoint by design, so in-flight Admin and Sales streams do not cross host boundaries.
+
 <a id="product-surfaces"></a>
 
 ## Product surfaces
@@ -97,7 +103,7 @@ The backend is a Python orchestrator with compatibility facades at the top level
 
 | Layer | Path | Responsibility |
 |-------|------|----------------|
-| HTTP server | [`../orchestrator/server/`](../orchestrator/server/) | FastAPI app, request models, route facades, stream state, cancellation, static SPA serving. |
+| HTTP server | [`../orchestrator/server/`](../orchestrator/server/) | FastAPI app factory, host-mode router wiring, request models, stream state, cancellation, static SPA serving. |
 | Admin chat | [`../orchestrator/admin_chat/`](../orchestrator/admin_chat/) | Authenticated turn loop, intent routing, tool dispatch, history budgeting, config confirmations, admin meter-tool adapters. |
 | Sales chat | [`../orchestrator/sales_chat/`](../orchestrator/sales_chat/) | Public sales prompt runner, sales-only tools, verifier, content sync implementation. |
 | Shared runtime | [`../orchestrator/shared/`](../orchestrator/shared/) | Base agent wrapper, message sanitization, observability, plot paths, subprocess env, summarizer, tool registry, TPM window, turn gate. |
@@ -198,4 +204,4 @@ The current architecture is intentionally simple for local development and a sin
 | Provider and Bluebot API limits | Token budgeting and model-turn limits are mostly per process. | Add shared rate limiting and queue-level backpressure across replicas; keep public Sales traffic from starving Admin support workflows. |
 | Operational visibility | Logs, tests, stream events, and sync events exist. | Add metrics/tracing for queue depth, turn latency, tool latency, verifier rewrites, sync freshness, artifact generation, and upstream API errors. |
 
-Only split Sales and Admin into separately deployed services after the shared service has outgrown process-local coordination or security policy requires stricter isolation. Until then, keep the shared UI, shared stream protocol, and shared persistence facade aligned so both surfaces improve together.
+The Sales/Admin split is now an in-product runtime mode controlled by `BLUEBOT_HOST_MODE`; no rewrite is required to run separate hosts. Turning it on is a deployment decision: run the same image as an admin service and a sales service, share the database, and keep routing in the deployment platform or proxy. Keep the shared UI, shared stream protocol, and shared persistence facade aligned so both surfaces improve together.

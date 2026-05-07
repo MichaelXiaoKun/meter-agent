@@ -96,6 +96,8 @@ flowchart TD
     Flow --> Artifacts["Generated artifacts<br>plots + CSV analysis files"]
 ```
 
+In split deployments, the same image is launched twice with `BLUEBOT_HOST_MODE` set so each process mounts only the relevant routers; see [docs/deployment.md](docs/deployment.md) for details.
+
 ### Runtime boundaries
 
 - **Public vs admin:** Sales chat is pre-login and can only call sales-only tools. Admin chat is Auth0-protected and owns live meter/account lookup, flow analysis, pipe configuration, MQTT-related actions, and tickets.
@@ -150,7 +152,7 @@ For the deeper system map, see [docs/architecture.md](docs/architecture.md).
 | Product surfaces, repo layout, and ownership boundaries | [docs/architecture.md](docs/architecture.md) |
 | Public sales assistant behavior, KB, tools, API, and UI persistence | [docs/sales-agent.md](docs/sales-agent.md) |
 | Authenticated admin assistant, live tools, and flow/status/pipe sub-agents | [docs/admin-agent.md](docs/admin-agent.md) |
-| Local setup, environment variables, Docker, Railway, and database storage | [docs/deployment.md](docs/deployment.md) |
+| Local setup, environment variables, Docker, Railway, host-mode split, and database storage | [docs/deployment.md](docs/deployment.md) |
 | Test commands and current coverage areas | [docs/testing.md](docs/testing.md) |
 | Common setup/runtime failures | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Data-agent template vs LLM rendering experiment | [docs/data-agent-llm-vs-template.md](docs/data-agent-llm-vs-template.md) |

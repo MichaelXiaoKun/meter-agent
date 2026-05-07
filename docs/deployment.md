@@ -167,13 +167,13 @@ Ensure `.env` contains all required secrets and, for Postgres, that the database
 
 The same Docker image and Python entrypoint can run all supported host shapes. Select the route set with `BLUEBOT_HOST_MODE`:
 
-| Value | Routes mounted | SPA default |
-|-------|----------------|-------------|
-| `combined` | Admin, sales, and shared routes. This is the default when unset. | Served |
-| `admin` | Admin and shared routes. Sales API routes return 404. | Served |
-| `sales` | Sales and shared routes. Admin API routes return 404. | Not served |
+| Value | Routes mounted | Default local port | SPA default |
+|-------|----------------|--------------------|-------------|
+| `combined` | Admin, sales, and shared routes. This is the default when unset. | `8000` | Served |
+| `admin` | Admin and shared routes. Sales API routes return 404. | `8000` | Served |
+| `sales` | Sales and shared routes. Admin API routes return 404. | `8001` | Not served |
 
-Set `BLUEBOT_SERVE_SPA=1` or `BLUEBOT_SERVE_SPA=0` to override the SPA default for any mode. Split deployments normally run two services from the same image, one with `BLUEBOT_HOST_MODE=admin` and one with `BLUEBOT_HOST_MODE=sales`, against the same database; routing between them stays in your proxy or platform layer.
+Set `BLUEBOT_SERVE_SPA=1` or `BLUEBOT_SERVE_SPA=0` to override the SPA default for any mode.
 
 For local backend-only development, use the mode flag:
 
@@ -189,6 +189,10 @@ Deploy targets that prefer explicit module paths can also use the convenience en
 uvicorn orchestrator.server.app_admin:app --port 8000
 uvicorn orchestrator.server.app_sales:app --port 8001
 ```
+
+#### Split deployment
+
+Split deployments run the same image as two services: one with `BLUEBOT_HOST_MODE=admin` and one with `BLUEBOT_HOST_MODE=sales`. Both services use the same `DATABASE_URL` so conversations, shares, tickets, and sales content stay in one persistence layer. HTTP routing stays outside the app in a reverse proxy or platform router; this plan does not choose that routing layer.
 
 For Railway:
 

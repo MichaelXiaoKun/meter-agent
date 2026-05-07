@@ -434,6 +434,8 @@ var path stays authoritative — both styles produce identical apps.
 
 ### Phase 5 — Documentation
 
+**Status:** Done (2026-05-07).
+
 **Goal:** Make the split a documented runtime mode.
 
 **Files to edit:**
@@ -530,3 +532,13 @@ landed independently or bundled.
 - The `lifespan=_lifespan` argument to `FastAPI(...)` must be preserved in
   `create_app`, otherwise `store._ensure_ready()` and the rate-limit log
   line at startup are lost.
+
+---
+
+## 10. Final phase record
+
+- Phase 1: `codex/split-routers` — `8b174d4` `refactor(server): promote stub routers to APIRouter`
+- Phase 2: `codex/split-create-app` — `4b79774` `feat(server): add create_app factory and BLUEBOT_HOST_MODE`
+- Phase 3: `codex/split-entrypoints` — `dd4367b` `feat(server): add admin/sales entrypoints and run script mode flag`
+- Phase 4: `codex/split-tests` — `80ab638` `test(server): host-mode contract tests and observability host-mode tag`
+- Phase 5: `codex/split-docs` — this commit, `docs: document host-mode split`

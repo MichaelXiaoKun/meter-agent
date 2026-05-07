@@ -30,8 +30,10 @@ Read the project as five layers:
    The UI owns routing, sidebars, chat rendering, stream recovery, and turn
    status display.
 2. **FastAPI server** in [`../orchestrator/server/`](../orchestrator/server/).
-   It owns routes, stream sessions, cancellation, request models, and production
-   static-file serving.
+   [`../orchestrator/server/app.py`](../orchestrator/server/app.py) builds the
+   app through a factory; the host mode decides which admin, sales, and shared
+   routers are mounted. The server also owns stream sessions, cancellation,
+   request models, and production static-file serving.
 3. **Assistant runtimes** in [`../orchestrator/admin_chat/`](../orchestrator/admin_chat/)
    and [`../orchestrator/sales_chat/`](../orchestrator/sales_chat/). These own
    prompts, tool routing, validation, and turn behavior.
@@ -56,8 +58,8 @@ For the first pass, read these in order:
 1. [`../README.md`](../README.md): product overview, local run commands, and doc map.
 2. [`architecture.md`](architecture.md): system map, repo layout, ownership
    boundaries, turn state, and scaling direction.
-3. [`deployment.md`](deployment.md): local environment, ports, database choice,
-   Docker, and Railway deployment assumptions.
+3. [`deployment.md`](deployment.md): local environment, ports, host modes,
+   database choice, Docker, and Railway deployment assumptions.
 4. [`testing.md`](testing.md): targeted test commands and coverage map.
 
 Then branch by task:
@@ -82,6 +84,7 @@ Then branch by task:
 | Sales content sync | [`../orchestrator/sales_chat/content_sync.py`](../orchestrator/sales_chat/content_sync.py), [`../orchestrator/sales_content_sync.py`](../orchestrator/sales_content_sync.py) | Runtime chat does not browse live websites; sync produces curated/runtime sales content. |
 | Admin routing and tools | [`../orchestrator/admin_chat/`](../orchestrator/admin_chat/), [`../orchestrator/tools/`](../orchestrator/tools/), [`../tests/orchestrator/`](../tests/orchestrator/) | Admin can use protected tools, but must stay authenticated and grounded in tool outputs. |
 | Shared stream/status behavior | [`../orchestrator/server/app.py`](../orchestrator/server/app.py), [`../frontend/src/core/chatStreamReducer.ts`](../frontend/src/core/chatStreamReducer.ts), [`../frontend/src/core/turnActivity.ts`](../frontend/src/core/turnActivity.ts) | Preserve the stream event shape unless you update both backend and frontend tests. |
+| Host mode wiring | [`../orchestrator/server/app.py`](../orchestrator/server/app.py) | Changing what gets mounted requires updating the factory and [`../tests/orchestrator/test_host_modes.py`](../tests/orchestrator/test_host_modes.py). |
 | Shared chat UI | [`../frontend/src/features/chat/components/ChatView.tsx`](../frontend/src/features/chat/components/ChatView.tsx), [`../frontend/src/features/conversations/`](../frontend/src/features/conversations/) | Keep Sales and Admin visually aligned unless there is a product reason to diverge. |
 | Database behavior | [`../orchestrator/persistence/`](../orchestrator/persistence/), [`../orchestrator/store.py`](../orchestrator/store.py) | Keep `store.py` as the stable facade. Test both behavior and migration assumptions. |
 | Frontend API calls | [`../frontend/src/api/client.ts`](../frontend/src/api/client.ts), [`../orchestrator/server/`](../orchestrator/server/) | Public Sales routes live under `/api/public/sales/...`; Admin routes are protected chat routes. |
@@ -144,11 +147,12 @@ Scale the current architecture in this order:
    replicas.
 4. Move heavy analysis and sales content sync into dedicated background workers.
 5. Add shared rate limiting, queue-level backpressure, and observability.
-6. Split Sales and Admin into separately deployed services only after traffic,
-   security policy, or operations make that extra complexity worthwhile.
+6. Use `BLUEBOT_HOST_MODE` when traffic, security policy, or operations call for
+   separately deployed Admin and Sales hosts; the split is a deployment choice,
+   not a rewrite.
 
-Until then, keeping one orchestrator, one shared stream protocol, and one shared
-chat UI makes the product easier to change consistently.
+Whether combined or split, keep one shared stream protocol, one shared
+persistence model, and one shared chat UI so both surfaces improve together.
 
 ## Handoff checklist
 
