@@ -1,6 +1,32 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+
+const adminApiTarget = process.env.VITE_ADMIN_API_TARGET || 'http://localhost:8000'
+const salesApiTarget = process.env.VITE_SALES_API_TARGET || adminApiTarget
+
+const configureStreamingProxy: ProxyOptions['configure'] = (proxy) => {
+  proxy.on('proxyReq', (proxyReq) => {
+    const sock = proxyReq.socket as
+      | (import('net').Socket & { setNoDelay?: (on: boolean) => void })
+      | null
+    sock?.setNoDelay?.(true)
+  })
+  proxy.on('proxyRes', (proxyRes, _req, res) => {
+    const isStream =
+      (proxyRes.headers['content-type'] || '').includes('text/event-stream')
+    if (!isStream) return
+    // Disable Nagle on the downstream socket so each SSE event
+    // hits the Wi-Fi router as a separate TCP packet rather than
+    // being batched by the kernel. setNoDelay is a *socket
+    // option* — it does not touch headers, so it's safe to call
+    // before http-proxy copies the upstream Content-Type.
+    const downstream = (res as unknown as {
+      socket?: import('net').Socket & { setNoDelay?: (on: boolean) => void }
+    }).socket
+    downstream?.setNoDelay?.(true)
+  })
+}
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -33,33 +59,19 @@ export default defineConfig({
       // no`` and ``Cache-Control: no-cache, no-store, no-transform``, and
       // http-proxy will copy those over for us. All we need to add at the
       // proxy layer is ``TCP_NODELAY`` for latency.
-      '/api': {
-        target: 'http://localhost:8000',
+      '/api/public/sales': {
+        target: salesApiTarget,
         changeOrigin: true,
         timeout: 0,
         proxyTimeout: 0,
-        configure: (proxy) => {
-          proxy.on('proxyReq', (proxyReq) => {
-            const sock = proxyReq.socket as
-              | (import('net').Socket & { setNoDelay?: (on: boolean) => void })
-              | null
-            sock?.setNoDelay?.(true)
-          })
-          proxy.on('proxyRes', (proxyRes, _req, res) => {
-            const isStream =
-              (proxyRes.headers['content-type'] || '').includes('text/event-stream')
-            if (!isStream) return
-            // Disable Nagle on the downstream socket so each SSE event
-            // hits the Wi-Fi router as a separate TCP packet rather than
-            // being batched by the kernel. setNoDelay is a *socket
-            // option* — it does not touch headers, so it's safe to call
-            // before http-proxy copies the upstream Content-Type.
-            const downstream = (res as unknown as {
-              socket?: import('net').Socket & { setNoDelay?: (on: boolean) => void }
-            }).socket
-            downstream?.setNoDelay?.(true)
-          })
-        },
+        configure: configureStreamingProxy,
+      },
+      '/api': {
+        target: adminApiTarget,
+        changeOrigin: true,
+        timeout: 0,
+        proxyTimeout: 0,
+        configure: configureStreamingProxy,
       },
     },
   },

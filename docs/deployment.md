@@ -194,6 +194,8 @@ uvicorn orchestrator.server.app_sales:app --port 8001
 
 Split deployments run the same image as two services: one with `BLUEBOT_HOST_MODE=admin` and one with `BLUEBOT_HOST_MODE=sales`. Both services use the same `DATABASE_URL` so conversations, shares, tickets, and sales content stay in one persistence layer. HTTP routing stays outside the app in a reverse proxy or platform router; this plan does not choose that routing layer.
 
+The frontend supports two deployment shapes. In the default single-origin shape, the SPA calls `/api` on its own origin; a reverse proxy routes admin traffic such as `/api/conversations/*` to the admin host and sales traffic such as `/api/public/sales/*` to the sales host. In the two-origin shape, build the SPA with `VITE_ADMIN_API_BASE` and `VITE_SALES_API_BASE` set to absolute `/api` bases so it talks to both backends directly. Shared reads such as `/api/config` and `/api/public/shares/*` use the admin base. Because auth still uses `Authorization: Bearer ...` and local header overrides rather than cookies, two-origin deployment does not require CORS credentials or `withCredentials`; add the SPA origin to `CORS_ORIGINS` on each backend. `CORS_ORIGINS` already accepts a comma-separated list when multiple frontend origins are needed.
+
 For Railway:
 
 - Deploy from the root [`../Dockerfile`](../Dockerfile).

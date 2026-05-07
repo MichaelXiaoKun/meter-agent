@@ -9,7 +9,37 @@ import type {
   TicketStatus,
 } from "../core/types";
 
-const BASE = "/api";
+const DEFAULT_API_BASE = "/api";
+const ADMIN_BASE = (import.meta.env.VITE_ADMIN_API_BASE ?? DEFAULT_API_BASE).replace(
+  /\/$/,
+  "",
+);
+const SALES_BASE = (import.meta.env.VITE_SALES_API_BASE ?? ADMIN_BASE).replace(
+  /\/$/,
+  "",
+);
+
+function adminUrl(path: string): string {
+  return `${ADMIN_BASE}${path}`;
+}
+
+function salesUrl(path: string): string {
+  return `${SALES_BASE}${path}`;
+}
+
+function sharedUrl(path: string): string {
+  return `${ADMIN_BASE}${path}`;
+}
+
+function adminResourceUrl(url: string): string {
+  if (
+    url.startsWith(`${DEFAULT_API_BASE}/analysis-artifacts/`) ||
+    url.startsWith(`${DEFAULT_API_BASE}/plots/`)
+  ) {
+    return adminUrl(url.slice(DEFAULT_API_BASE.length));
+  }
+  return url;
+}
 
 /** Browser ``fetch`` errors when the orchestrator is down or /api is not proxied. */
 function mapFetchNetworkError(e: unknown): string {
@@ -95,7 +125,7 @@ export async function login(
 ): Promise<{ access_token: string; user: string }> {
   let res: Response;
   try {
-    res = await fetch(`${BASE}/auth/login`, {
+    res = await fetch(adminUrl("/auth/login"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
@@ -116,7 +146,7 @@ export async function login(
 export async function requestPasswordReset(email: string): Promise<void> {
   let res: Response;
   try {
-    res = await fetch(`${BASE}/auth/forgot-password`, {
+    res = await fetch(adminUrl("/auth/forgot-password"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email }),
@@ -141,7 +171,7 @@ export async function listConversations(
   signal?: AbortSignal
 ): Promise<Conversation[]> {
   const res = await fetch(
-    `${BASE}/conversations?user_id=${encodeURIComponent(userId)}`,
+    adminUrl(`/conversations?user_id=${encodeURIComponent(userId)}`),
     { signal }
   );
   if (!res.ok) throw new Error(await res.text());
@@ -152,7 +182,7 @@ export async function createConversation(
   userId: string,
   title = ""
 ): Promise<string> {
-  const res = await fetch(`${BASE}/conversations`, {
+  const res = await fetch(adminUrl("/conversations"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_id: userId, title }),
@@ -166,7 +196,7 @@ export async function loadMessages(
   convId: string,
   signal?: AbortSignal
 ): Promise<Message[]> {
-  const res = await fetch(`${BASE}/conversations/${convId}/messages`, {
+  const res = await fetch(adminUrl(`/conversations/${convId}/messages`), {
     signal,
   });
   if (!res.ok) throw new Error(await res.text());
@@ -240,7 +270,7 @@ export async function getProcessingStatus(
   convId: string,
   signal?: AbortSignal
 ): Promise<ProcessingStatus> {
-  const res = await fetch(`${BASE}/conversations/${convId}/status`, { signal });
+  const res = await fetch(adminUrl(`/conversations/${convId}/status`), { signal });
   if (!res.ok) return { processing: false };
   const data = await res.json();
   return {
@@ -323,7 +353,7 @@ export async function listTickets(
       Array.isArray(opts.status) ? opts.status.join(",") : opts.status,
     );
   }
-  const res = await fetch(`${BASE}/tickets?${params.toString()}`, {
+  const res = await fetch(adminUrl(`/tickets?${params.toString()}`), {
     signal: opts.signal,
   });
   if (!res.ok) throw new Error(await res.text());
@@ -335,7 +365,7 @@ export async function createTicket(
   accessToken: string,
   signal?: AbortSignal,
 ): Promise<Ticket> {
-  const res = await fetch(`${BASE}/tickets`, {
+  const res = await fetch(adminUrl("/tickets"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -354,7 +384,7 @@ export async function updateTicket(
   accessToken: string,
   signal?: AbortSignal,
 ): Promise<Ticket> {
-  const res = await fetch(`${BASE}/tickets/${encodeURIComponent(ticketId)}`, {
+  const res = await fetch(adminUrl(`/tickets/${encodeURIComponent(ticketId)}`), {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
@@ -373,7 +403,7 @@ export async function appendTicketEvent(
   accessToken: string,
   signal?: AbortSignal,
 ): Promise<TicketEvent> {
-  const res = await fetch(`${BASE}/tickets/${encodeURIComponent(ticketId)}/events`, {
+  const res = await fetch(adminUrl(`/tickets/${encodeURIComponent(ticketId)}/events`), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -391,7 +421,7 @@ export async function appendTicketEvent(
 // ---------------------------------------------------------------------------
 
 export async function createSalesConversation(title = "Sales conversation"): Promise<string> {
-  const res = await fetch(`${BASE}/public/sales/conversations`, {
+  const res = await fetch(salesUrl("/public/sales/conversations"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title }),
@@ -407,7 +437,7 @@ export async function listSalesConversations(
 ): Promise<Conversation[]> {
   if (ids.length === 0) return [];
   const params = new URLSearchParams({ ids: ids.join(",") });
-  const res = await fetch(`${BASE}/public/sales/conversations?${params}`, { signal });
+  const res = await fetch(salesUrl(`/public/sales/conversations?${params}`), { signal });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -416,7 +446,7 @@ export async function loadSalesConversation(
   convId: string,
   signal?: AbortSignal,
 ): Promise<SalesConversation> {
-  const res = await fetch(`${BASE}/public/sales/conversations/${convId}`, { signal });
+  const res = await fetch(salesUrl(`/public/sales/conversations/${convId}`), { signal });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -426,7 +456,7 @@ export async function getSalesProcessingStatus(
   signal?: AbortSignal,
 ): Promise<ProcessingStatus> {
   const res = await fetch(
-    `${BASE}/public/sales/conversations/${encodeURIComponent(convId)}/status`,
+    salesUrl(`/public/sales/conversations/${encodeURIComponent(convId)}/status`),
     { signal },
   );
   if (!res.ok) return { processing: false };
@@ -444,7 +474,7 @@ export async function updateSalesConversationTitle(
   convId: string,
   title: string,
 ): Promise<void> {
-  const res = await fetch(`${BASE}/public/sales/conversations/${convId}`, {
+  const res = await fetch(salesUrl(`/public/sales/conversations/${convId}`), {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title }),
@@ -453,7 +483,7 @@ export async function updateSalesConversationTitle(
 }
 
 export async function deleteSalesConversation(convId: string): Promise<void> {
-  const res = await fetch(`${BASE}/public/sales/conversations/${convId}`, {
+  const res = await fetch(salesUrl(`/public/sales/conversations/${convId}`), {
     method: "DELETE",
   });
   if (!res.ok) throw new Error(await res.text());
@@ -465,7 +495,7 @@ async function initSalesTurn(
   signal?: AbortSignal,
   clientTurnId?: string,
 ): Promise<{ streamId: string; turnId?: string }> {
-  const res = await fetch(`${BASE}/public/sales/conversations/${convId}/chat`, {
+  const res = await fetch(salesUrl(`/public/sales/conversations/${convId}/chat`), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -490,7 +520,9 @@ export async function pollSalesStream(
   while (true) {
     if (signal?.aborted) throw new DOMException("aborted", "AbortError");
     const res = await fetch(
-      `${BASE}/public/sales/streams/${streamId}/poll?cursor=${cursor}&wait_ms=1500&_=${Date.now()}`,
+      salesUrl(
+        `/public/sales/streams/${streamId}/poll?cursor=${cursor}&wait_ms=1500&_=${Date.now()}`,
+      ),
       {
         signal,
         cache: "no-store",
@@ -524,7 +556,7 @@ export async function streamSalesChat(
       reject(new DOMException("aborted", "AbortError"));
       return;
     }
-    const es = new EventSource(`${BASE}/public/sales/streams/${streamId}`);
+    const es = new EventSource(salesUrl(`/public/sales/streams/${streamId}`));
     let settled = false;
     let fallbackStarted = false;
     let lastSeq = 0;
@@ -571,7 +603,7 @@ export async function cancelSalesProcessing(
   convId: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch(`${BASE}/public/sales/conversations/${convId}/cancel`, {
+  const res = await fetch(salesUrl(`/public/sales/conversations/${convId}/cancel`), {
     method: "POST",
     signal,
   });
@@ -582,7 +614,7 @@ export async function cancelProcessing(
   convId: string,
   signal?: AbortSignal
 ): Promise<void> {
-  const res = await fetch(`${BASE}/conversations/${convId}/cancel`, {
+  const res = await fetch(adminUrl(`/conversations/${convId}/cancel`), {
     method: "POST",
     signal,
   });
@@ -594,7 +626,7 @@ export async function deleteConversation(
   userId: string
 ): Promise<void> {
   const res = await fetch(
-    `${BASE}/conversations/${convId}?user_id=${encodeURIComponent(userId)}`,
+    adminUrl(`/conversations/${convId}?user_id=${encodeURIComponent(userId)}`),
     { method: "DELETE" }
   );
   if (!res.ok) throw new Error(await res.text());
@@ -604,7 +636,7 @@ export async function updateTitle(
   convId: string,
   title: string
 ): Promise<void> {
-  const res = await fetch(`${BASE}/conversations/${convId}`, {
+  const res = await fetch(adminUrl(`/conversations/${convId}`), {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title }),
@@ -637,7 +669,7 @@ async function initChatTurn(
       : undefined;
   const trimmedModel = model ? model.trim() : "";
 
-  const initRes = await fetch(`${BASE}/conversations/${convId}/chat`, {
+  const initRes = await fetch(adminUrl(`/conversations/${convId}/chat`), {
     method: "POST",
     headers: headers(token, { anthropicApiKey }),
     body: JSON.stringify({
@@ -689,7 +721,7 @@ export async function pollStream(
     // guarantee each poll hits the network is a unique URL. Cost is
     // negligible (~20 extra bytes per request).
     const url =
-      `${BASE}/streams/${streamId}/poll` +
+      adminUrl(`/streams/${streamId}/poll`) +
       `?cursor=${cursor}` +
       `&wait_ms=${POLL_WAIT_MS}` +
       `&_=${Date.now()}`;
@@ -773,7 +805,7 @@ export async function streamChat(
       return;
     }
 
-    const es = new EventSource(`${BASE}/streams/${streamId}`);
+    const es = new EventSource(adminUrl(`/streams/${streamId}`));
     let settled = false;
     let fallbackStarted = false;
     let lastSeq = 0;
@@ -884,7 +916,7 @@ export async function downloadArtifact(
 ): Promise<void> {
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await fetch(adminResourceUrl(url), {
       headers: headers(token, { anthropicApiKey }),
     });
   } catch (e) {
@@ -955,7 +987,7 @@ export interface OrchestratorConfig {
 export async function fetchOrchestratorConfig(
   signal?: AbortSignal
 ): Promise<OrchestratorConfig> {
-  const res = await fetch(`${BASE}/config`, { signal });
+  const res = await fetch(sharedUrl("/config"), { signal });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -975,7 +1007,7 @@ export async function createShare(
   accessToken: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const res = await fetch(`${BASE}/conversations/${encodeURIComponent(convId)}/share`, {
+  const res = await fetch(adminUrl(`/conversations/${encodeURIComponent(convId)}/share`), {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
     body: JSON.stringify({ user_id: userId }),
@@ -995,7 +1027,7 @@ export async function createSalesShare(
   signal?: AbortSignal,
 ): Promise<PublicShareToken> {
   const res = await fetch(
-    `${BASE}/public/sales/conversations/${encodeURIComponent(convId)}/share`,
+    salesUrl(`/public/sales/conversations/${encodeURIComponent(convId)}/share`),
     {
       method: "POST",
       signal,
@@ -1017,7 +1049,7 @@ export async function revokeShare(
   signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(
-    `${BASE}/shares/${encodeURIComponent(shareToken)}?user_id=${encodeURIComponent(userId)}`,
+    adminUrl(`/shares/${encodeURIComponent(shareToken)}?user_id=${encodeURIComponent(userId)}`),
     {
       method: "DELETE",
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -1039,7 +1071,9 @@ export async function revokeSalesShare(
     throw new Error("Missing revoke key for this sales share link");
   }
   const res = await fetch(
-    `${BASE}/public/sales/shares/${encodeURIComponent(shareToken)}?revoke_key=${encodeURIComponent(revokeKey)}`,
+    salesUrl(
+      `/public/sales/shares/${encodeURIComponent(shareToken)}?revoke_key=${encodeURIComponent(revokeKey)}`,
+    ),
     {
       method: "DELETE",
       signal,
@@ -1056,7 +1090,7 @@ export async function loadPublicShare(
   signal?: AbortSignal,
 ): Promise<{ title: string; messages: Message[] }> {
   const res = await fetch(
-    `${BASE}/public/shares/${encodeURIComponent(shareToken)}`,
+    sharedUrl(`/public/shares/${encodeURIComponent(shareToken)}`),
     { signal },
   );
   if (!res.ok) {
