@@ -5,8 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 API_HOST="${API_HOST:-127.0.0.1}"
-API_PORT="${API_PORT:-8000}"
+API_PORT="${API_PORT:-}"
 API_RELOAD="${API_RELOAD:-false}"
+HOST_MODE="${BLUEBOT_HOST_MODE:-combined}"
 
 FORCE_INSTALL=false
 USE_SQLITE=false
@@ -19,12 +20,14 @@ Starts the bluebot meter-agent FastAPI backend.
 
 Options:
   --install  Force reinstall Python API dependencies
+  --mode     Host mode: combined, admin, or sales
+  --port     Listen port. Defaults to 8000 for combined/admin and 8001 for sales.
   --reload   Run uvicorn with reload enabled
   --sqlite   Ignore DATABASE_URL and use local SQLite storage
   -h, --help Show this help
 
 Environment overrides:
-  API_HOST=127.0.0.1 API_PORT=8000 API_RELOAD=false
+  API_HOST=127.0.0.1 API_PORT=8000 API_RELOAD=false BLUEBOT_HOST_MODE=combined
   VENV_DIR=/path/to/venv PYTHON_BIN=python3
 USAGE
 }
@@ -51,6 +54,22 @@ while (($#)); do
     --install)
       FORCE_INSTALL=true
       ;;
+    --mode)
+      [[ $# -ge 2 ]] || die "--mode requires combined, admin, or sales"
+      HOST_MODE="$2"
+      shift
+      ;;
+    --mode=*)
+      HOST_MODE="${1#*=}"
+      ;;
+    --port)
+      [[ $# -ge 2 ]] || die "--port requires a value"
+      API_PORT="$2"
+      shift
+      ;;
+    --port=*)
+      API_PORT="${1#*=}"
+      ;;
     --reload)
       API_RELOAD=true
       ;;
@@ -67,6 +86,27 @@ while (($#)); do
   esac
   shift
 done
+
+case "$HOST_MODE" in
+  combined|admin|sales)
+    ;;
+  *)
+    die "--mode must be combined, admin, or sales"
+    ;;
+esac
+
+if [[ -z "$API_PORT" ]]; then
+  case "$HOST_MODE" in
+    sales)
+      API_PORT=8001
+      ;;
+    combined|admin)
+      API_PORT=8000
+      ;;
+  esac
+fi
+
+export BLUEBOT_HOST_MODE="$HOST_MODE"
 
 if [[ ! -f "$ROOT_DIR/.env" ]]; then
   warn "No .env file found. Copy .env.example to .env and fill in secrets for full chat/admin behavior."

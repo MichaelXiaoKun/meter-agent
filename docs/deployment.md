@@ -175,6 +175,21 @@ The same Docker image and Python entrypoint can run all supported host shapes. S
 
 Set `BLUEBOT_SERVE_SPA=1` or `BLUEBOT_SERVE_SPA=0` to override the SPA default for any mode. Split deployments normally run two services from the same image, one with `BLUEBOT_HOST_MODE=admin` and one with `BLUEBOT_HOST_MODE=sales`, against the same database; routing between them stays in your proxy or platform layer.
 
+For local backend-only development, use the mode flag:
+
+```bash
+./run_backend.sh --reload                 # combined, :8000
+./run_backend.sh --mode admin --reload    # admin host, :8000
+./run_backend.sh --mode sales --reload    # sales host, :8001
+```
+
+Deploy targets that prefer explicit module paths can also use the convenience entrypoints:
+
+```bash
+uvicorn orchestrator.server.app_admin:app --port 8000
+uvicorn orchestrator.server.app_sales:app --port 8001
+```
+
 For Railway:
 
 - Deploy from the root [`../Dockerfile`](../Dockerfile).

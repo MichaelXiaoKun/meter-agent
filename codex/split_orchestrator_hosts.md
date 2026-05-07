@@ -363,6 +363,8 @@ instance and registers the two SPA fallback routes on it.
 
 ### Phase 3 — Convenience entrypoints and run scripts
 
+**Status:** Done (2026-05-07).
+
 **Goal:** Make split mode trivially launchable.
 
 **New files:**
