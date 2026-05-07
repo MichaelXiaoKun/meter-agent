@@ -407,6 +407,8 @@ var path stays authoritative — both styles produce identical apps.
 
 ### Phase 4 — Tests and observability
 
+**Status:** Done (2026-05-07).
+
 **Goal:** Lock in the split contract.
 
 **New tests:**

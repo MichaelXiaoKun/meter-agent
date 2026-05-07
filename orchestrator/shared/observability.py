@@ -80,6 +80,11 @@ def turn_context(turn_id: Optional[str] = None) -> Iterator[str]:
 # ---------------------------------------------------------------------------
 
 
+_HOST_MODE = (
+    (os.environ.get("BLUEBOT_HOST_MODE") or "combined").strip().lower()
+    or "combined"
+)
+
 _write_lock = threading.Lock()
 _file_handle: Any = None
 _file_path: Optional[str] = None
@@ -150,12 +155,17 @@ def _json_default(obj: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-def emit_event(event_name: str, **fields: Any) -> None:
+def emit_event(
+    event_name: str,
+    payload: dict[str, Any] | None = None,
+    **fields: Any,
+) -> None:
     """Write one JSON-line event. Best-effort — never raises to the caller.
 
     Reserved fields injected automatically:
         ``ts``       — Unix epoch seconds, float
         ``event``    — the event name argument
+        ``host_mode`` — BLUEBOT_HOST_MODE read once at module import
         ``turn_id``  — active turn id from :func:`turn_context`, if any; or pass
                        ``turn_id="..."`` explicitly (required from thread-pool workers)
     Extra keys the caller passes are merged in. If a caller's key collides
@@ -165,13 +175,17 @@ def emit_event(event_name: str, **fields: Any) -> None:
     if _file_handle is None and not _stderr_enabled:
         return
     # Strip mistaken kwargs that would collide with the JSON envelope.
+    if payload is not None:
+        fields = {**payload, **fields}
     fields = dict(fields)
     fields.pop("event", None)
+    fields.pop("host_mode", None)
     explicit_tid = fields.pop("turn_id", None)
     record: dict = {
         **_redact_fields(fields),
         "ts": round(time.time(), 6),
         "event": event_name,
+        "host_mode": _HOST_MODE,
     }
     tid = explicit_tid if explicit_tid is not None else current_turn_id()
     if tid is not None:
@@ -185,6 +199,7 @@ def emit_event(event_name: str, **fields: Any) -> None:
             {
                 "ts": record["ts"],
                 "event": event_name,
+                "host_mode": _HOST_MODE,
                 "turn_id": tid,
                 "error": "unserialisable_fields",
             },
