@@ -453,7 +453,15 @@ export default function App() {
       }
       if (!convId) return;
       await sendMessage(text, convId, options);
-      await refresh();
+      // Keep the duplicate-send guard scoped to the actual stream. Config
+      // confirmation/cancel buttons may become enabled before the sidebar
+      // refresh completes.
+      void refresh().catch((err) => {
+        toast.error(
+          "Can’t refresh conversations",
+          err instanceof Error ? err.message : "The conversation list could not be refreshed.",
+        );
+      });
     } catch (err) {
       toast.error(
         "Can’t reach FlowIQ",
