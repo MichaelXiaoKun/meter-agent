@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Conversation } from "../types";
+import type { Conversation } from "../core/types";
 
 const STORAGE_KEY = "bb_conv_sidebar_v1";
 

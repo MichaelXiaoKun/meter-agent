@@ -1,29 +1,28 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import ts from "typescript";
+import { build } from "esbuild";
 
 const outDir = join(tmpdir(), "bluebot-meter-workspace-tests");
 await mkdir(outDir, { recursive: true });
 
 async function importTsModule(srcUrl, name) {
-  const source = await readFile(srcUrl, "utf8");
-  const transpiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.ES2022,
-      target: ts.ScriptTarget.ES2022,
-      verbatimModuleSyntax: true,
-    },
-  });
   const outPath = join(outDir, `${name}-${Date.now()}.mjs`);
-  await writeFile(outPath, transpiled.outputText, "utf8");
-  return import(`file://${outPath}`);
+  await build({
+    entryPoints: [srcUrl.pathname],
+    outfile: outPath,
+    bundle: true,
+    format: "esm",
+    platform: "node",
+    logLevel: "silent",
+  });
+  return import(`file://${outPath}?${Date.now()}`);
 }
 
-const mod = await importTsModule(new URL("../src/meterWorkspace.ts", import.meta.url), "meterWorkspace");
-const turnActivity = await importTsModule(new URL("../src/turnActivity.ts", import.meta.url), "turnActivity");
-const configCopy = await importTsModule(new URL("../src/configWorkflowCopy.ts", import.meta.url), "configWorkflowCopy");
+const mod = await importTsModule(new URL("../src/core/meterWorkspace.ts", import.meta.url), "meterWorkspace");
+const turnActivity = await importTsModule(new URL("../src/core/turnActivity.ts", import.meta.url), "turnActivity");
+const configCopy = await importTsModule(new URL("../src/core/configWorkflowCopy.ts", import.meta.url), "configWorkflowCopy");
 
 const baseMessages = [
   {

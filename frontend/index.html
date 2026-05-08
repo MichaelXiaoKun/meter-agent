@@ -5,7 +5,7 @@
   <script>
     (function () {
       try {
-        var k = "bb_theme"; /* keep in sync with src/theme/storage.ts */
+        var k = "bb_theme"; /* keep in sync with src/features/theme/storage.ts */
         var v = localStorage.getItem(k);
         if (v === "dark") document.documentElement.classList.add("dark");
         else if (v === "light") document.documentElement.classList.remove("dark");

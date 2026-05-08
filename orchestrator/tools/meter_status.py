@@ -16,7 +16,7 @@ import subprocess
 import sys
 from typing import Any
 
-from subprocess_env import tool_subprocess_env
+from shared.subprocess_env import tool_subprocess_env
 
 
 _STATUS_JSON_MARKER = "__BLUEBOT_STATUS_JSON__"

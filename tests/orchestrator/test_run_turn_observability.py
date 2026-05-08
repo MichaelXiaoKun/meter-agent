@@ -14,8 +14,8 @@ import sys
 from pathlib import Path
 import pytest
 
-_ORCH_PATH = Path(__file__).resolve().parents[2] / "orchestrator" / "agent.py"
-_ORCH_DIR = str(_ORCH_PATH.parent)
+_ORCH_PATH = Path(__file__).resolve().parents[2] / "orchestrator" / "admin_chat" / "turn_loop.py"
+_ORCH_DIR = str(_ORCH_PATH.parent.parent)
 
 
 def _load_agent():
@@ -49,7 +49,7 @@ def event_log_path(tmp_path, monkeypatch: pytest.MonkeyPatch):
     path = tmp_path / "orchestr.jsonl"
     monkeypatch.setenv("BLUEBOT_EVENT_LOG_PATH", str(path))
     monkeypatch.delenv("BLUEBOT_EVENT_LOG_STDERR", raising=False)
-    import observability as obs  # pyright: ignore[reportMissingImports]
+    from shared import observability as obs  # pyright: ignore[reportMissingImports]
 
     obs._reset_for_tests()
     yield path

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Query JSONL event files produced by ``orchestrator/observability.py``.
+Query JSONL event files produced by ``orchestrator/shared/observability.py``.
 
 No third-party dependencies — stdin, file, or ``-`` for pipe.
 

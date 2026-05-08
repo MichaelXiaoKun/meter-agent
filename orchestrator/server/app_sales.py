@@ -1,0 +1,3 @@
+from orchestrator.server.app import create_app
+
+app = create_app(mode="sales")

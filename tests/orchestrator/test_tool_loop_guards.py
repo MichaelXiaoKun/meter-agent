@@ -5,8 +5,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-_ORCH_AGENT_PATH = Path(__file__).resolve().parents[2] / "orchestrator" / "agent.py"
-_ORCH_DIR = str(_ORCH_AGENT_PATH.parent)
+_ORCH_AGENT_PATH = Path(__file__).resolve().parents[2] / "orchestrator" / "admin_chat" / "turn_loop.py"
+_ORCH_DIR = str(_ORCH_AGENT_PATH.parent.parent)
 
 
 def _load_orchestrator_agent():
@@ -47,6 +47,7 @@ def test_write_tools_never_get_a_dedupe_key():
     )
     assert orch._per_turn_tool_dedupe_key("configure_meter_pipe", {}) is None
     assert orch._per_turn_tool_dedupe_key("sweep_transducer_angles", {}) is None
+    assert orch._per_turn_tool_dedupe_key("set_zero_point", {}) is None
 
 
 def test_read_tools_are_dedup_keyed_and_canonical():

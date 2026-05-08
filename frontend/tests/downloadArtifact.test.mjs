@@ -6,7 +6,7 @@ import ts from "typescript";
 
 const outDir = join(tmpdir(), "bluebot-download-artifact-tests");
 await mkdir(outDir, { recursive: true });
-const apiUrl = new URL("../src/api.ts", import.meta.url);
+const apiUrl = new URL("../src/api/client.ts", import.meta.url);
 
 async function importTsModule(srcUrl, name) {
   const source = await readFile(srcUrl, "utf8");
@@ -18,7 +18,15 @@ async function importTsModule(srcUrl, name) {
     },
   });
   const outPath = join(outDir, `${name}-${Date.now()}-${Math.random()}.mjs`);
-  await writeFile(outPath, transpiled.outputText, "utf8");
+  await writeFile(
+    outPath,
+    `import.meta.env = {
+  VITE_ADMIN_API_BASE: undefined,
+  VITE_SALES_API_BASE: undefined,
+};
+${transpiled.outputText}`,
+    "utf8",
+  );
   return import(`file://${outPath}`);
 }
 

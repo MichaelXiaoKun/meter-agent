@@ -4,7 +4,8 @@ This folder holds focused docs for the meter-agent stack. The root [`../README.m
 
 | Topic | File |
 |-------|------|
-| Architecture, repo layout, ownership boundaries | [architecture.md](architecture.md) |
+| Developer onboarding and reading path | [developer-guide.md](developer-guide.md) |
+| Architecture, repo layout, ownership boundaries, turn state, scaling direction | [architecture.md](architecture.md) |
 | Public sales assistant | [sales-agent.md](sales-agent.md) |
 | Authenticated admin assistant and specialist agents | [admin-agent.md](admin-agent.md) |
 | Local setup, environment variables, Docker, Railway | [deployment.md](deployment.md) |

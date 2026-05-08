@@ -13,6 +13,7 @@ It should educate clearly, ask discovery questions before recommending, and end 
 - [Knowledge base and product links](#knowledge-base-and-product-links)
 - [API routes](#api-routes)
 - [Frontend behavior](#frontend-behavior)
+- [Admin parity and response style](#admin-parity-and-response-style)
 - [Persistence and sharing](#persistence-and-sharing)
 - [Test coverage](#test-coverage)
 
@@ -71,11 +72,13 @@ The assistant should ask for discovery before recommending:
 
 It should answer educational questions first, then steer back to qualification. When confidence is low, it should name what is missing rather than guessing.
 
+When a customer asks for human support, a person, a callback, sales review, quote help, or help beyond public sales chat, the prompt instructs the assistant to hand off to Denis Zaff at 4085858829 or denis@bluebot.com while still answering general public-sales questions it can safely handle.
+
 <a id="tools-and-guardrails"></a>
 
 ## Tools and guardrails
 
-Sales-only tools live in [`../orchestrator/sales_tools.py`](../orchestrator/sales_tools.py):
+Sales-only tools live in [`../orchestrator/sales_chat/tools.py`](../orchestrator/sales_chat/tools.py):
 
 | Tool | Purpose |
 |------|---------|
@@ -86,18 +89,56 @@ Sales-only tools live in [`../orchestrator/sales_tools.py`](../orchestrator/sale
 | `capture_lead_summary` | Persist a structured lead object. |
 | `recommend_product_line` | Recommend product-line candidates from the curated catalog. |
 
-Sales mode must not expose live Bluebot device/account tools, flow-analysis subprocesses, pipe configuration writes, or MQTT actions. The allowlist is enforced in [`../orchestrator/sales_agent.py`](../orchestrator/sales_agent.py) and covered by tests.
+Sales mode must not expose live Bluebot device/account tools, flow-analysis subprocesses, pipe configuration writes, or MQTT actions. The allowlist is enforced in [`../orchestrator/sales_chat/agent.py`](../orchestrator/sales_chat/agent.py) and covered by tests.
+
+Final sales answers are checked before they are shown to the customer. The
+assistant first generates a draft privately, then [`../orchestrator/sales_chat/verifier.py`](../orchestrator/sales_chat/verifier.py)
+classifies whether the response needs evidence-backed validation. General
+greetings, clarification questions, lead-summary acknowledgements, and safe
+off-topic redirects use the default rough deterministic check. Product, pipe-fit,
+compatibility, installation, support, pricing/package, connectivity, capability,
+recommendation, or evidence-tool claims escalate to the stronger verifier.
+Unsupported claims are rewritten and re-checked up to
+`SALES_RESPONSE_VERIFICATION_ATTEMPTS` times.
+
+By default this follows a "fast drafter, stronger validator" pattern:
+
+- `claude-haiku-4-5` drafts are validated by `claude-sonnet-4-6`.
+- `gpt-4o-mini` drafts are validated by `gpt-4o`.
+- Gemini Flash drafts are validated by `gemini-2.5-pro`.
+
+The verifier model can be set with `SALES_RESPONSE_VERIFIER_MODEL`, but a weaker
+override is ignored unless `SALES_RESPONSE_ALLOW_WEAKER_VERIFIER=true` is set for
+a controlled local experiment. Verification can be disabled only for controlled
+development with `SALES_RESPONSE_VERIFICATION=off`.
+`SALES_RESPONSE_GENERAL_VALIDATION` controls general replies: `rough` is the
+default, `strong` preserves always-strong verification, and `skip` suppresses
+general validation while still escalating detected factual claims. Customers may
+see safe validation status events such as "checking against Bluebot public
+website knowledge", but they should not see unverified drafts or internal
+reasoning.
 
 <a id="knowledge-base-and-product-links"></a>
 
 ## Knowledge base and product links
 
-Sales content is curated locally:
+Sales content is loaded from the runtime database when synced records exist, with
+the checked-in JSON files as bootstrap/fallback:
 
 - [`../orchestrator/sales_kb/articles.json`](../orchestrator/sales_kb/articles.json) contains reviewed educational and product-fit content.
 - [`../orchestrator/sales_kb/product_catalog.json`](../orchestrator/sales_kb/product_catalog.json) contains product-line information and reviewed links.
 
-V1 intentionally avoids live web browsing. If bluebot.com content changes, update the curated JSON files after review. This keeps public answers deterministic and prevents unreviewed website text from flowing straight into sales recommendations.
+The sales chat itself intentionally avoids live web browsing. To keep the runtime
+KB fresh, run the controlled website sync:
+
+```bash
+python -m orchestrator.sales_content_sync --run-once
+```
+
+Without `--run-once`, the same entrypoint runs a daily loop by default. It fetches
+only `www.bluebot.com`, `support.bluebot.com`, and `help.bluebot.com`, rejects
+off-domain redirects, redacts pricing/package text from answerable content, and
+keeps the previous known-good DB record when a page fails validation.
 
 Useful content categories:
 
@@ -131,13 +172,13 @@ Public sales routes live under `/api/public/sales/...` in [`../orchestrator/api.
 | `POST /api/public/sales/conversations/{id}/share` | Create a read-only share snapshot. |
 | `DELETE /api/public/sales/shares/{token}` | Revoke a sales share link with its revoke key. |
 
-Frontend API helpers live in [`../frontend/src/api.ts`](../frontend/src/api.ts).
+Frontend API helpers live in [`../frontend/src/api/client.ts`](../frontend/src/api/client.ts).
 
 <a id="frontend-behavior"></a>
 
 ## Frontend behavior
 
-The sales UI lives in [`../frontend/src/components/SalesChatPage.tsx`](../frontend/src/components/SalesChatPage.tsx) and should visually match the admin assistant:
+The sales UI lives in [`../frontend/src/features/sales/SalesChatPage.tsx`](../frontend/src/features/sales/SalesChatPage.tsx) and should visually match the admin assistant:
 
 - Same sidebar treatment.
 - Conversation history.
@@ -150,10 +191,25 @@ The sales UI lives in [`../frontend/src/components/SalesChatPage.tsx`](../fronte
 
 Shared UI pieces:
 
-- [`../frontend/src/components/ChatView.tsx`](../frontend/src/components/ChatView.tsx)
-- [`../frontend/src/components/Sidebar.tsx`](../frontend/src/components/Sidebar.tsx)
-- [`../frontend/src/components/SharePopover.tsx`](../frontend/src/components/SharePopover.tsx)
-- [`../frontend/src/turnActivity.ts`](../frontend/src/turnActivity.ts)
+- [`../frontend/src/features/chat/components/ChatView.tsx`](../frontend/src/features/chat/components/ChatView.tsx)
+- [`../frontend/src/features/conversations/components/Sidebar.tsx`](../frontend/src/features/conversations/components/Sidebar.tsx)
+- [`../frontend/src/features/share/components/SharePopover.tsx`](../frontend/src/features/share/components/SharePopover.tsx)
+- [`../frontend/src/core/turnActivity.ts`](../frontend/src/core/turnActivity.ts)
+
+<a id="admin-parity-and-response-style"></a>
+
+## Admin parity and response style
+
+Sales and Admin intentionally share the same chat surface primitives. Sales should feel like the same product experience, with a safer public tool boundary:
+
+- Live stream events feed the shared chat reducer and turn-activity timeline.
+- Completed Sales turns persist a slim `turn_activity` block on the final assistant message, matching Admin history replay behavior.
+- The UI owns process status such as thinking, validation, tool work, generation, completion, and errors.
+- Assistant prose should stay customer-facing: direct answer first, concise explanation, short bullets only when they help scanning.
+- Sales prose should not mention internal tool names, event names, prompt files, Python modules, raw API details, filesystem paths, or implementation mechanics.
+- Safe small talk may frame the chat around "Bluebot product fit," but should not make unverified product, compatibility, installation, connectivity, support, or capability claims.
+
+This split matters for scaling the experience: backend events are the durable process trace, while the assistant message is the buyer-facing answer.
 
 <a id="persistence-and-sharing"></a>
 
@@ -166,6 +222,7 @@ Important behavior:
 - Closing and reopening the browser should restore known sales conversations when the server database still has them.
 - Switching conversations should not lose the in-flight status of another sales conversation.
 - Refreshing during generation should recover stream status through the public status endpoint.
+- Completed conversations should replay the status timeline from persisted `turn_activity` blocks.
 - Share links are read-only snapshots; revocation requires the generated revoke key.
 
 <a id="test-coverage"></a>
@@ -184,4 +241,6 @@ Covered areas include:
 - Conversation CRUD.
 - Share snapshot creation/revocation.
 - Cancel and status recovery endpoints.
+- Persisted turn-activity replay for Sales history.
+- Stripping persisted `turn_activity` before Sales messages are sent back to the model.
 - SQLite volume-directory handling for Railway.

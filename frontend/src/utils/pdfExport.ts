@@ -1,7 +1,7 @@
 import { jsPDF } from "jspdf";
-import { extractPlotAttachments } from "../components/plotAttachments";
-import { plotCaptionFromMeta } from "../plotLabels";
-import type { ContentBlock, Message, PlotAttachment } from "../types";
+import { extractPlotAttachments } from "../features/chat/components/plotAttachments";
+import { plotCaptionFromMeta } from "../core/plotLabels";
+import type { ContentBlock, Message, PlotAttachment } from "../core/types";
 import { stripTurnActivityBlocks } from "./messageStrip";
 
 function sanitizeFileName(title: string): string {

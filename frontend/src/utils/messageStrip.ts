@@ -1,4 +1,4 @@
-import type { Message, ContentBlock } from "../types";
+import type { Message, ContentBlock } from "../core/types";
 
 /** Remove ``turn_activity`` blocks for a read-only / public view (hides tool timeline). */
 export function stripTurnActivityBlocks(messages: Message[]): Message[] {
