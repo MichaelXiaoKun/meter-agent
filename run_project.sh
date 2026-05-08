@@ -101,12 +101,20 @@ if [[ "$USE_SQLITE" == true ]]; then
 fi
 
 start_api() {
-  "$ROOT_DIR/run_backend.sh" "${BACKEND_ARGS[@]}" &
+  if ((${#BACKEND_ARGS[@]})); then
+    "$ROOT_DIR/run_backend.sh" "${BACKEND_ARGS[@]}" &
+  else
+    "$ROOT_DIR/run_backend.sh" &
+  fi
   PIDS+=("$!")
 }
 
 start_frontend() {
-  "$ROOT_DIR/run_frontend.sh" "${FRONTEND_ARGS[@]}" &
+  if ((${#FRONTEND_ARGS[@]})); then
+    "$ROOT_DIR/run_frontend.sh" "${FRONTEND_ARGS[@]}" &
+  else
+    "$ROOT_DIR/run_frontend.sh" &
+  fi
   PIDS+=("$!")
 }
 
