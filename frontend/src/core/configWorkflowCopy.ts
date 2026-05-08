@@ -1,12 +1,12 @@
-import type { SSEEvent } from "./types";
 import {
   angleLabel,
   configAngle,
   configSerial,
   configSweepAngles,
+  type ConfigWorkflow,
 } from "./configCompat";
 
-export type ConfigWorkflow = NonNullable<SSEEvent["config_workflow"]>;
+export type { ConfigWorkflow } from "./configCompat";
 
 export function confirmationUserMessage(workflow: ConfigWorkflow): string {
   const serial = configSerial(workflow);
