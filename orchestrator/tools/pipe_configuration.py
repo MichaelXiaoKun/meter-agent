@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import sys
 
-from subprocess_env import tool_subprocess_env
+from shared.subprocess_env import tool_subprocess_env
 from tools.meter_profile import get_meter_profile
 from tools.pipe_subprocess import run_pipe_configuration_agent, subprocess_error_message
 from tools.transducer_angle_preflight import preflight_validate_transducer_angle

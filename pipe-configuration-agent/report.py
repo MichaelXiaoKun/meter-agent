@@ -31,3 +31,17 @@ def format_angle_only_report(body: str, serial_number: str) -> str:
     )
 
     return header + body
+
+
+def format_zero_point_report(body: str, serial_number: str) -> str:
+    generated_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    header = (
+        "=" * 80 + "\n"
+        "SET ZERO POINT\n"
+        f"Serial:     {serial_number}\n"
+        f"Generated:  {generated_str}\n"
+        + "=" * 80 + "\n\n"
+    )
+
+    return header + body

@@ -17,11 +17,19 @@ async function importTsModule(srcUrl, name) {
     },
   });
   const outPath = join(outDir, `${name}-${Date.now()}.mjs`);
-  await writeFile(outPath, transpiled.outputText, "utf8");
+  await writeFile(
+    outPath,
+    `import.meta.env = {
+  VITE_ADMIN_API_BASE: undefined,
+  VITE_SALES_API_BASE: undefined,
+};
+${transpiled.outputText}`,
+    "utf8",
+  );
   return import(`file://${outPath}`);
 }
 
-const api = await importTsModule(new URL("../src/api.ts", import.meta.url), "api");
+const api = await importTsModule(new URL("../src/api/client.ts", import.meta.url), "api");
 
 const originalFetch = globalThis.fetch;
 const urls = [];

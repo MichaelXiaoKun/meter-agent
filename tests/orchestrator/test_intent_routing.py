@@ -2,7 +2,7 @@
 Regression tests for per-turn intent routing: tool subsets and rule-based labels.
 
 ``pythonpath`` includes ``data-processing-agent``, whose ``agent.py`` shadows the
-orchestrator's ``agent`` module. Load ``orchestrator/agent.py`` by file path.
+orchestrator's ``agent`` module. Load ``orchestrator/admin_chat/turn_loop.py`` by file path.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-_ORCH_AGENT_PATH = Path(__file__).resolve().parents[2] / "orchestrator" / "agent.py"
-_ORCH_DIR = str(_ORCH_AGENT_PATH.parent)
+_ORCH_AGENT_PATH = Path(__file__).resolve().parents[2] / "orchestrator" / "admin_chat" / "turn_loop.py"
+_ORCH_DIR = str(_ORCH_AGENT_PATH.parent.parent)
 
 
 def _load_orchestrator_agent():
@@ -53,6 +53,7 @@ class TestToolsForIntentLabel:
         assert "configure_meter_pipe" in cfg
         assert "set_transducer_angle_only" in cfg
         assert "sweep_transducer_angles" in cfg
+        assert "set_zero_point" in cfg
         assert "analyze_flow_data" not in cfg
 
     def test_status_and_general_are_read_only_base(self) -> None:
@@ -66,6 +67,9 @@ class TestToolsForIntentLabel:
                 "compare_meters",
                 "rank_fleet_by_health",
                 "triage_fleet_for_account",
+                "list_tickets",
+                "create_ticket",
+                "update_ticket",
             }
 
 
@@ -82,6 +86,8 @@ class TestToolsForIntentLabel:
         ("Find flow events above 10 gpm", "flow"),
         ("What dominant frequency is in this meter's flow?", "flow"),
         ("Set transducer angle to 45 degrees", "config"),
+        ("Set zero point for BB8100015261", "config"),
+        ("给 BB8100015261 做零点设置", "config"),
         ("PVC pipe schedule 40 install", "config"),
         ("Hello, what can you do?", "general"),
         ("", "general"),
@@ -99,8 +105,9 @@ def test_resolve_routed_tools_off_full_catalog(monkeypatch: pytest.MonkeyPatch) 
     )
     assert label == "full"
     assert src == "off"
-    assert len(tools) == len(orch.TOOLS)
-    assert _names(tools) == _names(orch.TOOLS)
+    full_tools = orch.TOOLS() if callable(orch.TOOLS) else orch.TOOLS
+    assert len(tools) == len(full_tools)
+    assert _names(tools) == _names(full_tools)
 
 
 def test_resolve_routed_tools_rules_flow_persists_across_serial_followup(

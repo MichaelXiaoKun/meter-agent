@@ -1,5 +1,5 @@
 """
-Tests for ``orchestrator.observability`` — JSONL event sink + turn context +
+Tests for ``shared.observability`` — JSONL event sink + turn context +
 ``timed`` helper.
 
 We drive the file sink (``BLUEBOT_EVENT_LOG_PATH``) and read the lines back
@@ -10,13 +10,14 @@ test starts from a clean slate.
 from __future__ import annotations
 
 import json
+import importlib
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-import observability as obs
+from shared import observability as obs
 
 
 @pytest.fixture
@@ -87,6 +88,32 @@ class TestEmitEvent:
         obs.emit_event("silent")  # must not raise
         # No file to read, no stderr — all good.
         assert not (tmp_path / "events.jsonl").exists()
+
+    def test_event_has_host_mode_from_import_env(self, tmp_path, monkeypatch):
+        path = tmp_path / "events.jsonl"
+        original_host_mode = os.environ.get("BLUEBOT_HOST_MODE")
+        monkeypatch.setenv("BLUEBOT_HOST_MODE", "admin")
+        monkeypatch.setenv("BLUEBOT_EVENT_LOG_PATH", str(path))
+        monkeypatch.delenv("BLUEBOT_EVENT_LOG_STDERR", raising=False)
+        reloaded = importlib.reload(obs)
+        reloaded._reset_for_tests()
+
+        try:
+            reloaded.emit_event("hello", {"foo": 1})
+            rows = [
+                json.loads(line)
+                for line in path.read_text(encoding="utf-8").splitlines()
+            ]
+            assert rows[0]["event"] == "hello"
+            assert rows[0]["foo"] == 1
+            assert rows[0]["host_mode"] == "admin"
+        finally:
+            reloaded._reset_for_tests()
+            if original_host_mode is None:
+                monkeypatch.delenv("BLUEBOT_HOST_MODE", raising=False)
+            else:
+                monkeypatch.setenv("BLUEBOT_HOST_MODE", original_host_mode)
+            importlib.reload(obs)
 
 
 # ---------------------------------------------------------------------------

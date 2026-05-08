@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Conversation } from "../types";
-import * as api from "../api";
+import type { Conversation } from "../core/types";
+import * as api from "../api/client";
 
 function isAbortOrUnload(err: unknown): boolean {
   if (err instanceof DOMException && err.name === "AbortError") return true;
@@ -8,9 +8,17 @@ function isAbortOrUnload(err: unknown): boolean {
   return false;
 }
 
+function loadErrorMessage(err: unknown): string {
+  if (err instanceof Error && err.message.trim()) {
+    return err.message;
+  }
+  return "Can’t reach the API server. Reconnecting...";
+}
+
 export function useConversations(userId: string) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   /**
    * True after the first list load for the current user finishes (success or
    * error). Used to sync ``activeConvId`` without clearing an idle selection
@@ -24,10 +32,14 @@ export function useConversations(userId: string) {
     try {
       const list = await api.listConversations(userId);
       setConversations(list);
+      setError(null);
+      setListLoaded(true);
       return list;
     } catch (err) {
-      if (!isAbortOrUnload(err))
+      if (!isAbortOrUnload(err)) {
         console.error("Failed to load conversations:", err);
+        setError(loadErrorMessage(err));
+      }
     } finally {
       setLoading(false);
     }
@@ -37,21 +49,43 @@ export function useConversations(userId: string) {
   useEffect(() => {
     if (!userId) {
       setListLoaded(false);
+      setError(null);
       return;
     }
     setListLoaded(false);
-    const ac = new AbortController();
-    api.listConversations(userId, ac.signal)
-      .then(setConversations)
-      .catch((err) => {
-        if (!isAbortOrUnload(err))
+    setError(null);
+    let disposed = false;
+    let retryId: number | null = null;
+    let ac: AbortController | null = null;
+
+    const load = () => {
+      ac?.abort();
+      ac = new AbortController();
+      setLoading(true);
+      api.listConversations(userId, ac.signal)
+        .then((list) => {
+          if (disposed) return;
+          setConversations(list);
+          setError(null);
+          setListLoaded(true);
+        })
+        .catch((err) => {
+          if (disposed || isAbortOrUnload(err)) return;
           console.error("Failed to load conversations:", err);
-      })
-      .finally(() => {
-        if (!ac.signal.aborted) setListLoaded(true);
-      });
+          setError(loadErrorMessage(err));
+          setListLoaded(false);
+          retryId = window.setTimeout(load, 1500);
+        })
+        .finally(() => {
+          if (!disposed) setLoading(false);
+        });
+    };
+
+    load();
     return () => {
-      ac.abort();
+      disposed = true;
+      if (retryId != null) window.clearTimeout(retryId);
+      ac?.abort();
     };
   }, [userId]);
 
@@ -94,6 +128,7 @@ export function useConversations(userId: string) {
     conversations,
     loading,
     listLoaded,
+    error,
     refresh,
     create,
     remove,

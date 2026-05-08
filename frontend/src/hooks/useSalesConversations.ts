@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Conversation } from "../types";
-import * as api from "../api";
+import type { Conversation } from "../core/types";
+import * as api from "../api/client";
 
 const SALES_CONV_IDS_KEY = "bb_sales_conv_ids";
 const SALES_ACTIVE_CONV_KEY = "bb_sales_active_conv";

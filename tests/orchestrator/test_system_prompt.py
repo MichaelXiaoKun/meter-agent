@@ -156,8 +156,22 @@ def test_prompt_still_mentions_every_tool(system_prompt):
         "configure_meter_pipe",
         "set_transducer_angle_only",
         "sweep_transducer_angles",
+        "set_zero_point",
+        "list_tickets",
+        "create_ticket",
+        "update_ticket",
     ]:
         assert tool in system_prompt, f"tool {tool!r} dropped from the orchestrator prompt"
+
+
+def test_ticket_accountability_rule(system_prompt):
+    assert "Ticket accountability" in system_prompt
+    rule = _extract_rule(system_prompt, 21)
+    assert "success_criteria" in rule
+    assert "bounded" in rule.lower()
+    assert "tool result" in rule
+    assert "verified diagnostic fact" in rule
+    assert "Public sales mode must never create admin tickets" in rule
 
 
 # ---------------------------------------------------------------------------

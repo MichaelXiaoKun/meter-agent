@@ -7,6 +7,7 @@ the wrong *agent* unless we put *orchestrator* first for this module.
 
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
 
@@ -30,7 +31,6 @@ def client_and_store(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "")
     store_mod._bootstrapped.clear()
 
-    import importlib
     import sys as _s
 
     for name in ("api", "store", "agent"):
