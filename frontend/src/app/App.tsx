@@ -108,13 +108,34 @@ export default function App() {
     writeStoredModel(modelId);
   }, []);
 
-  // TPM guide that tracks the UI's model selection rather than the server default.
-  const effectiveTpmGuide = useMemo(() => {
+  const selectedModelOption = useMemo(() => {
     const id = selectedModel ?? defaultModel;
-    if (!id || !availableModels.length) return tpmInputGuideTokens;
-    const m = availableModels.find((m) => m.id === id);
-    return m && m.tpm_input_guide_tokens > 0 ? m.tpm_input_guide_tokens : tpmInputGuideTokens;
-  }, [selectedModel, defaultModel, availableModels, tpmInputGuideTokens]);
+    if (!id || !availableModels.length) return null;
+    return availableModels.find((m) => m.id === id) ?? null;
+  }, [selectedModel, defaultModel, availableModels]);
+
+  // Budget widgets track the selected model rather than the server default.
+  const effectiveTpmGuide =
+    selectedModelOption && selectedModelOption.tpm_input_guide_tokens > 0
+      ? selectedModelOption.tpm_input_guide_tokens
+      : tpmInputGuideTokens;
+  const effectiveTpmServerSliding60s =
+    selectedModelOption &&
+      typeof selectedModelOption.tpm_sliding_input_tokens_60s === "number"
+      ? Math.max(0, selectedModelOption.tpm_sliding_input_tokens_60s)
+      : tpmServerSliding60s;
+  const effectiveModelContextWindowTokens =
+    selectedModelOption &&
+      typeof selectedModelOption.context_window === "number" &&
+      selectedModelOption.context_window > 0
+      ? selectedModelOption.context_window
+      : modelContextWindowTokens;
+  const effectiveMaxInputTokensTarget =
+    selectedModelOption &&
+      typeof selectedModelOption.max_input_tokens_target === "number" &&
+      selectedModelOption.max_input_tokens_target > 0
+      ? selectedModelOption.max_input_tokens_target
+      : maxInputTokensTarget;
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     try {
       const v = localStorage.getItem("bb_sidebar_open");
@@ -621,9 +642,9 @@ export default function App() {
           tokenUsage={tokenUsage}
           historyLoading={historyLoading}
           tpmInputGuideTokens={effectiveTpmGuide}
-          tpmServerSliding60s={tpmServerSliding60s}
-          modelContextWindowTokens={modelContextWindowTokens}
-          maxInputTokensTarget={maxInputTokensTarget}
+          tpmServerSliding60s={effectiveTpmServerSliding60s}
+          modelContextWindowTokens={effectiveModelContextWindowTokens}
+          maxInputTokensTarget={effectiveMaxInputTokensTarget}
           turnActivity={turnActivity}
           turnActivityActive={turnActivityActive}
           serverProcessing={serverProcessing}

@@ -313,6 +313,10 @@ async def chat_init(
                 )
             )
             slot_acquired = True
+            # Surface progress before run_turn performs provider setup, rate-limit
+            # discovery, or other network work that can otherwise leave the
+            # client stuck on the optimistic "Sending" state with an empty stream.
+            _emit_event_with_capture({"type": "thinking"})
             try:
                 _, history_replaced = app_runtime.run_turn(
                     api_messages,

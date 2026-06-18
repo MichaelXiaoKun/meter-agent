@@ -187,6 +187,7 @@ export function applyStreamEventToChatState(
     state.thinkingSegmentStartMsRef.current = nowMs();
   }
   if (
+    event.type === "meter_context" ||
     event.type === "tool_result" ||
     event.type === "config_confirmation_required" ||
     event.type === "config_confirmation_cancelled" ||
@@ -205,6 +206,7 @@ export function applyStreamEventToChatState(
     event.type === "text_stream" ||
     event.type === "tool_call" ||
     event.type === "tool_progress" ||
+    event.type === "meter_context" ||
     event.type === "validation_start" ||
     event.type === "validation_result" ||
     event.type === "rate_limit_wait" ||

@@ -7,8 +7,16 @@ export interface MeterWorkspaceState {
   timezone?: string;
   online?: boolean | null;
   lastMessageAt?: string | null;
+  communicationStatus?: string | null;
   signal?: Record<string, unknown> | null;
   pipeConfig?: Record<string, unknown> | null;
+  healthScore?: number | null;
+  healthVerdict?: string | null;
+  recentFlow?: Record<string, unknown> | null;
+  diagnosticSignals: DiagnosticSignal[];
+  confidence?: Record<string, string>;
+  knownMissing: string[];
+  statusSummaryTimedOut?: boolean;
   flow?: {
     range?: string | null;
     adequacyExplanation?: string;
@@ -26,7 +34,17 @@ export interface MeterWorkspaceState {
   updatedAt?: number;
 }
 
-const EMPTY: MeterWorkspaceState = { nextActions: [] };
+export interface DiagnosticSignal {
+  name: string;
+  state: string;
+  confidence?: string;
+}
+
+const EMPTY: MeterWorkspaceState = {
+  diagnosticSignals: [],
+  knownMissing: [],
+  nextActions: [],
+};
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
@@ -69,6 +87,26 @@ function cleanActions(values: unknown): string[] {
     .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
     .map((v) => v.trim())
     .slice(0, 4);
+}
+
+function cleanStringList(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  return values
+    .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+    .map((v) => v.trim())
+    .slice(0, 8);
+}
+
+function cleanDiagnosticSignals(values: unknown): DiagnosticSignal[] {
+  if (!Array.isArray(values)) return [];
+  return values
+    .filter((item): item is Record<string, unknown> => item != null && typeof item === "object")
+    .map((item) => ({
+      name: str(item.name) ?? "signal",
+      state: str(item.state) ?? "unknown",
+      confidence: str(item.confidence),
+    }))
+    .slice(0, 6);
 }
 
 function resolvePlotAttachment(
@@ -130,6 +168,7 @@ export function reduceWorkspaceEvent(
 
   const ctx = event.meter_context;
   if (ctx) {
+    const recommended = cleanActions(ctx.recommended_next_tools);
     next = {
       ...next,
       serialNumber: str(ctx.serial_number) ?? next.serialNumber,
@@ -138,8 +177,21 @@ export function reduceWorkspaceEvent(
       timezone: str(ctx.timezone) ?? next.timezone,
       online: ctx.online ?? next.online,
       lastMessageAt: str(ctx.last_message_at) ?? next.lastMessageAt,
+      communicationStatus: str(ctx.communication_status) ?? next.communicationStatus,
       signal: ctx.signal ?? next.signal,
       pipeConfig: ctx.pipe_config ?? next.pipeConfig,
+      healthScore: ctx.health_score ?? next.healthScore,
+      healthVerdict: str(ctx.health_verdict) ?? next.healthVerdict,
+      recentFlow: ctx.recent_flow ?? next.recentFlow,
+      diagnosticSignals: cleanDiagnosticSignals(ctx.diagnostic_signals).length
+        ? cleanDiagnosticSignals(ctx.diagnostic_signals)
+        : next.diagnosticSignals,
+      confidence: ctx.confidence ?? next.confidence,
+      knownMissing: cleanStringList(ctx.known_missing).length
+        ? cleanStringList(ctx.known_missing)
+        : next.knownMissing,
+      nextActions: recommended.length ? recommended : next.nextActions,
+      statusSummaryTimedOut: ctx.status_summary_timed_out ?? next.statusSummaryTimedOut,
       updatedAt: now,
     };
   }
@@ -150,6 +202,7 @@ export function reduceWorkspaceEvent(
       ...next,
       online: summary.online ?? next.online,
       lastMessageAt: str(summary.last_message_at) ?? next.lastMessageAt,
+      communicationStatus: str(summary.communication_status) ?? next.communicationStatus,
       signal: summary.signal ?? next.signal,
       pipeConfig: summary.pipe_config ?? next.pipeConfig,
       nextActions: cleanActions(summary.next_actions),

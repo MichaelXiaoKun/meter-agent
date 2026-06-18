@@ -17,8 +17,6 @@ import os
 import httpx
 
 from .base import LLMProvider
-from .anthropic_provider import AnthropicProvider
-from .openai_provider import OpenAICompatibleProvider
 from .registry import get_provider_name
 
 _GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -41,12 +39,16 @@ def get_provider(
             raise RuntimeError(
                 "Missing Anthropic API key. Set ANTHROPIC_API_KEY or provide it via the UI."
             )
+        from .anthropic_provider import AnthropicProvider
+
         return AnthropicProvider(api_key=key, timeout=_ANTHROPIC_TIMEOUT)
 
     if provider_name == "openai":
         key = (api_key_override or "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()
         if not key:
             raise RuntimeError("Missing OpenAI API key. Set OPENAI_API_KEY.")
+        from .openai_provider import OpenAICompatibleProvider
+
         return OpenAICompatibleProvider(api_key=key)
 
     if provider_name == "gemini":
@@ -55,6 +57,8 @@ def get_provider(
             raise RuntimeError(
                 "Missing Gemini API key. Set GEMINI_API_KEY."
             )
+        from .openai_provider import OpenAICompatibleProvider
+
         return OpenAICompatibleProvider(api_key=key, base_url=_GEMINI_BASE_URL, supports_stream_options=False)
 
     raise ValueError(f"Unknown provider {provider_name!r} for model {model_id!r}")

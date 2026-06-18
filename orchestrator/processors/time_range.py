@@ -316,7 +316,7 @@ def resolve_time_range(
             max_tokens=256,
         )
 
-        record_input_tokens(response.input_tokens)
+        record_input_tokens(response.input_tokens, model=cheap)
 
         if not response.tool_calls:
             raise ValueError("No tool call returned from time range parser.")

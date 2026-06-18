@@ -44,6 +44,10 @@ Optional per-agent virtualenvs under each agent directory are used when present.
 
 When a user sets an Anthropic key in the UI, the orchestrator forwards it to subprocesses via `ANTHROPIC_API_KEY` for that request so analysis and pipe tools can use the same key as the main model.
 
+The meter-status wrapper has a subprocess timeout controlled by `BLUEBOT_METER_STATUS_AGENT_TIMEOUT_SECONDS`, defaulting to 30 seconds. If the status fetch already emitted deterministic `status_data` before the summary step times out, `check_meter_status` returns those facts with a fallback report instead of leaving the admin turn running.
+
+Admin Meter Context Packet also fetches a lightweight recent-flow snapshot before the first model stream when one active meter is resolved. It uses the high-res flow API record path directly, not full `analyze_flow_data`; `BLUEBOT_RECENT_FLOW_SNAPSHOT_TIMEOUT_SECONDS` defaults to 4 seconds, and `BLUEBOT_FLOW_FETCH_TIMEOUT_SECONDS` remains the default timeout for other high-res flow fetches.
+
 <a id="meter-profile-and-network-type"></a>
 
 ## Meter profile and network type
@@ -210,6 +214,8 @@ If the final fallback is UTC, the axis label makes the missing meter timezone vi
 ## Fleet health tools
 
 `check_meter_status` includes a composite `health_score` in `status_data`. Staleness and signal quality come from the current status payload, while optional flow-analysis facts can add gap-density and drift components.
+
+If the meter-status subprocess times out after emitting `status_data`, the tool response includes `timed_out: true`, keeps `success: true`, and returns a deterministic report built from the structured facts. This keeps fleet triage and comparison tools useful even when the LLM narrative step is unavailable.
 
 `compare_meters` surfaces score and verdict per meter for side-by-side triage.
 

@@ -58,6 +58,20 @@ To run the backend and frontend independently, use two terminals:
 
 The scripts create/install missing local dependencies automatically. Add `--install` to force reinstalling dependencies, or `--sqlite` on `run_backend.sh` / `run_project.sh` to ignore `DATABASE_URL` and use local SQLite storage.
 
+For Admin-only local development without Sales API routes, run:
+
+```bash
+./run_backend.sh --mode admin --reload
+```
+
+or, when starting both backend and frontend with the project wrapper:
+
+```bash
+BLUEBOT_HOST_MODE=admin ./run_project.sh --reload
+```
+
+If `--reload` feels slow or noisy during diagnostics, drop it and run `./run_backend.sh --mode admin`; reload mode watches the backend tree and restarts the API on changes.
+
 Backend health check: open `http://127.0.0.1:8000/api/config`, which is public JSON and does not require auth.
 
 ### 3. Manual command equivalent
@@ -124,21 +138,25 @@ Copy [`../.env.example`](../.env.example) to `.env` and set values. The example 
 | `SALES_RESPONSE_ALLOW_WEAKER_VERIFIER` | Dev-only escape hatch to allow a weaker verifier override. Defaults to disabled. |
 | `SALES_RESPONSE_VERIFICATION_ATTEMPTS` | Maximum verifier/rewrite attempts for a sales answer. Defaults to `3`, capped at `5`. |
 | `ORCHESTRATOR_INTENT_ROUTER` | Optional per-turn tool subset for the main model: `off`, `rules`, or `haiku`. |
-| `ORCHESTRATOR_TPM_GUIDE_TOKENS` / `ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET` | Token budget and compression targets. |
+| `ORCHESTRATOR_LIVE_ANTHROPIC_LIMITS` / `ORCHESTRATOR_LIVE_ANTHROPIC_LIMITS_TTL_SECONDS` | When `ANTHROPIC_API_KEY` is server-side, `/api/config` can probe Anthropic response headers once per model and cache live TPM/RPM limits. Defaults to enabled with a 3600-second cache; set to `0`/`off` for local runs that should use static registry/env limits only. |
+| `ORCHESTRATOR_TPM_GUIDE_TOKENS_<MODEL_ID>` / `ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET_<MODEL_ID>` | Per-model token budget and compression target overrides. Model IDs are uppercased with punctuation replaced by `_`, e.g. `ORCHESTRATOR_TPM_GUIDE_TOKENS_GPT_4O_MINI`. |
 | `BLUEBOT_HOST_MODE` | FastAPI host mode: `combined` (default), `admin`, or `sales`. |
 | `BLUEBOT_SERVE_SPA` | Optional SPA serving override: `1` to serve, `0` to disable. If unset, `combined` and `admin` serve the SPA; `sales` does not. |
 | `CORS_ORIGINS` | Comma-separated origins allowed for the API. Set this for non-default dev ports or deployed UIs. |
 | `FRONTEND_DIST` | Path to built SPA; production Docker serves `frontend/dist`. Omit in dev. |
 | `PLOTS_DIR` | Where flow-analysis PNGs are stored; important for persistence on cloud hosts. |
 | `BLUEBOT_FLOW_HIGH_RES_BASE` | Override for the high-res flow API base URL. |
+| `BLUEBOT_FLOW_FETCH_TIMEOUT_SECONDS` | Default timeout for high-res flow API requests. Defaults to `30`. |
+| `BLUEBOT_RECENT_FLOW_SNAPSHOT_TIMEOUT_SECONDS` | Timeout for the Meter Context Packet recent-flow snapshot. Defaults to `4`; failures are recorded as `timed_out`/`unavailable` and do not block chat. |
 | `BLUEBOT_MANAGEMENT_BASE` | Override for the management API base URL used by meter profile and pipe configuration. |
+| `BLUEBOT_METER_STATUS_AGENT_TIMEOUT_SECONDS` | Timeout for the `check_meter_status` subprocess wrapper. Defaults to `30`; if deterministic status facts were emitted first, the orchestrator returns a deterministic fallback report instead of keeping the turn running. |
 | `DISPLAY_TZ` | IANA zone used by time-range parsing and plot fallback. |
 | `BLUEBOT_MAX_HEALTHY_INTER_ARRIVAL_S` | Flow analysis cap for plausible seconds between consecutive online samples. |
 | `BLUEBOT_GAP_SLACK` | Multiplier on the healthy inter-arrival cap for gap detection. |
 | `BLUEBOT_PLOT_TZ` | IANA zone for plot x-axes when no meter/browser timezone is resolved. |
 | `BLUEBOT_DATA_AGENT_MODE` | Flow report renderer: `llm` or `template`. |
 
-The model picker may show a 200k context window, but the chat loop also protects the configured input-token-per-minute guide. For local high-TPM testing, raise `ORCHESTRATOR_TPM_GUIDE_TOKENS` and `ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET` together. Raising only the context/compression target can still pause or fail if the next model call cannot fit in the rolling 60-second TPM window.
+The model picker exposes each model's own context window, compression target, and input-token-per-minute guide. App startup logs static registry/env budgeting so the API can become responsive without a live Anthropic call. When the server has `ANTHROPIC_API_KEY` and live limits are enabled, `/api/config` refreshes limits from Anthropic's live response headers and caches them; otherwise it falls back to `llm/registry.py` and env overrides. For local high-TPM testing, raise the selected model's `ORCHESTRATOR_TPM_GUIDE_TOKENS_<MODEL_ID>` and, if needed, `ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET_<MODEL_ID>` together. Raising only the context/compression target can still pause or fail if the next model call cannot fit in that model's rolling 60-second TPM window.
 
 ### Anthropic key: server vs browser
 
@@ -181,6 +199,12 @@ For local backend-only development, use the mode flag:
 ./run_backend.sh --reload                 # combined, :8000
 ./run_backend.sh --mode admin --reload    # admin host, :8000
 ./run_backend.sh --mode sales --reload    # sales host, :8001
+```
+
+`run_project.sh` does not take a `--mode` flag; pass mode through the environment when you want it to start both processes:
+
+```bash
+BLUEBOT_HOST_MODE=admin ./run_project.sh --reload
 ```
 
 Deploy targets that prefer explicit module paths can also use the convenience entrypoints:

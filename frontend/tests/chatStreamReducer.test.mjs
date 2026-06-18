@@ -208,4 +208,30 @@ reducer.applyStreamEventToChatState(
 assert.equal(strongValidationState.turnActivity.at(-1).kind, "validation");
 assert.equal(strongValidationState.turnActivity.at(-1).title, "Validating product claims");
 
+const contextState = reducer.createChatStreamState();
+reducer.resetChatStreamStateForTurn(contextState, {
+  streamId: "stream-7",
+  turnId: "turn-7",
+});
+reducer.applyStreamEventToChatState(
+  contextState,
+  {
+    type: "meter_context",
+    turn_id: "turn-7",
+    seq: 1,
+    meter_context: {
+      serial_number: "BB1",
+      health_score: 92,
+      health_verdict: "healthy",
+    },
+  },
+  {
+    expectedTurnId: { current: "turn-7" },
+    lastSeq: { current: 0 },
+  },
+);
+assert.equal(contextState.workspaceEvents.length, 1);
+assert.equal(contextState.workspaceEvents[0].type, "meter_context");
+assert.equal(contextState.workspaceEvents[0].meter_context.health_score, 92);
+
 console.log("chatStreamReducer tests passed");

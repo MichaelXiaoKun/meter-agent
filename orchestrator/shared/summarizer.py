@@ -83,7 +83,7 @@ def summarize(
             tools=[],
             max_tokens=20,
         )
-        record_input_tokens(response.input_tokens)
+        record_input_tokens(response.input_tokens, model=cheap)
         title = response.text.strip().rstrip(".")
         return title[:40]
     except Exception:

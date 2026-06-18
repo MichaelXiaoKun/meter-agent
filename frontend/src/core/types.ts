@@ -118,6 +118,7 @@ export interface SSEEvent {
   | "tool_call"
   | "tool_result"
   | "tool_progress"
+  | "meter_context"
   | "validation_start"
   | "validation_result"
   | "config_confirmation_required"
@@ -170,6 +171,19 @@ export interface SSEEvent {
     last_message_at?: string | null;
     signal?: Record<string, unknown> | null;
     pipe_config?: Record<string, unknown> | null;
+    communication_status?: string | null;
+    health_score?: number | null;
+    health_verdict?: string | null;
+    recent_flow?: Record<string, unknown> | null;
+    diagnostic_signals?: Array<{
+      name?: string;
+      state?: string;
+      confidence?: string;
+    }>;
+    confidence?: Record<string, string>;
+    known_missing?: string[];
+    recommended_next_tools?: string[];
+    status_summary_timed_out?: boolean;
     installed?: boolean | null;
     commissioned?: boolean | null;
     active?: boolean | null;

@@ -10,7 +10,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { DownloadArtifact, Message, PlotAttachment, SSEEvent, Ticket, TicketStatus } from "../../../core/types";
+import type { DownloadArtifact, Message, PlotAttachment, SSEEvent } from "../../../core/types";
 import type { AgentStatus } from "../../../hooks/useChat";
 import AnimatedMessageBubble from "./AnimatedMessageBubble";
 import { extractPlotAttachments } from "./plotAttachments";
@@ -31,7 +31,6 @@ import ConfigConfirmationCard from "./ConfigConfirmationCard";
 import SweepResultCard from "./SweepResultCard";
 import { IconSidebarDock } from "../../conversations/components/SidebarIconRail";
 import type { OrchestratorModelOption, PublicShareToken } from "../../../api/client";
-import { createTicket, listTickets, updateTicket } from "../../../api/client";
 import {
   splitActivityAtFirstTool,
   splitTurnActivityAroundStreamBody,
@@ -860,133 +859,6 @@ export default function ChatView({
     () => (workspaceEnabled ? buildMeterWorkspace(messages, workspaceEvents) : buildMeterWorkspace([], [])),
     [messages, workspaceEnabled, workspaceEvents],
   );
-  const [tickets, setTickets] = useState<Ticket[]>([]);
-  const ticketToolEventCount = useMemo(
-    () =>
-      workspaceEvents.filter(
-        (event) =>
-          event.type === "tool_result" &&
-          (event.tool === "create_ticket" ||
-            event.tool === "update_ticket" ||
-            event.tool === "list_tickets"),
-      ).length,
-    [workspaceEvents],
-  );
-  const refreshTickets = useCallback(
-    async (signal?: AbortSignal) => {
-      if (!workspaceEnabled || !userId || !conversationId) {
-        setTickets([]);
-        return;
-      }
-      const rows = await listTickets(userId, {
-        conversationId,
-        serialNumber: workspace.serialNumber ?? null,
-        status: ["open", "in_progress", "waiting_on_human"],
-        signal,
-      });
-      setTickets(rows);
-    },
-    [conversationId, userId, workspace.serialNumber, workspaceEnabled],
-  );
-
-  useEffect(() => {
-    const ac = new AbortController();
-    refreshTickets(ac.signal).catch((err) => {
-      if ((err as Error).name !== "AbortError") {
-        console.error("Failed to load tickets:", err);
-      }
-    });
-    return () => ac.abort();
-  }, [refreshTickets, messages.length, status.kind, ticketToolEventCount]);
-
-  async function handleTicketStatus(ticket: Ticket, nextStatus: TicketStatus) {
-    if (!userId || !accessToken) return;
-    try {
-      const note =
-        nextStatus === "resolved"
-          ? "Resolved from the admin workspace."
-          : nextStatus === "cancelled"
-            ? "Cancelled from the admin workspace."
-            : `Moved to ${nextStatus.replaceAll("_", " ")} from the admin workspace.`;
-      await updateTicket(
-        ticket.id,
-        {
-          user_id: userId,
-          status: nextStatus,
-          note,
-          evidence:
-            nextStatus === "resolved"
-              ? { source: "admin_workspace", ticket_id: ticket.id }
-              : undefined,
-        },
-        accessToken,
-      );
-      await refreshTickets();
-    } catch (err) {
-      onToast?.({
-        kind: "error",
-        title: "Ticket update failed",
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  async function handleTicketClaim(ticket: Ticket) {
-    if (!userId || !accessToken) return;
-    try {
-      await updateTicket(
-        ticket.id,
-        {
-          user_id: userId,
-          owner_type: "human",
-          owner_id: userId,
-          note: "Claimed from the admin workspace.",
-        },
-        accessToken,
-      );
-      await refreshTickets();
-    } catch (err) {
-      onToast?.({
-        kind: "error",
-        title: "Ticket update failed",
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  async function handleTrackNextAction(label: string) {
-    if (!userId || !accessToken || !conversationId) return;
-    const serial = workspace.serialNumber ?? null;
-    try {
-      await createTicket(
-        {
-          user_id: userId,
-          conversation_id: conversationId,
-          serial_number: serial,
-          title: label,
-          description: serial
-            ? `Follow up on ${label} for meter ${serial}.`
-            : `Follow up on ${label}.`,
-          success_criteria: serial
-            ? `Complete "${label}" for meter ${serial} and record the outcome.`
-            : `Complete "${label}" and record the outcome.`,
-          priority: "normal",
-          owner_type: "human",
-          owner_id: userId,
-          metadata: { source: "meter_workspace_next_action" },
-        },
-        accessToken,
-      );
-      await refreshTickets();
-      onToast?.({ kind: "success", title: "Ticket created", message: label });
-    } catch (err) {
-      onToast?.({
-        kind: "error",
-        title: "Ticket creation failed",
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
 
   const liveConfigWorkflow = useMemo(() => {
     for (let i = workspaceEvents.length - 1; i >= 0; i -= 1) {
@@ -1722,7 +1594,6 @@ export default function ChatView({
         <MeterWorkspacePanel
           workspace={workspace}
           processing={isProcessing || serverProcessing}
-          tickets={tickets}
           onCompose={(text) => {
             setInput(text);
             requestAnimationFrame(() => inputRef.current?.focus());
@@ -1733,9 +1604,6 @@ export default function ChatView({
               confirmConfig(workflow);
             }
           }}
-          onTrackNextAction={handleTrackNextAction}
-          onTicketClaim={handleTicketClaim}
-          onTicketStatus={handleTicketStatus}
         />
       )}
     </div>
