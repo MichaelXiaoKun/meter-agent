@@ -161,6 +161,35 @@ class TestCheckMeterStatus:
         assert res["error"].startswith("RuntimeError")
         assert "Traceback" not in res["error"]
 
+    def test_timeout_uses_structured_data_if_emitted(
+        self, monkeypatch, structured_payload
+    ):
+        stderr = (
+            f"{ms._STATUS_JSON_MARKER}{json.dumps(structured_payload)}\n"
+            "Running analysis...\n"
+        )
+        captured = {}
+
+        def fake_run(*_args, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            raise subprocess.TimeoutExpired(
+                cmd=["python", "main.py"],
+                timeout=kwargs.get("timeout"),
+                output="",
+                stderr=stderr,
+            )
+
+        monkeypatch.setenv("BLUEBOT_METER_STATUS_AGENT_TIMEOUT_SECONDS", "3")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        res = ms.check_meter_status("BB1", "tok")
+        assert captured["timeout"] == 3
+        assert res["success"] is True
+        assert res["timed_out"] is True
+        assert res["status_data"] == structured_payload
+        assert "timed out" in res["error"]
+        assert "deterministic status facts" in res["report"]
+
     def test_failure_without_marker_returns_none_status_data(self, monkeypatch):
         monkeypatch.setattr(
             subprocess,

@@ -39,11 +39,13 @@ class _ScriptedProvider:
     def __init__(self, responses: list):
         self._responses = list(responses)
         self._i = 0
+        self.system_prompts: list[str] = []
 
     def count_tokens(self, model, messages, system, tools):
         return 100
 
     def stream(self, model, messages, system, tools, max_tokens, on_text_delta):
+        self.system_prompts.append(system)
         if self._i >= len(self._responses):
             raise AssertionError(
                 f"Fake provider ran out of scripted responses (called {self._i + 1}x)"
@@ -155,6 +157,93 @@ def test_read_only_tool_is_deduped_within_one_turn(
     assert len(hits) == 1
     assert hits[0]["tool"] == "check_meter_status"
     assert hits[0]["serial_number"] == "BB1"
+
+
+def test_meter_context_preflight_seeds_dedupe_and_system_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orch = _load_agent()
+    _stub_common(monkeypatch, orch)
+
+    dispatch_calls: list[tuple[str, dict]] = []
+
+    def fake_dispatch(name, inp, token, *, client_timezone, anthropic_api_key):
+        dispatch_calls.append((name, dict(inp)))
+        return json.dumps({"success": True, "serial_number": inp.get("serial_number")})
+
+    monkeypatch.setattr(orch, "_dispatch", fake_dispatch)
+    monkeypatch.setattr(
+        orch,
+        "get_meter_profile",
+        lambda serial, token: {
+            "success": True,
+            "serial_number": serial,
+            "network_type": "wifi",
+            "profile": {
+                "label": "Kitchen",
+                "deviceTimeZone": "America/New_York",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        orch,
+        "check_meter_status",
+        lambda serial, token, **_kwargs: {
+            "success": True,
+            "status_data": {
+                "serial_number": serial,
+                "online": True,
+                "last_message_at": "2026-06-16T12:00:00Z",
+                "staleness": {"communication_status": "fresh"},
+                "signal": {"score": 91, "level": "good", "reliable": True},
+                "pipe_config": {"nominal_size": '3/4"'},
+                "health_score": {"score": 92, "verdict": "healthy"},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        orch,
+        "build_recent_flow_snapshot",
+        lambda serial, token, **_kwargs: {
+            "state": "checked",
+            "serial_number": serial,
+            "window_seconds": 300,
+            "sample_count": 2,
+            "valid_flow_count": 2,
+            "latest_sample_fresh": True,
+            "gap_count": 0,
+            "snapshot_quality": "usable",
+        },
+    )
+
+    provider = _ScriptedProvider(
+        [
+            _tool_use_response(
+                orch,
+                [
+                    ("p1", "get_meter_profile", {"serial_number": "BB1"}),
+                    ("s1", "check_meter_status", {"serial_number": "BB1"}),
+                ],
+            ),
+            _end_turn_response(),
+        ]
+    )
+    monkeypatch.setattr(orch, "get_provider", lambda *a, **k: provider)
+    events: list[dict] = []
+
+    reply, _ = orch.run_turn(
+        [{"role": "user", "content": "check BB1"}],
+        token="tok",
+        model=orch._MODEL,
+        on_event=events.append,
+    )
+
+    assert reply == "done"
+    assert dispatch_calls == []
+    assert events[0]["type"] == "meter_context"
+    assert events[0]["meter_context"]["health_score"] == 92
+    assert events[0]["meter_context"]["recent_flow"]["state"] == "checked"
+    assert "Current Meter Context Packet" in provider.system_prompts[0]
 
 
 def test_fleet_health_tool_emits_heartbeat_progress(monkeypatch: pytest.MonkeyPatch) -> None:

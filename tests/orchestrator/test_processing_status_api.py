@@ -83,6 +83,51 @@ def test_status_exposes_active_stream_metadata_while_queued(tmp_path, monkeypatc
     assert status == {"processing": False}
 
 
+def test_stream_receives_status_before_slow_run_turn_returns(tmp_path, monkeypatch):
+    client, api_mod, store = _client_and_modules(tmp_path, monkeypatch)
+    release_turn = threading.Event()
+
+    def fake_run_turn(messages, _token, **_kwargs):
+        assert release_turn.wait(timeout=2)
+        messages.append({"role": "assistant", "content": "done"})
+        return "done", False
+
+    monkeypatch.setattr(api_mod, "run_turn", fake_run_turn)
+    monkeypatch.setattr(api_mod, "update_title", lambda *_args, **_kwargs: None)
+
+    cid = store.create_conversation("u1", "slow turn")
+    response = client.post(
+        f"/api/conversations/{cid}/chat",
+        json={"message": "hello", "client_turn_id": "turn-slow"},
+        headers={"Authorization": "Bearer token"},
+    )
+    assert response.status_code == 200
+    stream_id = response.json()["stream_id"]
+
+    poll_body = {}
+    for _ in range(50):
+        poll_body = client.get(
+            f"/api/streams/{stream_id}/poll",
+            params={"cursor": 0, "wait_ms": 10},
+        ).json()
+        if poll_body.get("events"):
+            break
+        time.sleep(0.02)
+
+    assert poll_body["events"][0]["type"] == "thinking"
+    assert poll_body["events"][0]["turn_id"] == "turn-slow"
+    assert poll_body["events"][0]["seq"] == 1
+    assert poll_body["done"] is False
+
+    release_turn.set()
+    for _ in range(50):
+        if client.get(f"/api/conversations/{cid}/status").json()["processing"] is False:
+            break
+        time.sleep(0.02)
+
+    assert client.get(f"/api/conversations/{cid}/status").json() == {"processing": False}
+
+
 def test_full_thread_compression_still_persists_streamed_reply(tmp_path, monkeypatch):
     client, api_mod, store = _client_and_modules(tmp_path, monkeypatch)
 

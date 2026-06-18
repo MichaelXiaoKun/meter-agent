@@ -42,6 +42,12 @@ from admin_chat.config_workflow import (
     user_scope_from_token,
     validate_pending_action,
 )
+from admin_chat.meter_context import (
+    MeterContextBuildResult,
+    build_meter_context_packet,
+    format_meter_context_for_prompt,
+)
+from admin_chat.recent_flow_snapshot import build_recent_flow_snapshot
 from llm import get_provider, LLMRateLimitError
 from llm.registry import MODEL_CATALOG, get_cheap_model
 
@@ -403,8 +409,9 @@ def _route_intent_haiku(
         "- general: how-to, unclear, or small talk\n"
     )
     try:
+        tpm_guide = _resolve_tpm_input_guide_tokens(cheap_model)
         est = min(4000, max(400, len(user_text) // 2 + 400))
-        wait_for_sliding_tpm_headroom(est, _TPM_INPUT_GUIDE_TOKENS)
+        wait_for_sliding_tpm_headroom(est, tpm_guide, model=cheap_model)
         resp = provider.complete(
             cheap_model,
             [{"role": "user", "content": user_text[:8000]}],
@@ -412,7 +419,7 @@ def _route_intent_haiku(
             tools=[],
             max_tokens=120,
         )
-        record_input_tokens(resp.input_tokens)
+        record_input_tokens(resp.input_tokens, model=cheap_model)
         raw = resp.text
     except Exception:
         return _route_intent_rules(user_text)
@@ -493,13 +500,17 @@ def list_available_models() -> list[dict[str, object]]:
     out: list[dict[str, object]] = []
     default_id = _MODEL
     for mid in _configured_allowed_models():
+        limit_values = _rate_limit_values_for_model(mid)
+        tpm_guide = int(limit_values["tpm_input_guide_tokens"])
         meta = MODEL_CATALOG.get(mid) or {
             "label": mid,
             "provider": "unknown",
             "tier": "custom",
             "description": "",
             "tpm_input_guide_tokens": 30_000,
+            "context_window": 200_000,
         }
+        context_window = int(meta.get("context_window", 200_000))
         out.append(
             {
                 "id": mid,
@@ -507,7 +518,14 @@ def list_available_models() -> list[dict[str, object]]:
                 "provider": meta.get("provider", "unknown"),
                 "tier": meta["tier"],
                 "description": meta["description"],
-                "tpm_input_guide_tokens": meta["tpm_input_guide_tokens"],
+                "tpm_input_guide_tokens": tpm_guide,
+                "max_input_tokens_target": _resolve_max_input_tokens_target(tpm_guide, mid),
+                "context_window": context_window,
+                "tpm_sliding_input_tokens_60s": sliding_input_tokens_sum(mid),
+                "output_tpm_limit": limit_values.get("output_tpm_limit"),
+                "rpm_limit": limit_values.get("rpm_limit"),
+                "total_tpm_limit": limit_values.get("total_tpm_limit"),
+                "rate_limit_source": limit_values.get("rate_limit_source"),
                 "is_default": mid == default_id,
             }
         )
@@ -548,6 +566,150 @@ def _env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _model_env_suffix(model_id: str | None) -> str:
+    raw = (model_id or _MODEL or _DEFAULT_ORCHESTRATOR_MODEL).strip()
+    suffix = re.sub(r"[^A-Za-z0-9]+", "_", raw).strip("_").upper()
+    return suffix or "DEFAULT"
+
+
+def _live_anthropic_limits_ttl_seconds() -> float:
+    raw = os.environ.get("ORCHESTRATOR_LIVE_ANTHROPIC_LIMITS_TTL_SECONDS", "3600")
+    try:
+        return max(60.0, float(raw))
+    except ValueError:
+        return 3600.0
+
+
+def _parse_limit_header(headers: httpx.Headers, name: str) -> int | None:
+    raw = headers.get(name)
+    if raw is None:
+        return None
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _live_anthropic_rate_limit_values(model_id: str | None) -> dict[str, int] | None:
+    """Return cached Anthropic limits from live response headers for the server API key.
+
+    The organization Rate Limits API requires an Admin API key. Messages API
+    responses also include authoritative rate-limit headers for the key serving
+    chat, so we make one tiny request per model and cache the result.
+    Browser-provided keys are not probed here because `/api/config` is public.
+    """
+    model = (model_id or "").strip()
+    if not model:
+        return None
+    if MODEL_CATALOG.get(model, {}).get("provider") != "anthropic":
+        return None
+    if not _env_bool("ORCHESTRATOR_LIVE_ANTHROPIC_LIMITS", True):
+        return None
+    api_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+    if not api_key:
+        return None
+
+    now = time.time()
+    with _ANTHROPIC_LIVE_LIMITS_LOCK:
+        cached = _ANTHROPIC_LIVE_LIMITS_CACHE.get(model)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    values: dict[str, int] | None = None
+    try:
+        resp = httpx.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": model,
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "Reply OK"}],
+            },
+            timeout=httpx.Timeout(connect=2.0, read=8.0, write=5.0, pool=2.0),
+        )
+        if resp.status_code < 400:
+            input_limit = _parse_limit_header(
+                resp.headers, "anthropic-ratelimit-input-tokens-limit"
+            )
+            output_limit = _parse_limit_header(
+                resp.headers, "anthropic-ratelimit-output-tokens-limit"
+            )
+            rpm_limit = _parse_limit_header(
+                resp.headers, "anthropic-ratelimit-requests-limit"
+            )
+            token_limit = _parse_limit_header(
+                resp.headers, "anthropic-ratelimit-tokens-limit"
+            )
+            if input_limit is not None:
+                values = {"input_tpm_limit": input_limit}
+                if output_limit is not None:
+                    values["output_tpm_limit"] = output_limit
+                if rpm_limit is not None:
+                    values["rpm_limit"] = rpm_limit
+                if token_limit is not None:
+                    values["total_tpm_limit"] = token_limit
+        else:
+            logging.getLogger(__name__).debug(
+                "Anthropic live rate-limit probe failed for %s with HTTP %s",
+                model,
+                resp.status_code,
+            )
+    except Exception as exc:
+        logging.getLogger(__name__).debug(
+            "Anthropic live rate-limit probe failed for %s: %s",
+            model,
+            exc.__class__.__name__,
+        )
+
+    ttl = _live_anthropic_limits_ttl_seconds() if values else 60.0
+    with _ANTHROPIC_LIVE_LIMITS_LOCK:
+        _ANTHROPIC_LIVE_LIMITS_CACHE[model] = (now + ttl, values)
+    return values
+
+
+def _rate_limit_values_for_model(
+    model_id: str | None,
+    *,
+    allow_live: bool = True,
+) -> dict[str, object]:
+    model = (model_id or "").strip()
+    per_model = _env_int(f"ORCHESTRATOR_TPM_GUIDE_TOKENS_{_model_env_suffix(model)}")
+    if per_model is not None:
+        return {"tpm_input_guide_tokens": per_model, "rate_limit_source": "env_model"}
+
+    live = _live_anthropic_rate_limit_values(model) if allow_live else None
+    if live and live.get("input_tpm_limit"):
+        return {
+            "tpm_input_guide_tokens": int(live["input_tpm_limit"]),
+            "output_tpm_limit": live.get("output_tpm_limit"),
+            "rpm_limit": live.get("rpm_limit"),
+            "total_tpm_limit": live.get("total_tpm_limit"),
+            "rate_limit_source": "anthropic_headers",
+        }
+
+    if not model or model not in MODEL_CATALOG:
+        explicit = _env_int("ORCHESTRATOR_TPM_GUIDE_TOKENS")
+        if explicit is not None:
+            return {"tpm_input_guide_tokens": explicit, "rate_limit_source": "env_global"}
+
+    return {
+        "tpm_input_guide_tokens": _default_tpm_input_guide_for_active_model(model),
+        "rate_limit_source": "catalog",
+    }
+
+
 def _max_tool_rounds_per_turn() -> int:
     """
     Maximum LLM↔tool iterations for one user message (outer ``run_turn`` loop).
@@ -565,6 +727,8 @@ def _max_tool_rounds_per_turn() -> int:
 # reread is still sound because :func:`_invalidate_dedupe_for_write` drops any
 # cached read tied to a serial the write tool just touched (see rule 11).
 _MAX_PARALLEL_TOOL_WORKERS = 6
+_ANTHROPIC_LIVE_LIMITS_LOCK = threading.Lock()
+_ANTHROPIC_LIVE_LIMITS_CACHE: dict[str, tuple[float, dict[str, int] | None]] = {}
 
 
 def _is_dedupable_read(tool_name: str) -> bool:
@@ -636,27 +800,61 @@ def _invalidate_dedupe_for_write(
     return dropped
 
 
-def _default_tpm_input_guide_for_active_model() -> int:
+def _seed_meter_context_dedupe(
+    build: MeterContextBuildResult | None,
+    dedupe_cache: dict[str, tuple[str, str | None]],
+) -> None:
+    if build is None:
+        return
+    serial = build.serial_number
+    for tool_name, result_json in (
+        ("get_meter_profile", build.profile_result_json),
+        ("check_meter_status", build.status_result_json),
+    ):
+        if not result_json:
+            continue
+        try:
+            result = json.loads(result_json)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(result, dict):
+            continue
+        has_success = result.get("success") is True
+        has_status_data = isinstance(result.get("status_data"), dict)
+        if not has_success and not has_status_data:
+            continue
+        key = _per_turn_tool_dedupe_key(tool_name, {"serial_number": serial})
+        if key:
+            dedupe_cache[key] = (result_json, serial)
+
+
+def _default_tpm_input_guide_for_active_model(model_id: str | None = None) -> int:
     """
     Default input-TPM guide pulled from the model catalog.
-    Override with ORCHESTRATOR_TPM_GUIDE_TOKENS when your org tier differs.
+    Override known models with ORCHESTRATOR_TPM_GUIDE_TOKENS_<MODEL_ID> when your org tier differs.
     """
-    m = (os.environ.get("ORCHESTRATOR_MODEL") or _DEFAULT_ORCHESTRATOR_MODEL).strip()
+    m = (model_id or os.environ.get("ORCHESTRATOR_MODEL") or _DEFAULT_ORCHESTRATOR_MODEL).strip()
     entry = MODEL_CATALOG.get(m, {})
     return int(entry.get("tpm_input_guide_tokens", 30_000))
 
 
-def _resolve_tpm_input_guide_tokens() -> int:
-    explicit = _env_int("ORCHESTRATOR_TPM_GUIDE_TOKENS")
-    if explicit is not None:
-        return explicit
-    return _default_tpm_input_guide_for_active_model()
+def _resolve_tpm_input_guide_tokens(
+    model_id: str | None = None,
+    *,
+    allow_live: bool = True,
+) -> int:
+    values = _rate_limit_values_for_model(model_id, allow_live=allow_live)
+    return int(values["tpm_input_guide_tokens"])
 
 
-def _resolve_max_input_tokens_target(tpm_guide: int) -> int:
-    explicit = _env_int("ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET")
-    if explicit is not None:
-        return explicit
+def _resolve_max_input_tokens_target(tpm_guide: int, model_id: str | None = None) -> int:
+    per_model = _env_int(f"ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET_{_model_env_suffix(model_id)}")
+    if per_model is not None:
+        return per_model
+    if model_id is None or str(model_id).strip() not in MODEL_CATALOG:
+        explicit = _env_int("ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET")
+        if explicit is not None:
+            return explicit
     frac = _env_float("ORCHESTRATOR_TPM_HEADROOM_FRACTION", 0.5)
     target = int(tpm_guide * frac)
     next_call_factor = max(1.0, _env_float("ORCHESTRATOR_TPM_NEXT_CALL_FACTOR", 2.05))
@@ -666,8 +864,8 @@ def _resolve_max_input_tokens_target(tpm_guide: int) -> int:
     return max(1, min(target, streamable_target))
 
 
-_TPM_INPUT_GUIDE_TOKENS = _resolve_tpm_input_guide_tokens()
-_MAX_INPUT_TOKENS_TARGET = _resolve_max_input_tokens_target(_TPM_INPUT_GUIDE_TOKENS)
+_TPM_INPUT_GUIDE_TOKENS = _resolve_tpm_input_guide_tokens(_MODEL, allow_live=False)
+_MAX_INPUT_TOKENS_TARGET = _resolve_max_input_tokens_target(_TPM_INPUT_GUIDE_TOKENS, _MODEL)
 
 
 def _resolve_api_key_override(override: str | None) -> str | None:
@@ -688,6 +886,8 @@ def _estimate_stream_turn_tpm_cost(token_count: int) -> int:
 def _wait_for_tpm_headroom_with_progress(
     estimated_next_input_tokens: int,
     *,
+    model: str,
+    tpm_guide: int,
     emit,
 ) -> None:
     """Block for TPM headroom while streaming visible wait status to the UI."""
@@ -703,7 +903,7 @@ def _wait_for_tpm_headroom_with_progress(
         last_bucket = bucket
         current = int(snapshot.get("current_tokens") or 0)
         estimated = int(snapshot.get("estimated_next_tokens") or estimated_next_input_tokens)
-        cap = int(snapshot.get("tpm_cap") or _TPM_INPUT_GUIDE_TOKENS)
+        cap = int(snapshot.get("tpm_cap") or tpm_guide)
         overflow = int(snapshot.get("overflow_tokens") or 0)
         emit(
             {
@@ -715,7 +915,7 @@ def _wait_for_tpm_headroom_with_progress(
                 ),
                 "current_tokens": current,
                 "estimated_next_tokens": estimated,
-                "tpm_limit": int(snapshot.get("tpm_limit") or _TPM_INPUT_GUIDE_TOKENS),
+                "tpm_limit": int(snapshot.get("tpm_limit") or tpm_guide),
                 "tpm_cap": cap,
                 "overflow_tokens": overflow,
                 "waited_seconds": waited,
@@ -724,20 +924,27 @@ def _wait_for_tpm_headroom_with_progress(
 
     wait_for_sliding_tpm_headroom(
         estimated_next_input_tokens,
-        _TPM_INPUT_GUIDE_TOKENS,
+        tpm_guide,
+        model=model,
         on_wait=on_wait,
     )
 
 
-def get_rate_limit_config_for_api() -> dict[str, object]:
+def get_rate_limit_config_for_api(*, allow_live: bool = True) -> dict[str, object]:
     """Public knobs for /api/config and logging (matches run_turn budgeting)."""
     active_model_ctx = int(MODEL_CATALOG.get(_MODEL, {}).get("context_window", 200_000))
+    limit_values = _rate_limit_values_for_model(_MODEL, allow_live=allow_live)
+    tpm_guide = int(limit_values["tpm_input_guide_tokens"])
     return {
-        "tpm_input_guide_tokens": _TPM_INPUT_GUIDE_TOKENS,
-        "max_input_tokens_target": _MAX_INPUT_TOKENS_TARGET,
+        "tpm_input_guide_tokens": tpm_guide,
+        "max_input_tokens_target": _resolve_max_input_tokens_target(tpm_guide, _MODEL),
         "model_context_window": active_model_ctx,
+        "output_tpm_limit": limit_values.get("output_tpm_limit"),
+        "rpm_limit": limit_values.get("rpm_limit"),
+        "total_tpm_limit": limit_values.get("total_tpm_limit"),
+        "rate_limit_source": limit_values.get("rate_limit_source"),
         "tpm_headroom_fraction": _env_float("ORCHESTRATOR_TPM_HEADROOM_FRACTION", 0.5),
-        "tpm_sliding_input_tokens_60s": sliding_input_tokens_sum(),
+        "tpm_sliding_input_tokens_60s": sliding_input_tokens_sum(_MODEL),
         "tpm_window_seconds": 60,
         "anthropic_server_configured": bool(
             (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
@@ -790,6 +997,7 @@ def _count_tokens(
     *,
     model: str | None = None,
     tools: list | None = None,
+    system_prompt: str | None = None,
 ) -> int:
     """Return the input token count for the current conversation state.
 
@@ -803,7 +1011,7 @@ def _count_tokens(
         return provider.count_tokens(
             model or _MODEL,
             messages,
-            system=_SYSTEM_PROMPT,
+            system=system_prompt if system_prompt is not None else _SYSTEM_PROMPT,
             tools=tool_list,
         )
     except Exception as exc:
@@ -855,11 +1063,12 @@ def _compress_history(
     transcript = "\n".join(lines)
 
     try:
+        tpm_guide = _resolve_tpm_input_guide_tokens(cheap_model)
         summarize_est = min(
-            _TPM_INPUT_GUIDE_TOKENS // 2,
+            tpm_guide // 2,
             max(800, len(transcript) // 4 + 1500),
         )
-        wait_for_sliding_tpm_headroom(summarize_est, _TPM_INPUT_GUIDE_TOKENS)
+        wait_for_sliding_tpm_headroom(summarize_est, tpm_guide, model=cheap_model)
         summary_resp = provider.complete(
             cheap_model,
             [{
@@ -876,7 +1085,7 @@ def _compress_history(
             tools=[],
             max_tokens=512,
         )
-        record_input_tokens(summary_resp.input_tokens)
+        record_input_tokens(summary_resp.input_tokens, model=cheap_model)
         summary_text = summary_resp.text.strip()
     except Exception:
         return messages
@@ -923,11 +1132,12 @@ def _collapse_entire_thread_to_summary(
     if len(preview) > 120_000:
         preview = preview[:120_000] + "\n…[truncated for summarization]"
     try:
+        tpm_guide = _resolve_tpm_input_guide_tokens(cheap_model)
         collapse_est = min(
-            int(_TPM_INPUT_GUIDE_TOKENS * 0.65),
+            int(tpm_guide * 0.65),
             max(900, len(preview) // 4 + 2048),
         )
-        wait_for_sliding_tpm_headroom(collapse_est, _TPM_INPUT_GUIDE_TOKENS)
+        wait_for_sliding_tpm_headroom(collapse_est, tpm_guide, model=cheap_model)
         summary_resp = provider.complete(
             cheap_model,
             [{
@@ -943,7 +1153,7 @@ def _collapse_entire_thread_to_summary(
             tools=[],
             max_tokens=1024,
         )
-        record_input_tokens(summary_resp.input_tokens)
+        record_input_tokens(summary_resp.input_tokens, model=cheap_model)
         summary_text = summary_resp.text.strip()
     except Exception:
         return False
@@ -978,6 +1188,7 @@ def _compress_until_under_input_budget(
     *,
     model: str | None = None,
     tools: list | None = None,
+    system_prompt: str | None = None,
 ) -> bool:
     """
     Repeatedly summarize older turns until _count_tokens <= max_input_tokens or no progress.
@@ -985,8 +1196,8 @@ def _compress_until_under_input_budget(
     """
     changed = False
     for _ in range(24):
-        ntok = _count_tokens(provider, messages, model=model, tools=tools)
-        record_input_tokens(ntok)
+        ntok = _count_tokens(provider, messages, model=model, tools=tools, system_prompt=system_prompt)
+        record_input_tokens(ntok, model=model)
         if ntok <= max_input_tokens:
             return changed
         round_progress = False
@@ -996,15 +1207,15 @@ def _compress_until_under_input_budget(
             if _try_compress_history_inplace(provider, cheap_model, messages, keep_recent=kr):
                 changed = True
                 round_progress = True
-                after = _count_tokens(provider, messages, model=model, tools=tools)
-                record_input_tokens(after)
+                after = _count_tokens(provider, messages, model=model, tools=tools, system_prompt=system_prompt)
+                record_input_tokens(after, model=model)
                 if after <= max_input_tokens:
                     return changed
         if not round_progress:
             break
 
-    final_ntok = _count_tokens(provider, messages, model=model, tools=tools)
-    record_input_tokens(final_ntok)
+    final_ntok = _count_tokens(provider, messages, model=model, tools=tools, system_prompt=system_prompt)
+    record_input_tokens(final_ntok, model=model)
     if final_ntok > max_input_tokens:
         if _collapse_entire_thread_to_summary(provider, cheap_model, messages):
             changed = True
@@ -2891,6 +3102,11 @@ def run_turn(
     active_model = resolve_orchestrator_model(model)
     cheap_model = get_cheap_model(active_model)
     model_ctx = int(MODEL_CATALOG.get(active_model, {}).get("context_window", 200_000))
+    active_tpm_input_guide_tokens = _resolve_tpm_input_guide_tokens(active_model)
+    active_max_input_tokens_target = _resolve_max_input_tokens_target(
+        active_tpm_input_guide_tokens,
+        active_model,
+    )
     history_replaced = False
     provider = None
     if confirmed_action_id or cancelled_action_id:
@@ -2907,6 +3123,7 @@ def run_turn(
     # :func:`_invalidate_dedupe_for_write` drop cached reads for a serial that
     # a write tool has just mutated (rule 11 verify-after-configuration).
     dedupe_cache: dict[str, tuple[str, str | None]] = {}
+    active_system_prompt = _SYSTEM_PROMPT
     round_ix = 0
     # Mutable counters threaded through the telemetry ``turn_end`` event.
     _counters = {"tool_calls": 0, "tool_failures": 0, "api_calls": 0, "rounds": 0}
@@ -2921,6 +3138,8 @@ def run_turn(
         intent_source=_intent_src,
         tool_names=[t["name"] for t in active_tools],
         history_len=len(messages),
+        tpm_input_guide_tokens=active_tpm_input_guide_tokens,
+        max_input_tokens_target=active_max_input_tokens_target,
         prompt_version=_SYSTEM_PROMPT_VERSION,
     )
 
@@ -2931,6 +3150,29 @@ def run_turn(
         return reply, replaced
 
     try:
+      if not (
+          confirmed_action_id
+          or cancelled_action_id
+          or superseded_action_id
+      ):
+        meter_context_build = build_meter_context_packet(
+            messages,
+            token,
+            get_profile=get_meter_profile,
+            check_status=check_meter_status,
+            get_recent_flow=build_recent_flow_snapshot,
+            anthropic_api_key=anthropic_api_key,
+        )
+        if meter_context_build is not None:
+            _seed_meter_context_dedupe(meter_context_build, dedupe_cache)
+            active_system_prompt = (
+                _SYSTEM_PROMPT
+                + format_meter_context_for_prompt(
+                    meter_context_build.event.get("meter_context") or {}
+                )
+            )
+            _emit(meter_context_build.event)
+
       if not (confirmed_action_id or cancelled_action_id or superseded_action_id):
         experiment_reply, experiment_workflow = _maybe_prepare_angle_experiment_from_validation(
             messages=messages,
@@ -3072,36 +3314,44 @@ def run_turn(
             return _finish("round_limit", msg, history_replaced, limit=max_rounds)
 
         token_count = _count_tokens(
-            provider, messages, model=active_model, tools=active_tools
+            provider,
+            messages,
+            model=active_model,
+            tools=active_tools,
+            system_prompt=active_system_prompt,
         )
         pct = token_count / model_ctx
         _emit({"type": "token_usage", "tokens": token_count, "pct": pct, "model": active_model})
 
-        # Stay under ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET (default: headroom fraction × TPM guide).
-        if token_count > _MAX_INPUT_TOKENS_TARGET:
+        # Stay under the selected model's input target (default: headroom fraction × TPM guide).
+        if token_count > active_max_input_tokens_target:
             _emit(
                 {
                     "type": "compressing",
                     "tokens": token_count,
                     "pct": pct,
-                    "target_max_input": _MAX_INPUT_TOKENS_TARGET,
-                    "tpm_guide": _TPM_INPUT_GUIDE_TOKENS,
+                    "target_max_input": active_max_input_tokens_target,
+                    "tpm_guide": active_tpm_input_guide_tokens,
                     "reason": "input_budget",
                 }
             )
             if _compress_until_under_input_budget(
-                provider, cheap_model, messages, _MAX_INPUT_TOKENS_TARGET,
-                model=active_model, tools=active_tools,
+                provider, cheap_model, messages, active_max_input_tokens_target,
+                model=active_model, tools=active_tools, system_prompt=active_system_prompt,
             ):
                 history_replaced = True
             token_count = _count_tokens(
-                provider, messages, model=active_model, tools=active_tools
+                provider,
+                messages,
+                model=active_model,
+                tools=active_tools,
+                system_prompt=active_system_prompt,
             )
             pct = token_count / model_ctx
             _emit({"type": "token_usage", "tokens": token_count, "pct": pct, "model": active_model})
-            if token_count > _MAX_INPUT_TOKENS_TARGET:
+            if token_count > active_max_input_tokens_target:
                 raise RuntimeError(
-                    f"Could not compress context below {_MAX_INPUT_TOKENS_TARGET} input tokens "
+                    f"Could not compress context below {active_max_input_tokens_target} input tokens "
                     f"(still at {token_count}). Shorten the thread or wait and retry."
                 )
 
@@ -3113,6 +3363,8 @@ def run_turn(
 
         _wait_for_tpm_headroom_with_progress(
             _estimate_stream_turn_tpm_cost(token_count),
+            model=active_model,
+            tpm_guide=active_tpm_input_guide_tokens,
             emit=_emit,
         )
         _emit({"type": "thinking"})
@@ -3130,7 +3382,7 @@ def run_turn(
                     response = provider.stream(
                         active_model,
                         api_messages,
-                        system=_SYSTEM_PROMPT,
+                        system=active_system_prompt,
                         tools=active_tools,
                         max_tokens=4096,
                         on_text_delta=lambda delta: _emit({"type": "text_delta", "text": delta}),
@@ -3139,7 +3391,7 @@ def run_turn(
                     _api_end["output_tokens"] = getattr(response, "output_tokens", None)
                     _api_end["stop_reason"] = response.stop_reason
                     _counters["api_calls"] += 1
-                record_input_tokens(response.input_tokens or token_count)
+                record_input_tokens(response.input_tokens or token_count, model=active_model)
                 break
             except LLMRateLimitError as exc:
                 _emit(
@@ -3147,23 +3399,27 @@ def run_turn(
                         "type": "compressing",
                         "tokens": token_count,
                         "pct": pct,
-                        "target_max_input": _MAX_INPUT_TOKENS_TARGET,
+                        "target_max_input": active_max_input_tokens_target,
                         "reason": "rate_limit",
                     }
                 )
                 if _compress_until_under_input_budget(
-                    provider, cheap_model, messages, _MAX_INPUT_TOKENS_TARGET,
-                    model=active_model, tools=active_tools,
+                    provider, cheap_model, messages, active_max_input_tokens_target,
+                    model=active_model, tools=active_tools, system_prompt=active_system_prompt,
                 ):
                     history_replaced = True
                 token_count = _count_tokens(
-                    provider, messages, model=active_model, tools=active_tools
+                    provider,
+                    messages,
+                    model=active_model,
+                    tools=active_tools,
+                    system_prompt=active_system_prompt,
                 )
                 pct = token_count / model_ctx
                 _emit({"type": "token_usage", "tokens": token_count, "pct": pct, "model": active_model})
-                if token_count > _MAX_INPUT_TOKENS_TARGET:
+                if token_count > active_max_input_tokens_target:
                     raise RuntimeError(
-                        f"Context still above {_MAX_INPUT_TOKENS_TARGET} tokens after compression "
+                        f"Context still above {active_max_input_tokens_target} tokens after compression "
                         f"({token_count} tokens). Wait one minute for rate limits to reset or start a new chat."
                     )
                 if pct >= _COMPRESS_THRESHOLD:
@@ -3183,6 +3439,8 @@ def run_turn(
                 )
                 _wait_for_tpm_headroom_with_progress(
                     _estimate_stream_turn_tpm_cost(token_count),
+                    model=active_model,
+                    tpm_guide=active_tpm_input_guide_tokens,
                     emit=_emit,
                 )
 

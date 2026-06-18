@@ -8,6 +8,7 @@ Use this page for common local, deployment, auth, and analysis failures.
 - [Authentication](#authentication)
 - [Browser and CORS](#browser-and-cors)
 - [Conversation persistence](#conversation-persistence)
+- [Chat streaming and status timeline](#chat-streaming-and-status-timeline)
 - [Flow analysis and plots](#flow-analysis-and-plots)
 
 <a id="startup-and-deployment"></a>
@@ -47,6 +48,16 @@ Check:
 - `PORT` is available and mapped correctly.
 - `FRONTEND_DIST` points at a built SPA if you override it.
 - Postgres is reachable from inside the container, not only from the host shell.
+
+### Backend feels slow or unresponsive with `--reload`
+
+Reload mode watches the backend tree and restarts Uvicorn after file changes. For diagnostics, prefer:
+
+```bash
+./run_backend.sh --mode admin
+```
+
+If repeated `/api/config` requests are slow in local development, set `ORCHESTRATOR_LIVE_ANTHROPIC_LIMITS=0` so config responses use registry/env fallback limits instead of live Anthropic response-header probes.
 
 <a id="authentication"></a>
 
@@ -113,6 +124,32 @@ Sales status is restored through the public status endpoint and stream polling. 
 - Check browser storage/session storage has not been cleared.
 - Check the network panel for `/api/public/sales/conversations/{id}/status`.
 - Confirm the conversation was not deleted while the stream was active.
+
+<a id="chat-streaming-and-status-timeline"></a>
+
+## Chat streaming and status timeline
+
+### Message stays on "Sending your message"
+
+The chat POST can succeed before the browser receives the first stream event. In server logs, this usually appears as `POST /api/conversations/{id}/chat` followed by repeated `/api/streams/{stream_id}/poll?cursor=0`.
+
+Check:
+
+- The backend process is still alive and not waiting for a reload restart.
+- `ORCHESTRATOR_MAX_CONCURRENT_TURNS` is not saturated by other long turns.
+- The frontend is polling the stream id returned by the chat POST.
+- Current backend code should emit an early process event before heavy turn work; if cursor stays `0`, inspect server logs around the worker thread startup.
+
+### Timeline stops on a tool row
+
+If the poll cursor advances and then repeats at the same value, the last visible timeline item usually points at the blocking tool. For meter-health questions, `check_meter_status` spawns `meter-status-agent`.
+
+Check:
+
+- `BLUEBOT_RECENT_FLOW_SNAPSHOT_TIMEOUT_SECONDS` controls the preflight recent-flow snapshot timeout; the default is `4`. Timeout/unavailable states should appear in Meter Workspace instead of blocking chat.
+- `BLUEBOT_METER_STATUS_AGENT_TIMEOUT_SECONDS` controls the status subprocess wrapper timeout; the default is `30`.
+- If `meter-status-agent` emitted `__BLUEBOT_STATUS_JSON__` before timing out, the wrapper returns a deterministic fallback report and `status_data`.
+- If no structured status facts were emitted, check Bluebot API credentials/connectivity and the subprocess stderr in the backend terminal.
 
 <a id="flow-analysis-and-plots"></a>
 

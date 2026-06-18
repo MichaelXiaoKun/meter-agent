@@ -20,6 +20,71 @@ from shared.subprocess_env import tool_subprocess_env
 
 
 _STATUS_JSON_MARKER = "__BLUEBOT_STATUS_JSON__"
+_DEFAULT_STATUS_AGENT_TIMEOUT_SECONDS = 30.0
+
+
+def _status_agent_timeout_seconds() -> float:
+    raw = os.environ.get("BLUEBOT_METER_STATUS_AGENT_TIMEOUT_SECONDS", "")
+    if not raw.strip():
+        return _DEFAULT_STATUS_AGENT_TIMEOUT_SECONDS
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return _DEFAULT_STATUS_AGENT_TIMEOUT_SECONDS
+
+
+def _captured_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return str(value)
+
+
+def _value_text(value: Any) -> str:
+    return "unknown" if value in (None, "") else str(value)
+
+
+def _deterministic_report(
+    serial_number: str,
+    status_data: dict,
+    *,
+    timeout_seconds: float | None = None,
+) -> str:
+    staleness = status_data.get("staleness") if isinstance(status_data.get("staleness"), dict) else {}
+    signal = status_data.get("signal") if isinstance(status_data.get("signal"), dict) else {}
+    pipe = status_data.get("pipe_config") if isinstance(status_data.get("pipe_config"), dict) else {}
+    health = status_data.get("health_score") if isinstance(status_data.get("health_score"), dict) else {}
+    note = ""
+    if timeout_seconds is not None:
+        note = (
+            "\n\nNote: deterministic status facts were available, but the "
+            f"meter-status summary agent timed out after {timeout_seconds:g}s."
+        )
+    pipe_bits = [
+        f"nominal size {_value_text(pipe.get('nominal_size'))}",
+        f"inner diameter {_value_text(pipe.get('inner_diameter_mm'))} mm",
+    ]
+    if pipe.get("pipe_standard"):
+        pipe_bits.append(f"standard {pipe.get('pipe_standard')}")
+    signal_bits = [
+        f"score {_value_text(signal.get('score'))}",
+        f"level {_value_text(signal.get('level'))}",
+        f"reliable {_value_text(signal.get('reliable'))}",
+    ]
+    return (
+        f"# Meter Status Report\n\n"
+        f"Serial: {serial_number}\n\n"
+        f"- Online: {_value_text(status_data.get('online'))}\n"
+        f"- Last message: {_value_text(status_data.get('last_message_at'))}\n"
+        f"- Communication: {_value_text(staleness.get('communication_status'))}"
+        f" ({_value_text(staleness.get('status_description'))})\n"
+        f"- Signal: {', '.join(signal_bits)}\n"
+        f"- Pipe: {', '.join(pipe_bits)}\n"
+        f"- Health: score {_value_text(health.get('score'))}, "
+        f"verdict {_value_text(health.get('verdict'))}"
+        f"{note}"
+    )
 
 
 def _stderr_for_user(stderr: str, returncode: int) -> str:
@@ -142,13 +207,43 @@ def check_meter_status(
             env["BLUEBOT_VERIFIED_FACTS_JSON"] = json.dumps(verified_facts, sort_keys=True)
         except (TypeError, ValueError):
             pass
-    result = subprocess.run(
-        [_PYTHON, "main.py", "--serial", serial_number],
-        cwd=_AGENT_DIR,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    timeout_seconds = _status_agent_timeout_seconds()
+    try:
+        result = subprocess.run(
+            [_PYTHON, "main.py", "--serial", serial_number],
+            cwd=_AGENT_DIR,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stderr = _captured_text(exc.stderr)
+        status_data = _collect_status_data(stderr)
+        if status_data:
+            return {
+                "success": True,
+                "report": _deterministic_report(
+                    serial_number,
+                    status_data,
+                    timeout_seconds=timeout_seconds,
+                ),
+                "status_data": status_data,
+                "error": (
+                    "Meter status summary timed out; returned deterministic "
+                    "status facts instead."
+                ),
+                "timed_out": True,
+            }
+        return {
+            "success": False,
+            "report": None,
+            "status_data": None,
+            "error": (
+                f"Meter status agent timed out after {timeout_seconds:g}s."
+            ),
+            "timed_out": True,
+        }
     status_data = _collect_status_data(result.stderr)
     if result.returncode == 0:
         return {

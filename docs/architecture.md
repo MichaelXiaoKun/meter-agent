@@ -124,6 +124,8 @@ Admin and Sales turns follow the same high-level streaming pattern:
 4. Events update the shared frontend stream reducer and turn-activity timeline.
 5. On completion, the backend persists new messages and attaches a slim `turn_activity` block to the final assistant message so process status can be replayed after refresh or conversation switch.
 
+The backend emits an initial process event before heavy turn work so the UI can leave the "sending" state even if routing, model calls, or tool startup take longer than usual. Admin tool dispatch also emits `tool_call` / `tool_result` events around tool work. Safe read-only admin tools can run in parallel within a turn, and long subprocess wrappers such as `check_meter_status` have explicit timeouts and deterministic fallbacks when structured facts were already produced.
+
 State is deliberately split:
 
 | State | Owner | Notes |

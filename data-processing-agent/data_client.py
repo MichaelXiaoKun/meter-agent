@@ -8,6 +8,9 @@ Long ranges are automatically partitioned into 1-hour chunks so that
 no single API request exceeds 3600 seconds of data.
 """
 
+from __future__ import annotations
+
+import csv
 import json
 import os
 import sys
@@ -17,7 +20,6 @@ from io import StringIO
 from typing import Any, List, Optional, Tuple
 
 import httpx
-import pandas as pd
 
 # Override with BLUEBOT_FLOW_HIGH_RES_BASE if your tenant uses a different host/path.
 _DEFAULT_FLOW_BASE = "https://prod.bluebot.com/flow/v2/high-res/data"
@@ -42,6 +44,21 @@ def _flow_fetch_workers() -> int:
     return max(1, min(n, 32))
 
 
+def _flow_fetch_timeout_seconds() -> float:
+    raw = os.environ.get("BLUEBOT_FLOW_FETCH_TIMEOUT_SECONDS", "30")
+    try:
+        n = float(raw)
+    except ValueError:
+        return 30.0
+    return max(0.5, min(n, 120.0))
+
+
+def _pd():
+    import pandas as pd
+
+    return pd
+
+
 def _is_no_data_to_export_404(response: httpx.Response) -> bool:
     """
     True when the API has no samples for the requested window (e.g. meter offline).
@@ -63,6 +80,7 @@ def _is_no_data_to_export_404(response: httpx.Response) -> bool:
 
 
 def _empty_flow_dataframe() -> pd.DataFrame:
+    pd = _pd()
     return pd.DataFrame(
         {
             "timestamp": pd.Series(dtype="int64"),
@@ -106,6 +124,7 @@ def fetch_flow_data(
     range_end: int,
     token: Optional[str] = None,
     verbose: bool = False,
+    timeout: Optional[float] = None,
 ) -> pd.DataFrame:
     """
     Fetch flow rate time series from the bluebot API.
@@ -140,7 +159,13 @@ def fetch_flow_data(
     }
     headers = {**_FLOW_HEADERS_EXTRA, "Authorization": f"Bearer {token}"}
 
-    response = httpx.get(url, params=params, headers=headers, timeout=30)
+    pd = _pd()
+    response = httpx.get(
+        url,
+        params=params,
+        headers=headers,
+        timeout=timeout if timeout is not None else _flow_fetch_timeout_seconds(),
+    )
     if _is_no_data_to_export_404(response):
         if verbose:
             print(
@@ -205,6 +230,155 @@ def fetch_flow_data(
     return df
 
 
+def _float_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return number
+
+
+def _parse_flow_csv_records(text: str) -> list[dict[str, Any]]:
+    reader = csv.DictReader(StringIO(text))
+    out: list[dict[str, Any]] = []
+    for row in reader:
+        normalized = {
+            str(k).strip().lower(): v
+            for k, v in row.items()
+            if k is not None
+        }
+        timestamp_raw = normalized.get("timestamp", normalized.get("recorded_at"))
+        timestamp = _float_or_none(timestamp_raw)
+        if timestamp is None:
+            continue
+        out.append(
+            {
+                "timestamp": int(timestamp) // 1000,
+                "flow_rate": _float_or_none(normalized.get("flow_rate")),
+                "flow_amount": _float_or_none(normalized.get("flow_amount")),
+                "quality": _float_or_none(normalized.get("quality")),
+            }
+        )
+    out.sort(key=lambda row: row["timestamp"])
+    return out
+
+
+def fetch_flow_records(
+    serial_number: str,
+    range_start: int,
+    range_end: int,
+    token: Optional[str] = None,
+    verbose: bool = False,
+    timeout: Optional[float] = None,
+) -> list[dict[str, Any]]:
+    """Fetch high-res flow rows as plain records without importing pandas."""
+
+    token = token or os.environ.get("BLUEBOT_TOKEN")
+    if not token:
+        raise ValueError(
+            "Bearer token required. Pass --token or set the BLUEBOT_TOKEN environment variable."
+        )
+
+    base = _flow_base_url()
+    url = f"{base}/{serial_number}"
+    params = {
+        "range_start": range_start,
+        "range_end": range_end,
+        "fields": "quality,flow_amount,flow_rate",
+        "format": "csv",
+    }
+    headers = {**_FLOW_HEADERS_EXTRA, "Authorization": f"Bearer {token}"}
+
+    response = httpx.get(
+        url,
+        params=params,
+        headers=headers,
+        timeout=timeout if timeout is not None else _flow_fetch_timeout_seconds(),
+    )
+    if _is_no_data_to_export_404(response):
+        if verbose:
+            print(
+                f"  No data to export for range {range_start}–{range_end} (e.g. meter offline); skipping.",
+                file=sys.stderr,
+            )
+        return []
+
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        code = e.response.status_code
+        body = (e.response.text or "")[:500].strip()
+        hint = {
+            401: "Invalid or expired Bearer token.",
+            403: "Token is not allowed to read this meter.",
+            404: (
+                "No resource at this URL — often: wrong serial number, token cannot access this meter, "
+                "or high-res flow data is not available for this path. "
+                "Confirm the serial number and that ingestion is enabled."
+            ),
+        }.get(code, "Unexpected HTTP error from Bluebot flow API.")
+        raise RuntimeError(
+            f"Bluebot high-res API HTTP {code} for serial {serial_number!r}. {hint} "
+            f"Request URL: {url} (range {range_start}–{range_end}). "
+            f"Response: {body or '(empty body)'}"
+        ) from e
+
+    return _parse_flow_csv_records(response.text)
+
+
+def fetch_flow_records_range(
+    serial_number: str,
+    range_start: int,
+    range_end: int,
+    token: Optional[str] = None,
+    verbose: bool = True,
+    *,
+    return_metadata: bool = False,
+    timeout: Optional[float] = None,
+) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Fetch high-res flow rows over a range as plain records."""
+
+    token = token or os.environ.get("BLUEBOT_TOKEN")
+    if not token:
+        raise ValueError(
+            "Bearer token required. Pass --token or set the BLUEBOT_TOKEN environment variable."
+        )
+
+    chunks = partition_range(range_start, range_end)
+    t0 = time.monotonic()
+    rows: list[dict[str, Any]] = []
+    for i, (chunk_start, chunk_end) in enumerate(chunks, 1):
+        if verbose:
+            print(
+                f"  Chunk {i}/{len(chunks)}: {chunk_start} → {chunk_end} "
+                f"({chunk_end - chunk_start}s)",
+                file=sys.stderr,
+            )
+        rows.extend(
+            fetch_flow_records(
+                serial_number,
+                chunk_start,
+                chunk_end,
+                token=token,
+                verbose=verbose,
+                timeout=timeout,
+            )
+        )
+
+    elapsed = time.monotonic() - t0
+    deduped = {row["timestamp"]: row for row in rows if row.get("timestamp") is not None}
+    combined = [deduped[k] for k in sorted(deduped)]
+    if not return_metadata:
+        return combined
+    return combined, {
+        "chunk_count": len(chunks),
+        "fetch_workers": 1,
+        "fetch_elapsed_seconds": round(float(elapsed), 3),
+    }
+
+
 def fetch_flow_data_range(
     serial_number: str,
     range_start: int,
@@ -213,6 +387,7 @@ def fetch_flow_data_range(
     verbose: bool = True,
     *,
     return_metadata: bool = False,
+    timeout: Optional[float] = None,
 ) -> pd.DataFrame | tuple[pd.DataFrame, dict[str, Any]]:
     """
     Fetch flow rate data for an arbitrary time range, partitioned into
@@ -248,6 +423,7 @@ def fetch_flow_data_range(
             chunk_end,
             token,
             verbose=verbose,
+            timeout=timeout,
         )
 
     if workers <= 1 or len(chunks) <= 1:

@@ -2,7 +2,7 @@ import { defineConfig, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-const adminApiTarget = process.env.VITE_ADMIN_API_TARGET || 'http://localhost:8000'
+const adminApiTarget = process.env.VITE_ADMIN_API_TARGET || 'http://127.0.0.1:8000'
 const salesApiTarget = process.env.VITE_SALES_API_TARGET || adminApiTarget
 
 const configureStreamingProxy: ProxyOptions['configure'] = (proxy) => {

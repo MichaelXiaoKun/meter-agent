@@ -1,9 +1,10 @@
 """
-Process-wide 60-second sliding window of estimated input tokens for the Anthropic API key.
+Process-wide 60-second sliding window of estimated input tokens.
 
-Tracks usage from this orchestrator process only (count_tokens, messages.stream, messages.create).
-Subprocesses (e.g. data-processing-agent) use the same API key but a different process — they do not
-contribute unless you add reporting. Multi-replica deployments get one window per replica.
+Tracks usage from this orchestrator process only (count_tokens, messages.stream, messages.create),
+bucketed by model when callers provide one. Subprocesses (e.g. data-processing-agent) use the same
+API key but a different process — they do not contribute unless you add reporting. Multi-replica
+deployments get one window per replica.
 
 Thread-safe for concurrent chat threads in one uvicorn worker.
 """
@@ -20,19 +21,23 @@ from typing import Any
 _WINDOW_SEC = 60.0
 
 _lock = threading.Lock()
-_samples: deque[tuple[float, int]] = deque()
+_samples: deque[tuple[float, int, str]] = deque()
 
 
-def record_input_tokens(n: int) -> None:
+def _sample_key(model: str | None) -> str:
+    return (model or "").strip()
+
+
+def record_input_tokens(n: int, *, model: str | None = None) -> None:
     """Add *n* input tokens to the rolling window (one API request)."""
     if n <= 0:
         return
     with _lock:
         _prune_unlocked()
-        _samples.append((time.time(), n))
+        _samples.append((time.time(), n, _sample_key(model)))
 
 
-def record_input_tokens_from_usage(usage: Any) -> None:
+def record_input_tokens_from_usage(usage: Any, *, model: str | None = None) -> None:
     """Extract input_tokens from an Anthropic Usage object (or dict) if present."""
     if usage is None:
         return
@@ -40,7 +45,7 @@ def record_input_tokens_from_usage(usage: Any) -> None:
     if n is None and isinstance(usage, dict):
         n = usage.get("input_tokens")
     if isinstance(n, int) and n > 0:
-        record_input_tokens(n)
+        record_input_tokens(n, model=model)
 
 
 def _prune_unlocked() -> None:
@@ -49,11 +54,19 @@ def _prune_unlocked() -> None:
         _samples.popleft()
 
 
-def sliding_input_tokens_sum() -> int:
-    """Sum of recorded input tokens in the last ~60 seconds (this process)."""
+def sliding_input_tokens_sum(model: str | None = None) -> int:
+    """Sum recorded input tokens in the last ~60 seconds.
+
+    When *model* is provided, only samples recorded for that model are counted.
+    Calls that do not know their model are still available through the all-model
+    aggregate used by older callers.
+    """
     with _lock:
         _prune_unlocked()
-        return sum(t for _, t in _samples)
+        key = _sample_key(model)
+        if not key:
+            return sum(t for _, t, _ in _samples)
+        return sum(t for _, t, m in _samples if m == key)
 
 
 def _sliding_budget_fraction() -> float:
@@ -75,6 +88,7 @@ def wait_for_sliding_tpm_headroom(
     estimated_next_input_tokens: int,
     tpm_limit: int,
     *,
+    model: str | None = None,
     max_wait_seconds: float | None = None,
     poll_seconds: float = 1.0,
     on_wait: Callable[[dict[str, int | float]], None] | None = None,
@@ -92,7 +106,7 @@ def wait_for_sliding_tpm_headroom(
     if cap <= 0:
         return
     if estimated_next_input_tokens > cap:
-        s = sliding_input_tokens_sum()
+        s = sliding_input_tokens_sum(model)
         overflow = max(0, s + estimated_next_input_tokens - cap)
         if on_wait is not None:
             on_wait(
@@ -108,8 +122,8 @@ def wait_for_sliding_tpm_headroom(
         raise RuntimeError(
             f"Input-token rate limit: next call needs ~{estimated_next_input_tokens:,} "
             f"input tokens, above the configured budget of ~{cap:,}/min even with an empty "
-            "60s window. Raise ORCHESTRATOR_TPM_GUIDE_TOKENS for your Anthropic tier, lower "
-            "ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET, or reduce the conversation context."
+            "60s window. Raise the selected model's ORCHESTRATOR_TPM_GUIDE_TOKENS_* override, "
+            "lower its ORCHESTRATOR_MAX_INPUT_TOKENS_TARGET_* override, or reduce the conversation context."
         )
     max_wait = max_wait_seconds
     if max_wait is None:
@@ -121,7 +135,7 @@ def wait_for_sliding_tpm_headroom(
     start = time.time()
     deadline = start + max(5.0, max_wait)
     while True:
-        s = sliding_input_tokens_sum()
+        s = sliding_input_tokens_sum(model)
         if s + estimated_next_input_tokens <= cap:
             return
         if on_wait is not None:

@@ -173,7 +173,7 @@ def _sse_error_message(exc: BaseException) -> str:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     store._ensure_ready()
-    logger.info("Rate limit budgeting: %s", get_rate_limit_config_for_api())
+    logger.info("Rate limit budgeting: %s", get_rate_limit_config_for_api(allow_live=False))
     yield
 
 
@@ -472,6 +472,7 @@ _TURN_ACTIVITY_TYPES = frozenset(
         "tool_call",
         "tool_progress",
         "tool_result",
+        "meter_context",
         "config_confirmation_required",
         "config_confirmation_cancelled",
         "config_confirmation_superseded",

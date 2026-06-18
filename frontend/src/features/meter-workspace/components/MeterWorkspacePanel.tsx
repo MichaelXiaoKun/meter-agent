@@ -1,6 +1,5 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
-import type { Ticket, TicketStatus } from "../../../core/types";
 import type { MeterWorkspaceState } from "../../../core/meterWorkspace";
 import { proposedConfigLine } from "../../../core/configCompat";
 import {
@@ -15,12 +14,8 @@ import PlotImage from "../../chat/components/PlotImage";
 interface MeterWorkspacePanelProps {
   workspace: MeterWorkspaceState;
   processing: boolean;
-  tickets?: Ticket[];
   onCompose: (message: string) => void;
   onConfirmConfig: (actionId: string) => void;
-  onTrackNextAction?: (label: string) => void;
-  onTicketClaim?: (ticket: Ticket) => void;
-  onTicketStatus?: (ticket: Ticket, status: TicketStatus) => void;
 }
 
 function Field({ label, value }: { label: string; value?: string | number | null }) {
@@ -72,7 +67,12 @@ function Explain({
 function formatPipe(pipe: Record<string, unknown> | null | undefined): string {
   if (!pipe) return "Unknown";
   const material = typeof pipe.material === "string" ? pipe.material : "";
-  const standard = typeof pipe.standard === "string" ? pipe.standard : "";
+  const standard =
+    typeof pipe.standard === "string"
+      ? pipe.standard
+      : typeof pipe.pipe_standard === "string"
+        ? pipe.pipe_standard
+        : "";
   const size =
     typeof pipe.nominal_size === "string"
       ? pipe.nominal_size
@@ -97,23 +97,129 @@ function listValues(value: unknown): string[] {
     .map((item) => item.trim());
 }
 
-function prettyStatus(status: string): string {
-  return status.replaceAll("_", " ").replace(/^\w/, (m) => m.toUpperCase());
+function titleCase(value: string): string {
+  return value
+    .replace(/[_.]+/g, " ")
+    .replace(/^\w/, (m) => m.toUpperCase());
 }
 
-function prettyOwner(ticket: Ticket): string {
-  if (ticket.owner_type === "agent") return ticket.owner_id || "Agent";
-  if (ticket.owner_type === "human") return ticket.owner_id || "Human";
-  return "Unassigned";
+function healthLabel(workspace: MeterWorkspaceState): string {
+  const verdict = workspace.healthVerdict ? titleCase(workspace.healthVerdict) : "Unknown";
+  if (typeof workspace.healthScore === "number") {
+    return `${verdict} (${Math.round(workspace.healthScore)})`;
+  }
+  return verdict;
 }
 
-function relativeUpdated(ts: number): string {
-  if (!Number.isFinite(ts) || ts <= 0) return "";
-  const delta = Date.now() / 1000 - ts;
-  if (delta < 60) return "just now";
-  if (delta < 3600) return `${Math.round(delta / 60)}m ago`;
-  if (delta < 86400) return `${Math.round(delta / 3600)}h ago`;
-  return `${Math.round(delta / 86400)}d ago`;
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function compactNumber(value: unknown, digits = 2): string | undefined {
+  const n = numberValue(value);
+  if (n == null) return undefined;
+  return n.toLocaleString(undefined, {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: 0,
+  });
+}
+
+function formatDurationSeconds(value: unknown): string | undefined {
+  const seconds = numberValue(value);
+  if (seconds == null) return undefined;
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60);
+  if (minutes < 60) {
+    return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return mins ? `${hours}h ${mins}m` : `${hours}h`;
+}
+
+function recentFlowBadgeState(state: string): string {
+  const s = state.toLowerCase();
+  if (s === "checked") return "ok";
+  if (s === "empty") return "attention";
+  if (s === "timed_out" || s === "unavailable" || s === "not_checked") return "missing";
+  return s;
+}
+
+function stateClass(state: string): string {
+  const s = state.toLowerCase();
+  if (s === "ok") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/25 dark:text-emerald-200";
+  }
+  if (s === "attention") {
+    return "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/25 dark:text-amber-100";
+  }
+  if (s === "missing" || s === "not checked" || s === "not_checked") {
+    return "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-white/[0.04] dark:text-slate-200";
+  }
+  return "border-brand-border bg-white text-brand-muted dark:bg-white/[0.04]";
+}
+
+function actionPrompt(label: string, serial: string): string {
+  if (/refresh|health|status/i.test(label)) {
+    return `Refresh health for meter ${serial}`;
+  }
+  if (/gap|outage/i.test(label)) {
+    return `Check gaps and outages for meter ${serial} over the last 24 hours`;
+  }
+  if (/compare|yesterday|today/i.test(label)) {
+    return `Compare today vs yesterday for meter ${serial}`;
+  }
+  if (/pipe|config/i.test(label)) {
+    return `Inspect pipe configuration for meter ${serial}`;
+  }
+  if (/flow|24h|24 h|window/i.test(label)) {
+    return `Analyze the last 24 hours of flow data for meter ${serial}`;
+  }
+  return `${label} for meter ${serial}`;
+}
+
+function RecentFlowCard({ recentFlow }: { recentFlow: Record<string, unknown> }) {
+  const state = textValue(recentFlow.state) ?? "unknown";
+  const reason = textValue(recentFlow.reason);
+  const sampleCount = compactNumber(recentFlow.sample_count, 0);
+  const validFlowCount = compactNumber(recentFlow.valid_flow_count, 0);
+  const latestFlow = compactNumber(recentFlow.latest_flow_rate, 4);
+  const meanFlow = compactNumber(recentFlow.mean_flow_rate, 4);
+  const largestGap = formatDurationSeconds(recentFlow.largest_gap_seconds);
+  const gapCount = compactNumber(recentFlow.gap_count, 0);
+  return (
+    <div className="space-y-3 rounded-md border border-brand-border/80 bg-white/70 px-3 py-3 text-xs dark:bg-white/[0.04]">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-sm font-semibold text-brand-900">
+          {titleCase(state)}
+        </span>
+        <span
+          className={[
+            "rounded-md border px-2 py-1 font-semibold",
+            stateClass(recentFlowBadgeState(state)),
+          ].join(" ")}
+        >
+          {titleCase(textValue(recentFlow.snapshot_quality) ?? state)}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Window" value={formatDurationSeconds(recentFlow.window_seconds)} />
+        <Field label="Latest age" value={formatDurationSeconds(recentFlow.latest_sample_age_seconds)} />
+        <Field label="Samples" value={sampleCount} />
+        <Field label="Valid flow" value={validFlowCount} />
+        <Field label="Latest flow" value={latestFlow} />
+        <Field label="Mean flow" value={meanFlow} />
+        <Field label="Largest gap" value={largestGap} />
+        <Field label="Gaps" value={gapCount} />
+      </div>
+      {reason && (
+        <p className="rounded-md border border-brand-border/70 bg-brand-50/80 px-3 py-2 leading-relaxed text-brand-muted dark:bg-white/[0.04]">
+          {reason}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function evidenceMessages(
@@ -279,12 +385,8 @@ function TabSummary({
 export default function MeterWorkspacePanel({
   workspace,
   processing,
-  tickets = [],
   onCompose,
   onConfirmConfig,
-  onTrackNextAction,
-  onTicketClaim,
-  onTicketStatus,
 }: MeterWorkspacePanelProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [analysisTab, setAnalysisTab] = useState<AnalysisTab>("overview");
@@ -307,6 +409,7 @@ export default function MeterWorkspacePanel({
               )}
             </div>
             <div className="grid grid-cols-2 gap-3">
+              <Field label="Health" value={healthLabel(workspace)} />
               <Field label="Network" value={workspace.networkType ?? "Unknown"} />
               <Field label="Timezone" value={workspace.timezone ?? "Unknown"} />
               <Field
@@ -319,12 +422,69 @@ export default function MeterWorkspacePanel({
                       : "Unknown"
                 }
               />
+              <Field label="Last seen" value={workspace.lastMessageAt ?? "Unknown"} />
+              <Field label="Freshness" value={workspace.communicationStatus ? titleCase(workspace.communicationStatus) : "Unknown"} />
               <Field label="Signal" value={signalLabel(workspace.signal)} />
             </div>
+            {workspace.statusSummaryTimedOut && (
+              <p className="rounded-md border border-amber-200 bg-amber-50/80 px-3 py-2 text-xs leading-relaxed text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/25 dark:text-amber-100">
+                Status facts loaded; narrative summary timed out.
+              </p>
+            )}
           </div>
         ) : (
           <p className="text-sm leading-relaxed text-brand-muted">
             Ask about a meter serial to build a workspace here.
+          </p>
+        )}
+      </Section>
+
+      <Section title="Diagnostic Signals">
+        {workspace.diagnosticSignals.length > 0 ? (
+          <div className="space-y-3">
+            <div className="space-y-2">
+              {workspace.diagnosticSignals.map((signal) => (
+                <div
+                  key={`${signal.name}-${signal.state}`}
+                  className={[
+                    "flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-xs",
+                    stateClass(signal.state),
+                  ].join(" ")}
+                >
+                  <span className="font-semibold">{titleCase(signal.name)}</span>
+                  <span className="shrink-0">
+                    {titleCase(signal.state)}
+                    {signal.confidence ? ` · ${titleCase(signal.confidence)}` : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {workspace.knownMissing.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {workspace.knownMissing.map((item) => (
+                  <span
+                    key={item}
+                    className="rounded border border-brand-border bg-white px-2 py-1 text-[10px] font-medium text-brand-muted dark:bg-white/[0.04]"
+                  >
+                    {titleCase(item)}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="text-sm leading-relaxed text-brand-muted">
+            Live status signals appear after a meter health check.
+          </p>
+        )}
+      </Section>
+
+      <Section title="Recent Flow">
+        {workspace.recentFlow ? (
+          <RecentFlowCard recentFlow={workspace.recentFlow} />
+        ) : (
+          <p className="text-sm leading-relaxed text-brand-muted">
+            Recent flow snapshot appears after a meter health check.
           </p>
         )}
       </Section>
@@ -444,117 +604,21 @@ export default function MeterWorkspacePanel({
         </div>
       </Section>
 
-      <Section title="Tickets">
-        {tickets.length > 0 ? (
-          <div className="space-y-2">
-            {tickets.map((ticket) => (
-              <div
-                key={ticket.id}
-                className="space-y-2 rounded-md border border-brand-border/80 bg-white/75 px-3 py-3 text-xs dark:bg-white/[0.04]"
-              >
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold text-brand-900">
-                    {ticket.title}
-                  </div>
-                  <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] font-medium text-brand-muted">
-                    <span className="rounded border border-brand-border px-1.5 py-0.5">
-                      {prettyStatus(ticket.status)}
-                    </span>
-                    <span className="rounded border border-brand-border px-1.5 py-0.5">
-                      {ticket.priority}
-                    </span>
-                    <span className="rounded border border-brand-border px-1.5 py-0.5">
-                      {prettyOwner(ticket)}
-                    </span>
-                    {relativeUpdated(ticket.updated_at) && (
-                      <span className="rounded border border-brand-border px-1.5 py-0.5">
-                        {relativeUpdated(ticket.updated_at)}
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <p className="line-clamp-2 leading-relaxed text-brand-muted">
-                  {ticket.success_criteria}
-                </p>
-                <div className="grid grid-cols-2 gap-1.5">
-                  <button
-                    type="button"
-                    disabled={processing}
-                    onClick={() => onTicketClaim?.(ticket)}
-                    className="min-h-8 rounded-md border border-brand-border bg-white px-2 text-xs font-semibold text-brand-800 transition hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.04]"
-                  >
-                    Claim
-                  </button>
-                  <button
-                    type="button"
-                    disabled={processing}
-                    onClick={() => onTicketStatus?.(ticket, "in_progress")}
-                    className="min-h-8 rounded-md border border-brand-border bg-white px-2 text-xs font-semibold text-brand-800 transition hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.04]"
-                  >
-                    Start
-                  </button>
-                  <button
-                    type="button"
-                    disabled={processing}
-                    onClick={() => onTicketStatus?.(ticket, "resolved")}
-                    className="min-h-8 rounded-md border border-emerald-300 bg-emerald-50 px-2 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-900/60 dark:bg-emerald-950/25 dark:text-emerald-200"
-                  >
-                    Resolve
-                  </button>
-                  <button
-                    type="button"
-                    disabled={processing}
-                    onClick={() => onTicketStatus?.(ticket, "cancelled")}
-                    className="min-h-8 rounded-md border border-brand-border bg-white px-2 text-xs font-semibold text-brand-muted transition hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.04]"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm leading-relaxed text-brand-muted">
-            No open tickets for this meter and conversation.
-          </p>
-        )}
-      </Section>
-
       <Section title="Next Actions">
         <div className="flex flex-col gap-2">
           {(workspace.nextActions.length
             ? workspace.nextActions
-            : ["Run health check", "Analyze recent flow", "Configure safely"]
+            : ["Refresh health", "Run last 24h flow analysis", "Check gaps or outages", "Compare today vs yesterday", "Inspect pipe configuration"]
           ).map((label) => (
-            <div
+            <button
               key={label}
-              className="grid grid-cols-[1fr_auto] overflow-hidden rounded-md border border-brand-border/80 bg-white dark:bg-white/[0.04]"
+              type="button"
+              disabled={processing}
+              className="min-h-9 rounded-md border border-brand-border/80 bg-white px-3 py-2 text-left text-sm font-medium text-brand-800 transition hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.04] dark:text-brand-900 dark:hover:bg-white/[0.08]"
+              onClick={() => onCompose(actionPrompt(label, serial || "<METER SERIAL>"))}
             >
-              <button
-                type="button"
-                className="min-h-9 px-3 py-2 text-left text-sm font-medium text-brand-800 transition hover:bg-brand-50 dark:text-brand-900 dark:hover:bg-white/[0.08]"
-                onClick={() => {
-                  const s = serial || "<METER SERIAL>";
-                  if (/flow|window|compare/i.test(label)) {
-                    onCompose(`Analyze the last 24 hours of flow data for meter ${s}`);
-                  } else if (/pipe|configure/i.test(label)) {
-                    onCompose(`Configure meter ${s} safely. I need to set pipe material, standard, size, and transducer angle.`);
-                  } else {
-                    onCompose(`Run a health check on meter ${s}`);
-                  }
-                }}
-              >
-                {label}
-              </button>
-              <button
-                type="button"
-                disabled={processing}
-                className="min-h-9 border-l border-brand-border/70 px-2.5 text-xs font-semibold text-brand-muted transition hover:bg-brand-50 hover:text-brand-800 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/[0.08] dark:hover:text-brand-900"
-                onClick={() => onTrackNextAction?.(label)}
-              >
-                Track
-              </button>
-            </div>
+              {label}
+            </button>
           ))}
         </div>
       </Section>

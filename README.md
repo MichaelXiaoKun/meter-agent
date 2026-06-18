@@ -179,6 +179,12 @@ Start both servers with the wrapper:
 ./run_project.sh --reload
 ```
 
+To run the Admin assistant without Sales routes mounted, set host mode before using the wrapper:
+
+```bash
+BLUEBOT_HOST_MODE=admin ./run_project.sh --reload
+```
+
 Or start them separately in two terminals:
 
 ```bash
@@ -190,6 +196,8 @@ Or start them separately in two terminals:
 ```
 
 Open the Vite URL, usually [http://localhost:5173](http://localhost:5173). Choose **Sales** for the public assistant or **Admin** for the Auth0-protected assistant.
+
+Set `DATABASE_URL` to use PostgreSQL. Leave it unset, or pass `--sqlite`, to use local SQLite. For a faster backend loop when reload is not needed, run `./run_backend.sh --mode admin`.
 
 <a id="file-guide"></a>
 

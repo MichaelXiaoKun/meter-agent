@@ -144,6 +144,46 @@ assert.equal(diagnosticPlot.caption.next_actions[0], "Explain this drift");
 assert.equal(state.flow.plotExplanation.markers[0].source, "cusum_drift");
 assert.equal(state.nextActions[0], "Check signal quality now");
 
+const contextOnly = mod.buildMeterWorkspace([], [
+  {
+    type: "meter_context",
+    meter_context: {
+      serial_number: "BB2",
+      label: "Mechanical Room",
+      network_type: "wifi",
+      online: true,
+      communication_status: "fresh",
+      health_score: 92,
+      health_verdict: "healthy",
+      recent_flow: {
+        state: "checked",
+        window_seconds: 300,
+        sample_count: 42,
+        valid_flow_count: 42,
+        latest_sample_age_seconds: 3,
+        latest_flow_rate: 1.25,
+        mean_flow_rate: 1.1,
+        largest_gap_seconds: 2,
+        gap_count: 0,
+        snapshot_quality: "usable",
+      },
+      diagnostic_signals: [
+        { name: "telemetry_freshness", state: "ok", confidence: "high" },
+        { name: "recent_flow", state: "ok", confidence: "high" },
+      ],
+      recommended_next_tools: ["Run last 24h flow analysis for BB2"],
+    },
+  },
+]);
+assert.equal(contextOnly.serialNumber, "BB2");
+assert.equal(contextOnly.healthScore, 92);
+assert.equal(contextOnly.healthVerdict, "healthy");
+assert.equal(contextOnly.communicationStatus, "fresh");
+assert.equal(contextOnly.diagnosticSignals[0].name, "telemetry_freshness");
+assert.equal(contextOnly.recentFlow.state, "checked");
+assert.equal(contextOnly.recentFlow.sample_count, 42);
+assert.equal(contextOnly.nextActions[0], "Run last 24h flow analysis for BB2");
+
 const pending = mod.buildMeterWorkspace([], [
   {
     type: "config_confirmation_required",

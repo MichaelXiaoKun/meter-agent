@@ -962,12 +962,30 @@ export interface OrchestratorModelOption {
   description: string;
   /** Per-model TPM guide for the UI's rate-limit bar when this model is selected. */
   tpm_input_guide_tokens: number;
+  /** Per-model input token count before proactive compression. */
+  max_input_tokens_target?: number;
+  /** Full context window for this model. */
+  context_window?: number;
+  /** Rolling 60s input-token usage for this model on the current API process. */
+  tpm_sliding_input_tokens_60s?: number;
+  /** Live output-token limit when available from provider headers. */
+  output_tpm_limit?: number | null;
+  /** Live request-per-minute limit when available from provider headers. */
+  rpm_limit?: number | null;
+  /** Live total-token limit when available from provider headers. */
+  total_tpm_limit?: number | null;
+  /** Where the rate limit came from: provider headers, env override, or catalog fallback. */
+  rate_limit_source?: string | null;
   /** True for the model the server falls back to when no pick is sent. */
   is_default: boolean;
 }
 
 export interface OrchestratorConfig {
   tpm_input_guide_tokens: number;
+  output_tpm_limit?: number | null;
+  rpm_limit?: number | null;
+  total_tpm_limit?: number | null;
+  rate_limit_source?: string | null;
   /** Input token count before run_turn compresses (TPM headroom; shown as main context bar). */
   max_input_tokens_target: number;
   /** Full model context window in tokens (informational). */
