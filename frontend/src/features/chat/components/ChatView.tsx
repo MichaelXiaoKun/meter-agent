@@ -1,6 +1,5 @@
 import {
   useEffect,
-  useCallback,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -213,7 +212,6 @@ export default function ChatView({
   selectedModel,
   onSelectModel,
   accessToken,
-  userId,
   anthropicApiKey,
   onToast,
   share,
