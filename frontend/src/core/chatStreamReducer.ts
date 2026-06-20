@@ -191,7 +191,8 @@ export function applyStreamEventToChatState(
     event.type === "tool_result" ||
     event.type === "config_confirmation_required" ||
     event.type === "config_confirmation_cancelled" ||
-    event.type === "config_confirmation_superseded"
+    event.type === "config_confirmation_superseded" ||
+    event.type === "questionnaire_requested"
   ) {
     state.workspaceEvents = [...state.workspaceEvents, event];
   }
@@ -214,6 +215,7 @@ export function applyStreamEventToChatState(
     event.type === "config_confirmation_required" ||
     event.type === "config_confirmation_cancelled" ||
     event.type === "config_confirmation_superseded" ||
+    event.type === "questionnaire_requested" ||
     event.type === "error" ||
     event.type === "tool_round_limit" ||
     event.type === "done";

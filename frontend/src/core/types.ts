@@ -60,6 +60,37 @@ export interface Message {
   content: string | ContentBlock[];
 }
 
+export interface QuestionnaireOption {
+  id: string;
+  label: string;
+}
+
+export interface QuestionnaireQuestion {
+  id: string;
+  text: string;
+  type: "single_choice" | "multi_choice";
+  options: QuestionnaireOption[];
+}
+
+export interface Questionnaire {
+  type?: "questionnaire";
+  id: string;
+  status?: "pending" | "answered" | string;
+  message?: string;
+  questions: QuestionnaireQuestion[];
+}
+
+export interface QuestionnaireAnswer {
+  question_id: string;
+  option_ids: string[];
+  labels?: string[];
+}
+
+export interface QuestionnaireResponse {
+  questionnaire_id: string;
+  answers: QuestionnaireAnswer[];
+}
+
 /** One plot file from ``analyze_flow_data`` — matches ``plot_paths`` order. */
 export interface DiagnosticMarker {
   type: string;
@@ -124,6 +155,7 @@ export interface SSEEvent {
   | "config_confirmation_required"
   | "config_confirmation_cancelled"
   | "config_confirmation_superseded"
+  | "questionnaire_requested"
   | "thinking"
   | "token_usage"
   | "compressing"
@@ -254,6 +286,8 @@ export interface SSEEvent {
     final_action?: string | null;
     notice?: string | null;
   };
+  questionnaire?: Questionnaire;
+  pending?: boolean;
   ticket?: Ticket;
   tickets?: Ticket[];
   plot_paths?: string[];

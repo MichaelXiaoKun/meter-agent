@@ -37,7 +37,15 @@ function CopyButton({ text }: { text: string }) {
 }
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { DownloadArtifact, Message, ContentBlock, PlotAttachment, SSEEvent } from "../../../core/types";
+import type {
+  DownloadArtifact,
+  Message,
+  ContentBlock,
+  PlotAttachment,
+  Questionnaire,
+  QuestionnaireResponse,
+  SSEEvent,
+} from "../../../core/types";
 import {
   rebuildStepsFromStoredEvents,
   splitActivityAtFirstTool,
@@ -49,6 +57,7 @@ import ArtifactLinks from "./ArtifactLinks";
 import TurnActivityTimeline from "./TurnActivityTimeline";
 import ConfigConfirmationCard from "./ConfigConfirmationCard";
 import SweepResultCard from "./SweepResultCard";
+import QuestionnaireCard from "./QuestionnaireCard";
 
 type ConfigWorkflow = NonNullable<SSEEvent["config_workflow"]>;
 type ToastFn = (a: {
@@ -80,6 +89,29 @@ function hasTurnActivityBlock(content: string | ContentBlock[]): boolean {
 function hasToolUseBlock(content: string | ContentBlock[]): boolean {
   if (typeof content === "string") return false;
   return content.some((b) => b.type === "tool_use");
+}
+
+function questionnaireFromMessage(content: string | ContentBlock[]): Questionnaire | null {
+  if (typeof content === "string") return null;
+  const block = content.find((b) => b.type === "questionnaire");
+  if (!block || typeof block.id !== "string") return null;
+  const candidate = block as unknown as Questionnaire;
+  return Array.isArray(candidate.questions) ? candidate : null;
+}
+
+function answeredQuestionnaireIds(transcript?: Message[], afterIndex?: number): Set<string> {
+  const out = new Set<string>();
+  if (!transcript || afterIndex == null) return out;
+  for (let i = afterIndex + 1; i < transcript.length; i += 1) {
+    const content = transcript[i]?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block.type !== "questionnaire_response") continue;
+      const qid = (block as unknown as QuestionnaireResponse).questionnaire_id;
+      if (typeof qid === "string" && qid) out.add(qid);
+    }
+  }
+  return out;
 }
 
 /** True if a later assistant in this turn (before the next real user) carries ``turn_activity``. */
@@ -245,7 +277,9 @@ interface MessageBubbleProps {
   onConfirmConfig?: (workflow: ConfigWorkflow) => void;
   onCancelConfig?: (workflow: ConfigWorkflow) => void;
   onTypeOtherConfig?: (workflow: ConfigWorkflow) => void;
+  onSubmitQuestionnaire?: (questionnaire: Questionnaire, response: QuestionnaireResponse, summary: string) => void;
   configActionsDisabled?: boolean;
+  questionnaireActionsDisabled?: boolean;
   liveConfigEvents?: SSEEvent[];
   accessToken?: string | null;
   anthropicApiKey?: string | null;
@@ -261,7 +295,9 @@ export default function MessageBubble({
   onConfirmConfig,
   onCancelConfig,
   onTypeOtherConfig,
+  onSubmitQuestionnaire,
   configActionsDisabled,
+  questionnaireActionsDisabled,
   liveConfigEvents,
   accessToken,
   anthropicApiKey,
@@ -307,6 +343,17 @@ export default function MessageBubble({
   const sweepResult = useMemo(
     () => (message.role === "assistant" ? sweepResultFromMessage(message.content) : null),
     [message.role, message.content]
+  );
+  const questionnaire = useMemo(
+    () => (message.role === "assistant" ? questionnaireFromMessage(message.content) : null),
+    [message.role, message.content]
+  );
+  const questionnaireAnswered = useMemo(
+    () =>
+      questionnaire
+        ? answeredQuestionnaireIds(transcript, messageIndex).has(questionnaire.id)
+        : false,
+    [questionnaire, transcript, messageIndex],
   );
 
   // When tool_result provides plot_paths, render images only from those URLs — not from
@@ -356,7 +403,7 @@ export default function MessageBubble({
   if (shouldHideToolResultRow || shouldHideFoldedPreamble) return null;
   // User bubbles need text. Assistant bubbles need text, artifacts, and/or persisted turn activity.
   if (isUser && !trimmed) return null;
-  if (!isUser && !trimmed && !hasPlots && !hasArtifacts && !hasHistoryActivity && !sweepResult) return null;
+  if (!isUser && !trimmed && !hasPlots && !hasArtifacts && !hasHistoryActivity && !sweepResult && !questionnaire) return null;
 
   const showPostBubble = Boolean(trimmed) || hasPlots || hasArtifacts;
 
@@ -475,6 +522,16 @@ export default function MessageBubble({
             onTypeOther={onTypeOtherConfig}
           />
         ) : null}
+        {questionnaire ? (
+          <QuestionnaireCard
+            questionnaire={questionnaire}
+            answered={questionnaireAnswered}
+            disabled={questionnaireActionsDisabled}
+            onSubmit={(response, summary) =>
+              onSubmitQuestionnaire?.(questionnaire, response, summary)
+            }
+          />
+        ) : null}
         {sweepResult ? <SweepResultCard result={sweepResult} /> : null}
       </div>
     );
@@ -492,6 +549,16 @@ export default function MessageBubble({
         </div>
         {text && <CopyButton text={text} />}
       </div>
+      {questionnaire ? (
+        <QuestionnaireCard
+          questionnaire={questionnaire}
+          answered={questionnaireAnswered}
+          disabled={questionnaireActionsDisabled}
+          onSubmit={(response, summary) =>
+            onSubmitQuestionnaire?.(questionnaire, response, summary)
+          }
+        />
+      ) : null}
     </div>
   );
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import ts from "typescript";
+import * as ts from "typescript";
 
 const outDir = join(tmpdir(), "bluebot-api-stream-tests");
 await mkdir(outDir, { recursive: true });

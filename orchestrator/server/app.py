@@ -256,6 +256,9 @@ class ChatRequest(BaseModel):
     # the server allowlist in run_turn → resolve_orchestrator_model; unknown
     # values silently fall back to the server default.
     model: str | None = None
+    # Optional structured answers for an assistant questionnaire. Stored as a
+    # UI block next to the text summary; the model reads the summary text.
+    questionnaire_response: dict | None = None
 
 class SalesConversationRequest(BaseModel):
     title: str = ""

@@ -97,6 +97,76 @@ def test_route_intent_rules(text: str, expected: str) -> None:
     assert orch._route_intent_rules(text) == expected
 
 
+@pytest.mark.parametrize(
+    "messages",
+    [
+        [{"role": "user", "content": "can you check?"}],
+        [{"role": "user", "content": "帮我看看"}],
+        [{"role": "user", "content": "meter is not working"}],
+        [{"role": "user", "content": ""}],
+    ],
+)
+def test_needs_clarification_for_vague_requests(messages: list[dict]) -> None:
+    assert orch._needs_clarification(messages) is True
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        [{"role": "user", "content": "Is BB8100015261 online?"}],
+        [{"role": "user", "content": "my meter is offline"}],
+        [{"role": "user", "content": "给 BB8100015261 做零点设置"}],
+        [
+            {"role": "user", "content": "can you analyze data over the past 2 hours?"},
+            {"role": "assistant", "content": [{"type": "text", "text": "Which serial?"}]},
+            {"role": "user", "content": "it's BB8100013600"},
+        ],
+    ],
+)
+def test_needs_clarification_does_not_block_actionable_requests(messages: list[dict]) -> None:
+    assert orch._needs_clarification(messages) is False
+
+
+def test_questionnaire_planner_runs_for_deep_problem_without_serial() -> None:
+    assert (
+        orch._should_run_questionnaire_planner(
+            [{"role": "user", "content": "这个表长期信号差，是不是安装问题，下一步应该怎么处理？"}]
+        )
+        is True
+    )
+
+
+def test_questionnaire_planner_does_not_replace_serial_angle_experiment() -> None:
+    assert (
+        orch._should_run_questionnaire_planner(
+            [{"role": "user", "content": "BB8100015261 是不是安装角度导致信号问题？"}]
+        )
+        is False
+    )
+
+
+def test_questionnaire_planner_skips_after_questionnaire_response() -> None:
+    assert (
+        orch._should_run_questionnaire_planner(
+            [
+                {"role": "assistant", "content": [{"type": "questionnaire", "id": "qq1", "questions": []}]},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Questionnaire answers:\n- q1: A"},
+                        {
+                            "type": "questionnaire_response",
+                            "questionnaire_id": "qq1",
+                            "answers": [],
+                        },
+                    ],
+                },
+            ]
+        )
+        is False
+    )
+
+
 def test_resolve_routed_tools_off_full_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ORCHESTRATOR_INTENT_ROUTER", "off")
 
@@ -108,6 +178,32 @@ def test_resolve_routed_tools_off_full_catalog(monkeypatch: pytest.MonkeyPatch) 
     full_tools = orch.TOOLS() if callable(orch.TOOLS) else orch.TOOLS
     assert len(tools) == len(full_tools)
     assert _names(tools) == _names(full_tools)
+
+
+def test_resolve_routed_tools_rules_clarify_has_no_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ORCHESTRATOR_INTENT_ROUTER", "rules")
+    events: list[dict] = []
+
+    tools, label, src = orch._resolve_routed_tools(
+        MagicMock(),
+        _CHEAP_MODEL,
+        [{"role": "user", "content": "can you check?"}],
+        emit=events.append,
+    )
+
+    assert tools == []
+    assert label == "clarify"
+    assert src == "rules"
+    assert events == [
+        {
+            "type": "intent_route",
+            "intent": "clarify",
+            "source": "rules",
+            "tools": [],
+        }
+    ]
 
 
 def test_resolve_routed_tools_rules_flow_persists_across_serial_followup(

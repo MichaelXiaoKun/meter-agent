@@ -17,6 +17,7 @@ import { useChat } from "../hooks/useChat";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { fetchOrchestratorConfig } from "../api/client";
 import type { OrchestratorModelOption } from "../api/client";
+import type { QuestionnaireResponse } from "../core/types";
 import {
   cancellationUserMessage,
   confirmationUserMessage,
@@ -459,6 +460,7 @@ export default function App() {
       confirmedActionId?: string | null;
       cancelledActionId?: string | null;
       supersededActionId?: string | null;
+      questionnaireResponse?: QuestionnaireResponse | null;
     },
   ) {
     if (adminSendInFlightRef.current) return;

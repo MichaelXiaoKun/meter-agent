@@ -100,7 +100,17 @@ async def chat_init(
     user_anthropic_key = (x_llm_key or x_anthropic_key or "").strip() or None
     messages = app_runtime.store.load_messages(conv_id)
 
-    user_msg = {"role": "user", "content": body.message}
+    if isinstance(body.questionnaire_response, dict):
+        user_content: str | list[dict] = [
+            {"type": "text", "text": body.message},
+            {
+                **body.questionnaire_response,
+                "type": "questionnaire_response",
+            },
+        ]
+    else:
+        user_content = body.message
+    user_msg = {"role": "user", "content": user_content}
     messages.append(user_msg)
     # n_messages_after_user used to calculate how many DB messages the summary covers on compress.
     n_messages_after_user = len(messages)
@@ -210,6 +220,8 @@ async def chat_init(
             "intent",
             "source",
             "tools",
+            "questionnaire",
+            "pending",
             "rate_limit_wait_seconds",
             "current_tokens",
             "estimated_next_tokens",
