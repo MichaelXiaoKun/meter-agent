@@ -174,6 +174,25 @@ def test_ticket_accountability_rule(system_prompt):
     assert "Public sales mode must never create admin tickets" in rule
 
 
+def test_unclear_requests_rule(system_prompt):
+    assert "Unclear or off-topic requests" in system_prompt
+    rule = _extract_rule(system_prompt, 24)
+    assert "too vague" in rule
+    assert "do not guess" in rule
+    assert "do not call a tool first" in rule
+    assert "serial number" in rule
+
+
+def test_deep_diagnostic_clarification_rule(system_prompt):
+    assert "Deep diagnostic clarification" in system_prompt
+    rule = _extract_rule(system_prompt, 25)
+    assert "root-cause" in rule
+    assert "multi-factor decision" in rule
+    assert "choice-style question" in rule
+    assert "questionnaire" in rule
+    assert "continue the normal analysis" in rule
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -1,7 +1,14 @@
 import { motion } from "framer-motion";
 import { messageVariants, imageVariants } from "../../../utils/animations";
 import MessageBubble from "./MessageBubble";
-import type { DownloadArtifact, Message, PlotAttachment, SSEEvent } from "../../../core/types";
+import type {
+  DownloadArtifact,
+  Message,
+  PlotAttachment,
+  Questionnaire,
+  QuestionnaireResponse,
+  SSEEvent,
+} from "../../../core/types";
 
 type ConfigWorkflow = NonNullable<SSEEvent["config_workflow"]>;
 type ToastFn = (a: {
@@ -19,7 +26,9 @@ interface AnimatedMessageBubbleProps {
   onConfirmConfig?: (workflow: ConfigWorkflow) => void;
   onCancelConfig?: (workflow: ConfigWorkflow) => void;
   onTypeOtherConfig?: (workflow: ConfigWorkflow) => void;
+  onSubmitQuestionnaire?: (questionnaire: Questionnaire, response: QuestionnaireResponse, summary: string) => void;
   configActionsDisabled?: boolean;
+  questionnaireActionsDisabled?: boolean;
   liveConfigEvents?: SSEEvent[];
   accessToken?: string | null;
   anthropicApiKey?: string | null;
@@ -38,7 +47,9 @@ export default function AnimatedMessageBubble({
   onConfirmConfig,
   onCancelConfig,
   onTypeOtherConfig,
+  onSubmitQuestionnaire,
   configActionsDisabled,
+  questionnaireActionsDisabled,
   liveConfigEvents,
   accessToken,
   anthropicApiKey,
@@ -61,7 +72,9 @@ export default function AnimatedMessageBubble({
         onConfirmConfig={onConfirmConfig}
         onCancelConfig={onCancelConfig}
         onTypeOtherConfig={onTypeOtherConfig}
+        onSubmitQuestionnaire={onSubmitQuestionnaire}
         configActionsDisabled={configActionsDisabled}
+        questionnaireActionsDisabled={questionnaireActionsDisabled}
         liveConfigEvents={liveConfigEvents}
         accessToken={accessToken}
         anthropicApiKey={anthropicApiKey}

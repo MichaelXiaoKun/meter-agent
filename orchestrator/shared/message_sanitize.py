@@ -1,11 +1,14 @@
 """
-Strip UI-only content blocks (``turn_activity``) before calls to Anthropic.
+Strip UI-only content blocks (``turn_activity`` / questionnaires) before calls to Anthropic.
 
 Persisted history may include a ``turn_activity`` dict on the last assistant
 message of a turn; it must not be sent back to the model.
 """
 
 TURN_ACTIVITY_BLOCK = "turn_activity"
+QUESTIONNAIRE_BLOCK = "questionnaire"
+QUESTIONNAIRE_RESPONSE_BLOCK = "questionnaire_response"
+UI_ONLY_BLOCKS = {TURN_ACTIVITY_BLOCK, QUESTIONNAIRE_BLOCK, QUESTIONNAIRE_RESPONSE_BLOCK}
 
 
 def _block_type(block: object) -> str | None:
@@ -19,7 +22,7 @@ def _block_type(block: object) -> str | None:
 def content_without_turn_activity(content: object) -> object:
     if not isinstance(content, list):
         return content
-    return [b for b in content if _block_type(b) != TURN_ACTIVITY_BLOCK]
+    return [b for b in content if _block_type(b) not in UI_ONLY_BLOCKS]
 
 
 def _tool_use_ids(message: dict) -> set[str]:

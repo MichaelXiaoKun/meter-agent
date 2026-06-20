@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { Message, SSEEvent } from "../core/types";
+import type { Message, QuestionnaireResponse, SSEEvent } from "../core/types";
 import * as api from "../api/client";
 import {
   applyStreamEventToChatState,
@@ -666,6 +666,7 @@ export function useChat(
         confirmedActionId?: string | null;
         cancelledActionId?: string | null;
         supersededActionId?: string | null;
+        questionnaireResponse?: QuestionnaireResponse | null;
       },
     ) => {
       const convId = convIdOverride ?? activeConvId;
@@ -755,6 +756,7 @@ export function useChat(
           options?.confirmedActionId ?? null,
           options?.cancelledActionId ?? null,
           options?.supersededActionId ?? null,
+          options?.questionnaireResponse ?? null,
           (info) => {
             activeClientStreamIdsRef.current.set(convId, info.streamId);
             const liveState = getConvStreamingState(convId);

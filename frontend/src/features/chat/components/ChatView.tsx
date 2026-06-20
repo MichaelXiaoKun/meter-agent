@@ -1,6 +1,5 @@
 import {
   useEffect,
-  useCallback,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -10,7 +9,14 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { DownloadArtifact, Message, PlotAttachment, SSEEvent } from "../../../core/types";
+import type {
+  DownloadArtifact,
+  Message,
+  PlotAttachment,
+  Questionnaire,
+  QuestionnaireResponse,
+  SSEEvent,
+} from "../../../core/types";
 import type { AgentStatus } from "../../../hooks/useChat";
 import AnimatedMessageBubble from "./AnimatedMessageBubble";
 import { extractPlotAttachments } from "./plotAttachments";
@@ -29,6 +35,7 @@ import ThemeToggle from "../../theme/components/ThemeToggle";
 import SharePopover from "../../share/components/SharePopover";
 import ConfigConfirmationCard from "./ConfigConfirmationCard";
 import SweepResultCard from "./SweepResultCard";
+import QuestionnaireCard from "./QuestionnaireCard";
 import { IconSidebarDock } from "../../conversations/components/SidebarIconRail";
 import type { OrchestratorModelOption, PublicShareToken } from "../../../api/client";
 import {
@@ -57,6 +64,7 @@ type ChatSendOptions = {
   confirmedActionId?: string | null;
   cancelledActionId?: string | null;
   supersededActionId?: string | null;
+  questionnaireResponse?: QuestionnaireResponse | null;
 };
 
 const CHAT_SWITCH_TRANSITION = {
@@ -96,6 +104,44 @@ function StreamingAssistantBubble({ markdown }: { markdown: string }) {
       </div>
     </motion.div>
   );
+}
+
+function isQuestionnaire(value: unknown): value is Questionnaire {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Questionnaire;
+  return (
+    typeof candidate.id === "string" &&
+    Array.isArray(candidate.questions) &&
+    candidate.questions.length > 0
+  );
+}
+
+function questionnaireIdsFromMessages(messages: Message[]): Set<string> {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    const content = message.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block.type === "questionnaire" && typeof block.id === "string") {
+        ids.add(block.id);
+      }
+    }
+  }
+  return ids;
+}
+
+function answeredQuestionnaireIdsFromMessages(messages: Message[]): Set<string> {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    const content = message.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block.type !== "questionnaire_response") continue;
+      const qid = (block as unknown as QuestionnaireResponse).questionnaire_id;
+      if (typeof qid === "string" && qid) ids.add(qid);
+    }
+  }
+  return ids;
 }
 
 interface ChatViewProps {
@@ -213,7 +259,6 @@ export default function ChatView({
   selectedModel,
   onSelectModel,
   accessToken,
-  userId,
   anthropicApiKey,
   onToast,
   share,
@@ -565,8 +610,8 @@ export default function ChatView({
     return () => cancelAnimationFrame(raf);
   }, [isProcessing, serverProcessing]);
 
-  // Confirmation cards are high-priority user interactions. When one appears,
-  // keep it visible instead of preserving an older scrolled-up position.
+  // Confirmation/questionnaire cards are high-priority user interactions. When one
+  // appears, keep it visible instead of preserving an older scrolled-up position.
   useEffect(() => {
     const pendingConfirmation = (() => {
       for (let i = workspaceEvents.length - 1; i >= 0; i -= 1) {
@@ -575,7 +620,10 @@ export default function ChatView({
       }
       return false;
     })();
-    if (!pendingConfirmation) return;
+    const pendingQuestionnaire = workspaceEvents.some(
+      (event) => event.type === "questionnaire_requested" && event.questionnaire,
+    );
+    if (!pendingConfirmation && !pendingQuestionnaire) return;
     stickToBottomRef.current = true;
     setShowJumpToLatest(false);
     scrollContainerToBottom();
@@ -770,6 +818,7 @@ export default function ChatView({
     !!streamingTail.trim() ||
     pendingArtifacts.length > 0 ||
     pendingPlots.length > 0 ||
+    workspaceEvents.some((event) => event.type === "questionnaire_requested") ||
     statusActive ||
     status.kind === "error" ||
     (turnActivityActive && turnActivity.length > 0);
@@ -874,6 +923,33 @@ export default function ChatView({
     }
     return null;
   }, [workspaceEvents]);
+  const messageQuestionnaireIds = useMemo(
+    () => questionnaireIdsFromMessages(messages),
+    [messages],
+  );
+  const answeredQuestionnaireIds = useMemo(
+    () => answeredQuestionnaireIdsFromMessages(messages),
+    [messages],
+  );
+  const liveQuestionnaire = useMemo(() => {
+    for (let i = workspaceEvents.length - 1; i >= 0; i -= 1) {
+      const candidate = workspaceEvents[i]?.questionnaire;
+      if (!isQuestionnaire(candidate)) continue;
+      if (messageQuestionnaireIds.has(candidate.id)) continue;
+      if (answeredQuestionnaireIds.has(candidate.id)) continue;
+      return candidate;
+    }
+    return null;
+  }, [workspaceEvents, messageQuestionnaireIds, answeredQuestionnaireIds]);
+
+  function submitQuestionnaire(
+    _questionnaire: Questionnaire,
+    response: QuestionnaireResponse,
+    summary: string,
+  ) {
+    forceBottomNow();
+    onSend(summary, { questionnaireResponse: response });
+  }
 
   function composeAlternativeConfig(workflow: NonNullable<SSEEvent["config_workflow"]>) {
     const serial = configSerial(workflow);
@@ -1344,7 +1420,9 @@ export default function ChatView({
                       onConfirmConfig={confirmConfig}
                       onCancelConfig={cancelConfig}
                       onTypeOtherConfig={composeAlternativeConfig}
+                      onSubmitQuestionnaire={submitQuestionnaire}
                       configActionsDisabled={isProcessing}
+                      questionnaireActionsDisabled={disabled || isProcessing || serverProcessing}
                       liveConfigEvents={workspaceEvents}
                       accessToken={accessToken}
                       anthropicApiKey={anthropicApiKey}
@@ -1416,6 +1494,21 @@ export default function ChatView({
                   onTypeOther={composeAlternativeConfig}
                 />
               )}
+
+              {liveQuestionnaire ? (
+                <>
+                  {liveQuestionnaire.message ? (
+                    <StreamingAssistantBubble markdown={liveQuestionnaire.message} />
+                  ) : null}
+                  <QuestionnaireCard
+                    questionnaire={liveQuestionnaire}
+                    disabled={disabled || isProcessing || serverProcessing}
+                    onSubmit={(response, summary) =>
+                      submitQuestionnaire(liveQuestionnaire, response, summary)
+                    }
+                  />
+                </>
+              ) : null}
 
               {liveSweepResult && (
                 <SweepResultCard result={liveSweepResult} />

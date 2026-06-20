@@ -1,6 +1,7 @@
 import type {
   Conversation,
   Message,
+  QuestionnaireResponse,
   SSEEvent,
   Ticket,
   TicketEvent,
@@ -662,6 +663,7 @@ async function initChatTurn(
   confirmedActionId?: string | null,
   cancelledActionId?: string | null,
   supersededActionId?: string | null,
+  questionnaireResponse?: QuestionnaireResponse | null,
 ): Promise<{ streamId: string; turnId?: string }> {
   const clientTimezone =
     typeof Intl !== "undefined"
@@ -680,6 +682,7 @@ async function initChatTurn(
       ...(confirmedActionId ? { confirmed_action_id: confirmedActionId } : {}),
       ...(cancelledActionId ? { cancelled_action_id: cancelledActionId } : {}),
       ...(supersededActionId ? { superseded_action_id: supersededActionId } : {}),
+      ...(questionnaireResponse ? { questionnaire_response: questionnaireResponse } : {}),
     }),
     signal,
   });
@@ -782,6 +785,7 @@ export async function streamChat(
   confirmedActionId?: string | null,
   cancelledActionId?: string | null,
   supersededActionId?: string | null,
+  questionnaireResponse?: QuestionnaireResponse | null,
   onInit?: (info: ChatStreamInit) => void,
 ): Promise<void> {
   const init = await initChatTurn(
@@ -795,6 +799,7 @@ export async function streamChat(
     confirmedActionId,
     cancelledActionId,
     supersededActionId,
+    questionnaireResponse,
   );
   onInit?.(init);
   const { streamId } = init;
@@ -884,6 +889,7 @@ export async function streamChatViaPolling(
   confirmedActionId?: string | null,
   cancelledActionId?: string | null,
   supersededActionId?: string | null,
+  questionnaireResponse?: QuestionnaireResponse | null,
   onInit?: (info: ChatStreamInit) => void,
 ): Promise<void> {
   const init = await initChatTurn(
@@ -897,6 +903,7 @@ export async function streamChatViaPolling(
     confirmedActionId,
     cancelledActionId,
     supersededActionId,
+    questionnaireResponse,
   );
   onInit?.(init);
   const { streamId } = init;

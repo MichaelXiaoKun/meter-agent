@@ -17,6 +17,7 @@ Usage (from an outer chat loop):
 import json
 import logging
 import os
+import uuid
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
@@ -229,6 +230,7 @@ def _recent_user_text_for_routing(messages: list) -> str:
 
 
 _SERIAL_RE = re.compile(r"\bBB[A-Z0-9-]{1,}\b", re.IGNORECASE)
+_EMAIL_RE = re.compile(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", re.IGNORECASE)
 
 
 def _last_user_text(messages: list) -> str:
@@ -242,6 +244,10 @@ def _last_user_text(messages: list) -> str:
 def _extract_first_serial(text: str) -> str | None:
     match = _SERIAL_RE.search(text or "")
     return match.group(0).upper() if match else None
+
+
+def _has_meter_identifier(text: str) -> bool:
+    return bool(_extract_first_serial(text or "") or _EMAIL_RE.search(text or ""))
 
 
 def _looks_like_angle_diagnostic_request(text: str) -> bool:
@@ -361,6 +367,9 @@ def _route_intent_rules(user_text: str) -> str:
         r"threshold|above|below|frequency|frequencies|periodic|periodicity|fft|psd|"
         r"data for)\b",
         t,
+    ) or any(
+        word in user_text
+        for word in ("流量", "历史", "趋势", "图表", "分析", "峰值", "用水", "数据")
     ):
         return "flow"
     if re.search(
@@ -368,16 +377,415 @@ def _route_intent_rules(user_text: str) -> str:
         r"zero point|zero-point|set zero|reset zero|"
         r"pvc|hdpe|copper|npt|bspt|bs en|astm|sch \d+|schedule)\b",
         t,
-    ) or any(word in user_text for word in ("零点", "归零", "校零")):
+    ) or any(
+        word in user_text
+        for word in (
+            "零点",
+            "归零",
+            "校零",
+            "管道",
+            "管径",
+            "管材",
+            "材质",
+            "配置",
+            "角度",
+            "安装",
+            "换能器",
+            "探头",
+        )
+    ):
         return "config"
     if re.search(
         r"\b(online|offline|status|signal|quality|battery|wifi|lora|lorawan|"
         r"health|healthiest|triage|fleet|need attention|needs attention|"
         r"is my meter|meter is|list meters?|serial)\b",
         t,
-    ) or re.search(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", t, re.I):
+    ) or _EMAIL_RE.search(t) or any(
+        word in user_text for word in ("状态", "在线", "离线", "信号", "质量", "电池", "健康")
+    ):
         return "status"
     return "general"
+
+
+def _looks_like_chinese(text: str) -> bool:
+    return bool(re.search(r"[\u3400-\u9fff]", text or ""))
+
+
+def _has_clear_admin_intent(text: str) -> bool:
+    if _route_intent_rules(text) != "general":
+        return True
+    t = (text or "").lower()
+    return bool(
+        re.search(
+            r"\b(ticket|tickets|work item|work items|follow[- ]?up|assign|owner|priority)\b",
+            t,
+        )
+        or re.search(r"\b(what can you do|how can you help|your capabilities)\b", t)
+        or any(
+            phrase in (text or "")
+            for phrase in (
+                "工单",
+                "跟进",
+                "任务",
+                "负责人",
+                "你能做什么",
+                "你可以做什么",
+                "你会做什么",
+            )
+        )
+    )
+
+
+def _looks_like_generic_check_request(text: str) -> bool:
+    raw = (text or "").strip()
+    if not raw:
+        return True
+    t = raw.lower()
+    if re.search(
+        r"^\s*(please\s+)?((can|could|would)\s+you\s+)?"
+        r"(check|look|look into|take a look|review|diagnose|fix|help)"
+        r"(\s+(it|this|that|things|them|the meter|my meter|meter))?"
+        r"(\s+for me)?\s*\??\s*$",
+        t,
+    ):
+        return True
+    if re.search(r"^\s*what do you think\s*\??\s*$", t):
+        return True
+    compact = re.sub(r"\s+", "", raw)
+    return any(
+        phrase in compact
+        for phrase in (
+            "帮我看看",
+            "帮忙看下",
+            "看一下",
+            "看看这个",
+            "检查一下",
+            "修一下",
+            "你觉得呢",
+        )
+    )
+
+
+def _looks_like_vague_meter_problem(text: str) -> bool:
+    raw = (text or "").strip()
+    t = raw.lower()
+    if re.search(
+        r"\b(signal|quality|online|offline|battery|flow|rate|pipe|angle|config|configuration)\b",
+        t,
+    ) or any(word in raw for word in ("状态", "在线", "离线", "信号", "质量", "电池", "流量", "管道", "角度", "配置")):
+        return False
+    if re.search(
+        r"\b(meter|device|unit)\b.{0,40}\b(problem|issue|wrong|broken|not working|isn't working|not reporting|weird|odd|bad|down)\b",
+        t,
+    ) or re.search(
+        r"\b(problem|issue|wrong|broken|not working|isn't working|not reporting|weird|odd|bad|down)\b.{0,40}\b(meter|device|unit)\b",
+        t,
+    ):
+        return True
+    compact = re.sub(r"\s+", "", raw)
+    return any(
+        phrase in compact
+        for phrase in (
+            "水表有问题",
+            "表有问题",
+            "设备有问题",
+            "不工作",
+            "坏了",
+            "异常",
+            "不正常",
+        )
+    )
+
+
+def _looks_off_topic(text: str) -> bool:
+    t = (text or "").lower()
+    return bool(
+        re.search(
+            r"\b(weather|recipe|cook|poem|joke|sports?|football|basketball|stock|movie|music|travel|flight|hotel)\b",
+            t,
+        )
+        or any(
+            word in (text or "")
+            for word in ("天气", "菜谱", "做饭", "笑话", "股票", "电影", "音乐", "旅游", "机票", "酒店")
+        )
+    )
+
+
+def _needs_clarification(messages: list) -> bool:
+    user_text = _last_user_text(messages)
+    if not user_text.strip():
+        return True
+    if _has_meter_identifier(user_text):
+        return False
+    if _looks_off_topic(user_text):
+        return True
+    if _looks_like_vague_meter_problem(user_text):
+        return True
+    if _has_clear_admin_intent(user_text):
+        return False
+
+    recent_text = _recent_user_text_for_routing(messages)
+    if _has_meter_identifier(recent_text) and _has_clear_admin_intent(recent_text):
+        return False
+
+    return bool(
+        _looks_like_generic_check_request(user_text)
+        or _looks_like_vague_meter_problem(user_text)
+    )
+
+
+def _clarification_prompt_for_user_text(text: str) -> str:
+    if _looks_like_chinese(text):
+        return "你想让我查当前状态、分析历史流量，还是看管道/角度配置？如果是某个水表，请一起提供序列号。"
+    return (
+        "Do you want me to check current status, analyze flow history, or review "
+        "pipe/angle configuration? If there is a specific meter, please include the serial number."
+    )
+
+
+_CLARIFICATION_SYSTEM_PROMPT = (
+    "You are the bluebot admin meter assistant. The user's latest request is too vague "
+    "or off-topic to safely choose a meter workflow.\n"
+    "Ask exactly one concise clarifying question in the user's language. Offer these "
+    "choices in natural wording: current meter status, flow-history analysis, or "
+    "pipe/angle configuration review. If a specific meter is involved, ask for the "
+    "serial number. Do not answer the underlying request yet. Do not mention tools, "
+    "routing, policies, APIs, or internal implementation."
+)
+
+_QUESTIONNAIRE_BLOCK = "questionnaire"
+_QUESTIONNAIRE_RESPONSE_BLOCK = "questionnaire_response"
+_QUESTIONNAIRE_MAX_QUESTIONS = 4
+_QUESTIONNAIRE_MAX_OPTIONS = 5
+
+_QUESTIONNAIRE_PLANNER_SYSTEM_PROMPT = (
+    "You are a planning layer for the bluebot admin meter assistant. Decide whether "
+    "the latest user request is deep enough that the assistant should collect a few "
+    "structured answers before analyzing or using meter tools.\n\n"
+    "Return ONLY valid JSON with this shape:\n"
+    "{\n"
+    "  \"action\": \"proceed\" | \"ask_questionnaire\",\n"
+    "  \"message\": \"short user-facing setup text\",\n"
+    "  \"questions\": [\n"
+    "    {\"id\":\"q1\", \"text\":\"...\", \"type\":\"single_choice\"|\"multi_choice\", "
+    "\"options\":[{\"id\":\"a\", \"label\":\"...\"}]}\n"
+    "  ]\n"
+    "}\n\n"
+    "Use ask_questionnaire only for deep diagnostic or decision questions where missing "
+    "context would materially change the recommendation, such as root-cause analysis, "
+    "installation vs configuration tradeoffs, field next-step planning, optimization, "
+    "or multi-factor troubleshooting. Use proceed for direct status checks, direct flow "
+    "analysis requests, direct configuration actions, account lookup, simple small talk, "
+    "or when enough context is already available.\n"
+    "If asking, produce 1-4 questions, each with 2-5 concise options. Questions must be "
+    "single_choice or multi_choice only. Ask in the user's language. Do not mention tools, "
+    "schemas, JSON, policies, APIs, or internal implementation."
+)
+
+
+def _content_blocks(message: dict) -> list[dict]:
+    content = message.get("content") if isinstance(message, dict) else None
+    return [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+
+
+def _questionnaire_blocks(message: dict) -> list[dict]:
+    return [b for b in _content_blocks(message) if b.get("type") == _QUESTIONNAIRE_BLOCK]
+
+
+def _questionnaire_response_blocks(message: dict) -> list[dict]:
+    return [b for b in _content_blocks(message) if b.get("type") == _QUESTIONNAIRE_RESPONSE_BLOCK]
+
+
+def _last_user_has_questionnaire_response(messages: list) -> bool:
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        return bool(_questionnaire_response_blocks(m))
+    return False
+
+
+def _answered_questionnaire_ids(messages: list) -> set[str]:
+    out: set[str] = set()
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        for block in _questionnaire_response_blocks(m):
+            qid = str(block.get("questionnaire_id") or "").strip()
+            if qid:
+                out.add(qid)
+    return out
+
+
+def _latest_pending_questionnaire(messages: list) -> dict | None:
+    answered = _answered_questionnaire_ids(messages)
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        blocks = _questionnaire_blocks(m)
+        for block in reversed(blocks):
+            qid = str(block.get("id") or "").strip()
+            if qid and qid not in answered:
+                return block
+    return None
+
+
+def _looks_like_deep_question_for_questionnaire(text: str) -> bool:
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    t = raw.lower()
+    if re.search(
+        r"\b(root cause|cause|why|diagnos|troubleshoot|next step|what should|"
+        r"recommend|recommendation|optimi[sz]e|strategy|plan|trade[- ]?off|"
+        r"best way|field|installation issue|install issue|long[- ]?term|"
+        r"keeps?|recurring|intermittent)\b",
+        t,
+    ):
+        return True
+    return any(
+        phrase in raw
+        for phrase in (
+            "根因",
+            "原因",
+            "为什么",
+            "是不是",
+            "诊断",
+            "排查",
+            "下一步",
+            "怎么处理",
+            "建议",
+            "方案",
+            "策略",
+            "优化",
+            "最好",
+            "长期",
+            "反复",
+            "间歇",
+            "现场",
+            "安装问题",
+        )
+    )
+
+
+def _should_run_questionnaire_planner(messages: list) -> bool:
+    if _last_user_has_questionnaire_response(messages):
+        return False
+    if _latest_pending_questionnaire(messages) is not None:
+        return False
+    user_text = _last_user_text(messages)
+    # Existing angle-diagnostic requests already have a deterministic
+    # experiment/confirmation flow; do not interpose the generic questionnaire.
+    if _has_meter_identifier(user_text) and _looks_like_angle_diagnostic_request(user_text):
+        return False
+    return _looks_like_deep_question_for_questionnaire(user_text)
+
+
+def _extract_json_object(text: str) -> dict | None:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.I).strip()
+        raw = re.sub(r"\s*```$", "", raw).strip()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            parsed = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _safe_option_id(raw: object, fallback: str) -> str:
+    s = re.sub(r"[^A-Za-z0-9_-]+", "_", str(raw or "").strip()).strip("_")
+    return (s or fallback)[:32]
+
+
+def _normalise_questionnaire_plan(plan: dict, *, user_text: str) -> dict | None:
+    if str(plan.get("action") or "").strip().lower() != "ask_questionnaire":
+        return None
+    raw_questions = plan.get("questions")
+    if not isinstance(raw_questions, list):
+        return None
+
+    questions: list[dict] = []
+    for q_ix, raw_q in enumerate(raw_questions[:_QUESTIONNAIRE_MAX_QUESTIONS], start=1):
+        if not isinstance(raw_q, dict):
+            continue
+        q_text = str(raw_q.get("text") or raw_q.get("question") or "").strip()
+        if not q_text:
+            continue
+        q_type = str(raw_q.get("type") or "single_choice").strip().lower()
+        if q_type not in {"single_choice", "multi_choice"}:
+            q_type = "multi_choice" if "multi" in q_type else "single_choice"
+        raw_options = raw_q.get("options")
+        if not isinstance(raw_options, list):
+            continue
+        options: list[dict] = []
+        seen: set[str] = set()
+        for o_ix, raw_o in enumerate(raw_options[:_QUESTIONNAIRE_MAX_OPTIONS], start=1):
+            if isinstance(raw_o, dict):
+                label = str(raw_o.get("label") or raw_o.get("text") or "").strip()
+                oid = _safe_option_id(raw_o.get("id"), f"o{o_ix}")
+            else:
+                label = str(raw_o or "").strip()
+                oid = f"o{o_ix}"
+            if not label:
+                continue
+            base = oid
+            n = 2
+            while oid in seen:
+                oid = f"{base}_{n}"
+                n += 1
+            seen.add(oid)
+            options.append({"id": oid, "label": label[:160]})
+        if len(options) < 2:
+            continue
+        qid = _safe_option_id(raw_q.get("id"), f"q{q_ix}")
+        questions.append(
+            {
+                "id": qid,
+                "text": q_text[:240],
+                "type": q_type,
+                "options": options,
+            }
+        )
+
+    if not questions:
+        return None
+    msg = str(plan.get("message") or "").strip()
+    if not msg:
+        msg = (
+            "先回答几个问题，我再继续分析。"
+            if _looks_like_chinese(user_text)
+            else "A few choices will help me give a better recommendation."
+        )
+    return {
+        "type": _QUESTIONNAIRE_BLOCK,
+        "id": f"qq_{uuid.uuid4().hex[:12]}",
+        "status": "pending",
+        "message": msg[:500],
+        "questions": questions,
+    }
+
+
+def _questionnaire_reminder_text(questionnaire: dict) -> str:
+    message = str(questionnaire.get("message") or "")
+    chinese = _looks_like_chinese(message) or any(
+        _looks_like_chinese(str(q.get("text") or ""))
+        for q in questionnaire.get("questions", [])
+        if isinstance(q, dict)
+    )
+    if chinese:
+        return "请先回答上面的选项问题，我拿到这些答案后再继续分析。"
+    return "Please answer the questionnaire above first, then I can continue the analysis."
 
 
 def _parse_haiku_intent_json(text: str) -> str | None:
@@ -448,6 +856,19 @@ def _resolve_routed_tools(
     Returns (tools_for_api, intent_label, source) where source is
     off | rules | haiku.
     """
+    if _needs_clarification(messages):
+        tools: list = []
+        if emit:
+            emit(
+                {
+                    "type": "intent_route",
+                    "intent": "clarify",
+                    "source": "rules",
+                    "tools": [],
+                }
+            )
+        return (tools, "clarify", "rules")
+
     mode = _intent_router_mode()
     if mode == "off":
         from admin_chat.meter_tools import METER_REGISTRY
@@ -1022,6 +1443,65 @@ def _count_tokens(
             n,
         )
         return n
+
+
+def _run_questionnaire_planner(
+    provider,
+    active_model: str,
+    messages: list,
+    *,
+    model_ctx: int,
+    tpm_guide: int,
+    counters: dict,
+    emit,
+) -> dict | None:
+    """Return a normalized questionnaire block when the planning model asks for one."""
+    token_count = _count_tokens(
+        provider,
+        messages,
+        model=active_model,
+        tools=[],
+        system_prompt=_QUESTIONNAIRE_PLANNER_SYSTEM_PROMPT,
+    )
+    pct = token_count / model_ctx
+    emit({"type": "token_usage", "tokens": token_count, "pct": pct, "model": active_model})
+    _wait_for_tpm_headroom_with_progress(
+        _estimate_stream_turn_tpm_cost(token_count),
+        model=active_model,
+        tpm_guide=tpm_guide,
+        emit=emit,
+    )
+    emit({"type": "thinking", "purpose": "questionnaire_planner"})
+    try:
+        with timed(
+            "api_call",
+            model=active_model,
+            input_tokens_estimate=token_count,
+            purpose="questionnaire_planner",
+        ) as _api_end:
+            response = provider.complete(
+                active_model,
+                messages_for_anthropic_api(messages),
+                system=_QUESTIONNAIRE_PLANNER_SYSTEM_PROMPT,
+                tools=[],
+                max_tokens=1200,
+            )
+            _api_end["input_tokens"] = response.input_tokens
+            _api_end["output_tokens"] = getattr(response, "output_tokens", None)
+            _api_end["stop_reason"] = response.stop_reason
+            counters["api_calls"] += 1
+        record_input_tokens(response.input_tokens or token_count, model=active_model)
+    except Exception as exc:
+        _log.warning(
+            "questionnaire planner failed (%s); proceeding without questionnaire",
+            exc.__class__.__name__,
+        )
+        return None
+
+    parsed = _extract_json_object(response.text)
+    if not parsed:
+        return None
+    return _normalise_questionnaire_plan(parsed, user_text=_last_user_text(messages))
 
 
 def _compress_history(
@@ -3085,6 +3565,7 @@ def run_turn(
                       {"type": "tool_result",  "tool": str, "success": bool,
                        "tool_activity": str | None}  — optional human title when success
                       {"type": "tool_progress", "tool": str, "message": str}  — long tools (flow analysis)
+                      {"type": "questionnaire_requested", "questionnaire": dict, "message": str}
                       {"type": "thinking"}  — while waiting for the LLM
 
     Returns:
@@ -3109,10 +3590,17 @@ def run_turn(
     )
     history_replaced = False
     provider = None
+    clarification_needed = False
     if confirmed_action_id or cancelled_action_id:
         active_tools = []
         _intent_label = "config"
         _intent_src = "confirmed_action" if confirmed_action_id else "cancelled_action"
+    elif not superseded_action_id and _needs_clarification(messages):
+        provider = get_provider(active_model, api_key_override=api_key_override)
+        clarification_needed = True
+        active_tools = []
+        _intent_label = "clarify"
+        _intent_src = "rules"
     else:
         provider = get_provider(active_model, api_key_override=api_key_override)
         active_tools, _intent_label, _intent_src = _resolve_routed_tools(
@@ -3150,6 +3638,124 @@ def run_turn(
         return reply, replaced
 
     try:
+      if clarification_needed:
+        _emit(
+            {
+                "type": "intent_route",
+                "intent": "clarify",
+                "source": "rules",
+                "tools": [],
+            }
+        )
+        token_count = _count_tokens(
+            provider,
+            messages,
+            model=active_model,
+            tools=[],
+            system_prompt=_CLARIFICATION_SYSTEM_PROMPT,
+        )
+        pct = token_count / model_ctx
+        _emit({"type": "token_usage", "tokens": token_count, "pct": pct, "model": active_model})
+        _wait_for_tpm_headroom_with_progress(
+            _estimate_stream_turn_tpm_cost(token_count),
+            model=active_model,
+            tpm_guide=active_tpm_input_guide_tokens,
+            emit=_emit,
+        )
+        _emit({"type": "thinking"})
+        with timed(
+            "api_call",
+            model=active_model,
+            input_tokens_estimate=token_count,
+            purpose="clarification",
+        ) as _api_end:
+            response = provider.stream(
+                active_model,
+                messages_for_anthropic_api(messages),
+                system=_CLARIFICATION_SYSTEM_PROMPT,
+                tools=[],
+                max_tokens=256,
+                on_text_delta=lambda delta: _emit({"type": "text_delta", "text": delta}),
+            )
+            _api_end["input_tokens"] = response.input_tokens
+            _api_end["output_tokens"] = getattr(response, "output_tokens", None)
+            _api_end["stop_reason"] = response.stop_reason
+            _counters["api_calls"] += 1
+        record_input_tokens(response.input_tokens or token_count, model=active_model)
+        clarification_reply = (response.text or "").strip()
+        assistant_content = response.assistant_content
+        if not clarification_reply:
+            clarification_reply = _clarification_prompt_for_user_text(_last_user_text(messages))
+            assistant_content = [{"type": "text", "text": clarification_reply}]
+        elif not assistant_content:
+            assistant_content = [{"type": "text", "text": clarification_reply}]
+        messages.append({"role": "assistant", "content": assistant_content})
+        _emit({"type": "clarification_requested", "message": clarification_reply})
+        return _finish(
+            "clarification_requested",
+            clarification_reply,
+            history_replaced,
+            reply_chars=len(clarification_reply),
+        )
+
+      if not (confirmed_action_id or cancelled_action_id or superseded_action_id):
+        pending_questionnaire = _latest_pending_questionnaire(messages)
+        if pending_questionnaire is not None:
+            msg = _questionnaire_reminder_text(pending_questionnaire)
+            messages.append({"role": "assistant", "content": [{"type": "text", "text": msg}]})
+            _emit(
+                {
+                    "type": "questionnaire_requested",
+                    "message": str(pending_questionnaire.get("message") or msg),
+                    "questionnaire": pending_questionnaire,
+                    "pending": True,
+                }
+            )
+            return _finish(
+                "questionnaire_pending",
+                msg,
+                history_replaced,
+                reply_chars=len(msg),
+            )
+
+        if provider is not None and _should_run_questionnaire_planner(messages):
+            questionnaire = _run_questionnaire_planner(
+                provider,
+                active_model,
+                messages,
+                model_ctx=model_ctx,
+                tpm_guide=active_tpm_input_guide_tokens,
+                counters=_counters,
+                emit=_emit,
+            )
+            if questionnaire is not None:
+                reply = str(questionnaire.get("message") or "").strip()
+                if not reply:
+                    reply = _questionnaire_reminder_text(questionnaire)
+                    questionnaire["message"] = reply
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": reply},
+                            questionnaire,
+                        ],
+                    }
+                )
+                _emit(
+                    {
+                        "type": "questionnaire_requested",
+                        "message": reply,
+                        "questionnaire": questionnaire,
+                    }
+                )
+                return _finish(
+                    "questionnaire_requested",
+                    reply,
+                    history_replaced,
+                    reply_chars=len(reply),
+                )
+
       if not (
           confirmed_action_id
           or cancelled_action_id
